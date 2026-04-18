@@ -1190,10 +1190,19 @@ class FinanceAgentResourcesServer(SimpleResourcesServer):
                 if isinstance(content, str):
                     question = content
 
+        # Extract the model's answer from the submit_final_result tool call.
+        # HARD GATE: we only accept answers submitted via submit_final_result.
+        # Previously we fell back to the last assistant text message, which
+        # created a reward shortcut: the model could skip all tool use and
+        # answer from parametric knowledge. A lenient judge then still gave
+        # partial/full credit, and GRPO reinforced the no-tool policy.
+        # Now, rollouts without a valid submit_final_result call get reward=0.
         generated_answer = ""
+        submit_final_result_called = False
         for output_item in reversed(body.response.output):
             if getattr(output_item, "type", None) == "function_call":
                 if getattr(output_item, "name", None) == "submit_final_result":
+                    submit_final_result_called = True
                     try:
                         args = json.loads(getattr(output_item, "arguments", "{}"))
                         generated_answer = args.get("final_result", "")
@@ -1201,18 +1210,21 @@ class FinanceAgentResourcesServer(SimpleResourcesServer):
                         pass
                     break
 
-        if not generated_answer:
-            for output_item in reversed(body.response.output):
-                if (
-                    getattr(output_item, "type", None) == "message"
-                    and getattr(output_item, "role", None) == "assistant"
-                ):
-                    for content_item in getattr(output_item, "content", []):
-                        if getattr(content_item, "type", None) == "output_text":
-                            generated_answer = getattr(content_item, "text", "")
-                            break
-                    if generated_answer:
-                        break
+        if not submit_final_result_called or not generated_answer:
+            logger.info(
+                "Hard gate: reward=0 (submit_final_result_called=%s, final_result_present=%s)",
+                submit_final_result_called,
+                bool(generated_answer),
+            )
+            return FinanceAgentVerifyResponse(
+                **body.model_dump(),
+                reward=0.0,
+                judge_rating=0,
+                judge_text=(
+                    "Hard gate: submit_final_result tool call missing or empty. "
+                    "The agent must submit its final answer via submit_final_result to be graded."
+                ),
+            )
 
         # No judge model → substring match
         if not self.config.judge_model_server:
