@@ -100,7 +100,7 @@ class BrowseRequest(BaseModel):
     def coerce_urls(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        urls = data.get("querurlsies")
+        urls = data.get("urls")
         if urls is None:
             return data
 
