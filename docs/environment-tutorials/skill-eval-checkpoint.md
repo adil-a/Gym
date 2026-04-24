@@ -1,5 +1,7 @@
 # NeMo Gym dogfood: skill-eval checkpoint
 
+> **Superseded by** [`skill-eval-infra-v1.md`](skill-eval-infra-v1.md) (infrastructure + gotchas) and [`skill-eval-findings.md`](skill-eval-findings.md) (skill-specific claims, gated on v7). A PM review correctly flagged that this document conflated the "infra we built" narrative with the "skills findings" narrative, and several of the skill-specific claims rested on contaminated data. The split preserves the infra/gotchas material unchanged and parks the findings section until a clean measurement run is complete.
+
 **Period:** ~2 days · **Owner:** Lawrence Lane (llane@nvidia.com) · **Status:** ongoing
 
 ## What we built
