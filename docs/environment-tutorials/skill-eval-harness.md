@@ -19,7 +19,7 @@ By the end, you will:
 :::
 
 :::{tip}
-Part 2 of this tutorial ({ref}`skill-eval-scoreboard`) covers **running** the harness: writing `evals.json`, with-vs-without delta methodology, reading the scoreboard, and judge calibration. This part is the infrastructure; Part 2 is the methodology.
+Part 2 of this tutorial ({ref}`skill-eval-scoreboard`) covers **running** the harness: writing `evals.json`, the 2×2 cell methodology, reading the scoreboard, and judge calibration. This part is the infrastructure; Part 2 is the methodology.
 :::
 
 ---
@@ -40,7 +40,7 @@ flowchart LR
 
 Four servers cooperate per rollout:
 
-- **`skill_workspace`** (resources server) — an ephemeral per-session tmpdir seeded with the skill's `SKILL.md`, `scripts/`, `references/`, and scenario fixtures. Exposes `run_bash` and `read_file` tools to the policy model.
+- **`skill_workspace`** (resources server) — an ephemeral per-session tmpdir seeded with the skill's `scripts/` and `references/` (gated by per-request flags) plus scenario fixtures. Exposes `run_bash` and `read_file` tools to the policy model. **`SKILL.md` is never seeded** — see the contamination gotcha below.
 - **`skill_judge`** (resources server) — LLM-as-judge. Receives the final model transcript plus the captured tool-call log and returns per-assertion binary grades with evidence.
 - **`policy_model`** (model server) — the model being evaluated.
 - **`skill_eval_agent`** (responses API agent) — orchestrates everything: seeds a workspace, runs the rollout loop, dispatches tool calls, forwards the transcript to the judge, closes the workspace.
@@ -108,7 +108,7 @@ The workspace server exposes four endpoints: one to seed a session, two tools, o
 
 ### `/seed_session`
 
-Accepts `skill_path`, `scenario_id`, and a `files` list. Creates a fresh tmpdir, copies `SKILL.md`, `scripts/`, `references/`, and the requested fixture files, returns an `env_id` the agent will use for subsequent tool calls.
+Accepts `skill_path`, `scenario_id`, `files`, and two independent gating flags (`with_references`, `with_scripts`). Creates a fresh tmpdir, optionally copies `scripts/` and `references/`, copies the requested fixture files, and returns an `env_id` the agent will use for subsequent tool calls.
 
 ```python
 async def seed_session(self, body: SkillWorkspaceSeedSessionRequest) -> SkillWorkspaceSeedSessionResponse:
@@ -118,8 +118,13 @@ async def seed_session(self, body: SkillWorkspaceSeedSessionRequest) -> SkillWor
         dir=self.config.workspace_root,
     ))
     env_id = str(uuid.uuid4())
-    shutil.copy2(skill_src / "SKILL.md", workspace / "SKILL.md")
-    for subdir in ("scripts", "references"):
+    # SKILL.md intentionally NOT seeded — see "Gotcha: workspace contamination" below.
+    seed_subdirs = []
+    if body.with_scripts:
+        seed_subdirs.append("scripts")
+    if body.with_references:
+        seed_subdirs.append("references")
+    for subdir in seed_subdirs:
         src = skill_src / subdir
         if src.is_dir():
             shutil.copytree(src, workspace / subdir)
@@ -128,6 +133,14 @@ async def seed_session(self, body: SkillWorkspaceSeedSessionRequest) -> SkillWor
     self.env_id_to_workspace[env_id] = workspace
     return SkillWorkspaceSeedSessionResponse(env_id=env_id)
 ```
+
+### Gotcha: workspace contamination
+
+Anything you seed into the workspace is readable by the model through its tools — that's the whole point. But if the artifact is *about the skill being evaluated*, the control arm ("no skill") is no longer a clean control: the first thing the model does in every rollout is `ls && cat SKILL.md`, and if that file exists it happily grabs the skill body off disk.
+
+We learned this the hard way. Pre-fix, 100% of without-skill rollouts were reading `SKILL.md` off disk. After we removed `SKILL.md`, 100% of without-skill `gym-profile` rollouts fell back to reading `references/metrics-guide.md`, which (being the skill author's carefully-written reference doc) contains every noun the assertions test for. Both findings produced the same prescription: gate the seeding of skill-payload artifacts on explicit flags, and default the "without skill" arm to a true blind state.
+
+That's what `with_references` / `with_scripts` are for. The skill-eval harness exercises them as part of its 2×2 grid (Part 2); other callers can set either to `False` when they want a stricter control.
 
 ### `/run_bash` and `/read_file`
 
@@ -148,7 +161,7 @@ async def run_bash(self, body: RunBashRequest) -> RunBashResponse:
     # … cap and decode …
 ```
 
-`_build_sandbox_env` strips the host's NeMo Gym venv from `PATH` — the bash subprocess sees only `/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` plus a minimal set of locale/terminal variables. The model-under-test can't accidentally discover host `ng_*` binaries, Ray state, or HF/MLflow credentials that Uvicorn's parent environment inherited. This is both a cleanliness measure and a side-effect lever: when we added it, several skills' `without_skill` baselines moved up by 2–5 points because the model stopped wandering off to investigate binaries it could no longer find.
+`_build_sandbox_env` strips the host's NeMo Gym venv from `PATH` — the bash subprocess sees only `/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` plus a minimal set of locale/terminal variables. The model-under-test can't accidentally discover host `ng_*` binaries, Ray state, or HF/MLflow credentials that Uvicorn's parent environment inherited. A workspace-local `.sandbox_bin/python → python3` symlink covers the common case of prompts that assume `python` exists (which macOS sandboxes otherwise don't expose).
 
 ### `/close`
 
@@ -200,28 +213,36 @@ See the [existing `llm-as-judge-verification` tutorial](llm-as-judge-verificatio
 
 This is where it all comes together. `/run` has five jobs:
 
-1. Seed a workspace (get `env_id`).
-2. Optionally prepend `SKILL.md` to the input (this is the "with-skill" arm — covered in Part 2).
+1. Seed a workspace (get `env_id`), forwarding the `with_references` / `with_scripts` flags from `verifier_metadata`.
+2. Optionally prepend `SKILL.md` to the input, gated by `verifier_metadata.with_skill`.
 3. Run the rollout loop: model generates → dispatch tool calls → feed outputs back → repeat until done or `max_steps`.
 4. Forward the transcript + captured `tool_calls` to the judge's `/verify`.
 5. `/close` the workspace — always, even on exceptions.
+
+The two flags (`with_skill`, `with_references`) are what let the harness produce the 2×2 control structure described in Part 2.
 
 ```python
 # responses_api_agents/skill_eval_agent/app.py
 async def run(self, request, body: SkillEvalAgentRunRequest) -> SkillEvalAgentVerifyResponse:
     metadata = dict(body.verifier_metadata or {})
+    with_skill = bool(metadata.get("with_skill", False))
+    # Both flags default to with_skill for back-compat with pre-2×2 JSONLs.
+    with_references = bool(metadata.get("with_references", with_skill))
+    with_scripts = bool(metadata.get("with_scripts", with_skill))
     seed_resp = await self.server_client.post(
         server_name=self.config.workspace_server.name,
         url_path="/seed_session",
         json={"skill_path": metadata["skill_path"],
               "scenario_id": metadata["scenario_id"],
-              "files": list(metadata.get("files") or [])},
+              "files": list(metadata.get("files") or []),
+              "with_references": with_references,
+              "with_scripts": with_scripts},
     )
     env_id = (await get_response_json(seed_resp))["env_id"]
 
     try:
         params = body.responses_create_params.model_copy(deep=True)
-        if metadata.get("with_skill") and metadata.get("skill_md"):
+        if with_skill and metadata.get("skill_md"):
             params.input.insert(0, NeMoGymEasyInputMessage(
                 role="system",
                 content=f"{_SKILL_SYSTEM_PREFIX}{metadata['skill_md']}",
@@ -349,7 +370,7 @@ Every input-JSONL record carries five content hashes in `verifier_metadata`:
 
 All five are computed at JSONL-build time by `scripts/build_skill_eval_jsonl.py`, persisted through `verify()`, and emitted on the output rollout. Every scoreboard is self-describing: it tells you exactly which inputs it measured.
 
-Why five and not one: "did the skill get worse?" is usually the wrong question. The right question is "which input change moved the delta?" Without field-level provenance, a harness edit and a skill edit look identical in the output. With it, `scripts/diff_skill_scoreboards.py` can tell you `md+evals` (both edited — stop and disambiguate), `harness` (stack change — expect correlated movement across all skills' `without_skill` columns), or `same-all` (no tracked input changed — you're looking at noise or judge drift, not a skill effect). Part 2 walks through a real v1→v2→v3 iteration that relies on this attribution.
+Why five and not one: "did the skill get worse?" is usually the wrong question. The right question is "which input change moved the delta?" Without field-level provenance, a harness edit and a skill edit look identical in the output. With it, `scripts/diff_skill_scoreboards.py` can tell you `md+evals` (both edited — stop and disambiguate), `harness` (stack change — expect correlated movement across all cells of every skill), or `same-all` (no tracked input changed — you're looking at noise or judge drift, not a skill effect). Part 2 walks through how this attribution shapes the 2×2-cell interpretation.
 
 ---
 

@@ -28,15 +28,35 @@ By the end, you will:
 
 ---
 
-## The methodology: with-vs-without delta
+## The methodology: a 2×2 grid, not a single A/B
 
 Absolute reward scores lie. If a skill scores 0.90 across 3 scenarios, is it good? Depends entirely on what the model does *without* the skill. A 0.90 skill on top of a 0.90 baseline is noise; a 0.90 skill on top of a 0.40 baseline is +0.50 of real lift.
 
-The harness runs every scenario **twice** — once with `SKILL.md` prepended to the system prompt, once without. Same prompt, same seed workspace, same model, same tools. The only difference is whether the skill's guidance is in context.
+But "without the skill" hides a decision. A skill in a repo ships two kinds of material: the `SKILL.md` that might go into the system prompt, and `references/` and `scripts/` that live on disk and get copied into the workspace. A reader who "doesn't have the skill pack" might have the repo checked out or might not. Those are two different controls, and they give different answers. We learned this the painful way — our first five iterations measured a confound (see the "contamination" sidebar below).
 
-$$\text{delta} = \text{mean\_reward}(\text{with\_skill}) - \text{mean\_reward}(\text{without\_skill})$$
+The harness runs every scenario across **four cells**, toggled by two independent flags:
 
-Positive delta = the skill is teaching the model something it didn't already know. Zero delta = either redundant or ceiling-clipped (more on that below). Negative delta = diagnostic signal worth chasing, not noise.
+|  | `with_references=False` | `with_references=True` |
+|---|---|---|
+| `with_skill=False` | **blind** — model priors only | **docs-only** — realistic reader without the skill overlay |
+| `with_skill=True`  | **skill-only** — SKILL.md in prompt, nothing on disk | **skill+docs** — realistic reader with the skill pack |
+
+Four named marginal effects come out of this:
+
+- **`skill | refs=T`** (skill+docs − docs-only) — realistic-deployment value of the skill overlay
+- **`skill | refs=F`** (skill-only − blind) — skill as a standalone doc
+- **`refs  | skill=T`** (skill+docs − skill-only) — do references still matter when the skill is prompted?
+- **`refs  | skill=F`** (docs-only − blind) — marginal value of references alone
+
+The "realistic deployment" effect is the one most users care about: does installing the skill overlay help a reader who already has the repo? But the other three are diagnostic — they tell you whether a skill is doing unique work, competing with its own references, or just redundant.
+
+:::{admonition} Contamination sidebar — why the 2×2 exists
+:class: warning
+
+Earlier versions of this harness copied `SKILL.md` into the workspace unconditionally, then gated the system-prompt prepend on a single `with_skill` flag. In the "without" arm, the model's first tool call was `ls && cat SKILL.md`: it read the skill off disk 100% of the time. After that was fixed, `references/` was still being seeded in both arms — and for skills whose references happened to be well-structured reference docs (e.g. gym-profile's `metrics-guide.md`), the "without skill" arm was still seeing the skill-author's prose.
+
+The 2×2 exists because "what the reader has" is a decision the harness has to make explicit. Gating `with_references` separately from `with_skill` lets the control arm be a genuinely cold start when you want that contrast, and a realistic-reader baseline when you want the other.
+:::
 
 ---
 
@@ -83,12 +103,13 @@ Optional. If you have a gold-standard answer, put it here and the judge will see
 
 ## Step 2: Generate the input JSONL
 
-`scripts/build_skill_eval_jsonl.py` walks `.claude/skills/*/evals/evals.json` and emits two records per scenario (one `with_skill=True`, one `with_skill=False`):
+`scripts/build_skill_eval_jsonl.py` walks `.claude/skills/*/evals/evals.json` and emits **four records per scenario** — one for each cell of the 2×2:
 
 ```bash
 python scripts/build_skill_eval_jsonl.py \
     --skills-dir .claude/skills \
     --output responses_api_agents/skill_eval_agent/data/example.jsonl
+# --cells=blind,skill+docs to restrict to a subset
 ```
 
 Each record:
@@ -101,9 +122,17 @@ Each record:
   "verifier_metadata": {
     "skill_path": "/abs/path/to/skill",
     "skill_name": "my-skill",
+    "skill_md_sha": "cd125b6470be",
+    "evals_sha": "ef847045784b",
+    "fixtures_sha": "c03a0ca4ddda",
+    "judge_prompt_sha": "665408560ff4",
+    "harness_version": "e28ce8330e99",
     "scenario_id": 1,
     "files": ["evals/files/..."],
+    "cell": "skill+docs",
     "with_skill": true,
+    "with_references": true,
+    "with_scripts": true,
     "skill_md": "<contents of SKILL.md>",
     "assertions": [...],
     "expected_output": null
@@ -111,7 +140,7 @@ Each record:
 }
 ```
 
-`with_skill=True` means the agent will prepend `SKILL.md` as a system message before the rollout. `with_skill=False` is the control.
+`with_skill` / `with_references` are the two independent flags whose cross product defines the 2×2. The `cell` label is emitted for convenience so downstream tooling can bucket on a single field. Five content-hash provenance fields (`*_sha`, `harness_version`) ride through to the output for attribution — see Step 7.
 
 ---
 
@@ -139,55 +168,54 @@ The output JSONL contains one line per rollout with `reward`, per-assertion `gra
 
 `ng_collect_rollouts` prints a single `mean/reward` across everything — that number mixes with-skill and without-skill rollouts and is **not** what you want. Bucket by skill and by the `with_skill` flag:
 
-```python
-import json
-from collections import defaultdict
+Use the diff tool:
 
-by_skill = defaultdict(lambda: {"with": [], "without": []})
-for line in open("results/scoreboard.jsonl"):
-    r = json.loads(line)
-    md = r.get("verifier_metadata", {})
-    bucket = "with" if md.get("with_skill") else "without"
-    by_skill[md["skill_name"]][bucket].append(r["reward"])
-
-print(f"{'skill':20s}  {'with':>8s}  {'without':>8s}  {'delta':>8s}")
-print("-" * 60)
-for skill in sorted(by_skill):
-    w  = sum(by_skill[skill]["with"])    / len(by_skill[skill]["with"])
-    wo = sum(by_skill[skill]["without"]) / len(by_skill[skill]["without"])
-    print(f"{skill:20s}  {w:8.3f}  {wo:8.3f}  {w - wo:+8.3f}")
+```bash
+python scripts/diff_skill_scoreboards.py results/scoreboard.jsonl
 ```
 
-A real scoreboard from our run (n=5 per bucket, 240 rollouts total):
+This auto-detects whether the JSONL is 4-cell (new) or 2-arm (legacy) and renders the appropriate scoreboard — for a 4-cell file, a per-skill block with all four cells plus the four named marginal effects. It also reports on three axes in every row: **Δreward** (accuracy), **Δtools** (tool-call count — efficiency), and **Δtokens** (output length).
 
-| skill | with | without | delta |
-|---|---|---|---|
-| gym-scaffold-agent | 0.867±0.025 | 0.733±0.080 | **+0.133** |
-| add-benchmark | 0.877±0.037 | 0.808±0.047 | +0.069 |
-| gym-profile | 0.909±0.026 | 0.871±0.046 | +0.038 |
-| gym-review | 1.000±0.000 | 0.990±0.010 | +0.010 |
-| gym-data | 0.987±0.013 | 0.987±0.013 | +0.000 |
-| gym-debug | 0.947±0.024 | 0.973±0.018 | −0.027 |
-| gym-config | 0.808±0.060 | 0.920±0.043 | **−0.112** |
-| gym-run | 0.778±0.085 | 0.927±0.042 | **−0.149** |
+A real scoreboard from v7 (n=5 per cell, 480 rollouts total, post-contamination-fix):
 
-The table does more for you than any scalar. Three clusters to read off:
+| skill | `skill \| refs=T` Δreward | `skill \| refs=F` Δreward | `refs \| skill=F` Δreward | note |
+|---|---|---|---|---|
+| **gym-run** | **+0.436** | **+0.480** | −0.013 | no references/ dir; the only skill whose numbers never had a contamination asterisk |
+| add-benchmark | +0.141 | +0.446 | +0.313 | skill+refs both carry signal; skill adds real value on top |
+| gym-config | +0.111 | +0.173 | +0.062 | skill does most of the work; refs add little |
+| gym-debug | +0.080 | +0.267 | +0.187 | skill strong standalone; refs substantial; skill+refs near ceiling |
+| gym-review | +0.029 | +0.298 | +0.602 | refs dominate; skill mostly redundant once refs present |
+| gym-data | +0.013 | +0.040 | +0.013 | ceiling-clipped every cell; can't measure |
+| gym-scaffold-agent | −0.040 | +0.213 | +0.333 | skill useful standalone; refs alone do more |
+| **gym-profile** | **−0.107** | **+0.278** | +0.342 | skill competes with its own references when both are present |
 
-- **Helpful skills**: `gym-scaffold-agent`, `add-benchmark`, `gym-profile` — real positive lift, delta larger than combined standard error.
-- **Ceiling-clipped**: `gym-review`, `gym-data` — `without_skill` is already ~0.99, so there's no room for the skill to help; we can't conclude anything from +0.010 / +0.000.
-- **Net-negative (actionable)**: `gym-config −0.112` and `gym-run −0.149` — the skill is making the model measurably *worse* on these scenarios. Chase these: read the failing rollouts' `tool_calls` and `grades[].evidence` and find out which guidance misleads the model.
+Bold = effect outside the ~±0.10 noise floor at n=5.
 
-### Read by column, not by row
+### How to read this table
 
-The delta column is a summary, not an explanation. Every row in this table is actually two independent measurements that share a prompt:
+**The "realistic deployment" column is `skill | refs=T`.** That's the question "does adding the skill overlay help a reader who already has the repo?" Everything else is a diagnostic breakdown of *why* the realistic effect is what it is:
 
-| column | moves when… | ignore when iterating on… |
+- **Big `skill | refs=F`, small `skill | refs=T`** (e.g. gym-review at +0.298 vs +0.029) → the skill is mostly a compressed restatement of its references. If the reader has docs, they don't need the skill. **Prescription:** either shrink the skill to only cover what docs don't, or promote references.
+- **Big positive on both `skill | refs=T` AND `skill | refs=F`** (gym-run, add-benchmark) → the skill adds real unique value regardless of whether references are present. **Keep.**
+- **Negative `skill | refs=T`, positive `skill | refs=F`** (gym-profile, gym-scaffold-agent) → the skill is useful in isolation but *competes* with its own references when both are loaded. The two are narrating the same content in conflicting ways. **Prescription:** rewrite SKILL.md to cross-reference the references rather than duplicate them.
+- **Everything ~0** (gym-data) → ceiling-clipped; either the JTBD is solvable without any scaffold, or the scenarios are too easy. Harder scenarios needed.
+
+### The tool-call axis is a second signal
+
+Every skill in v7 reduces tool calls on the realistic contrast — even skills with tiny or negative Δreward:
+
+| skill | Δtools (skill \| refs=T) | Δreward (skill \| refs=T) |
 |---|---|---|
-| `with_skill` | SKILL.md changes; rollout behavior changes (e.g. model stops thrashing on a missing tool) | only the scenario/assertion prose changed |
-| `without_skill` | fixtures change; sandbox / harness code changes; judge behavior drifts | only SKILL.md changed |
-| `delta` | any of the above | — |
+| gym-review | **−4.87** | +0.029 |
+| gym-debug | **−4.33** | +0.080 |
+| gym-data | **−3.27** | +0.013 |
+| gym-profile | **−2.87** | −0.107 |
+| gym-run | −1.87 | +0.436 |
+| gym-config | −1.60 | +0.111 |
+| add-benchmark | −1.27 | +0.141 |
+| gym-scaffold-agent | −0.73 | −0.040 |
 
-If you want to know whether a skill *edit* landed, read `with_skill`. If you want to know whether your *harness* is doing something to everyone uniformly, read `without_skill` across the whole column — correlated movement there is a stack side-effect, not a skill effect. We will return to this framing in Step 7 when we diff two runs.
+gym-review is the clearest example: no meaningful accuracy effect, but 4.87 fewer tool calls per rollout with the skill. At deployment scale (many rollouts × production latency + tool cost), that's material value the reward-only scoreboard erases. **Always read both axes. "Flat reward, fewer tools" is a real skill contribution.**
 
 ---
 
@@ -195,29 +223,30 @@ If you want to know whether a skill *edit* landed, read `with_skill`. If you wan
 
 ### Pitfall 1: Ceiling effects
 
-Three skills above scored 1.000/1.000. That is **not** "this skill has no effect" — it's "this scenario is solvable without the skill, so we can't measure." Do not shrug at +0.000; go write harder scenarios.
+Example from v7: `gym-data` scored 0.96–1.00 across every cell of the 2×2. That is **not** "this skill has no effect" — it's "this scenario is solvable without the skill, so we can't measure." Don't shrug at +0.000; go write harder scenarios.
 
-**Rule of thumb:** if `without_skill ≥ 0.95`, treat the delta as *inconclusive*. Add one adversarial scenario and rerun.
+**Rule of thumb:** if `docs-only` ≥ 0.95, treat both `skill | refs=T` and `skill | refs=F` as *inconclusive*. Add one adversarial scenario and rerun.
 
-### Pitfall 2: Low-n noise
+### Pitfall 2: Low-n noise and judge drift
 
-At n=1 per bucket, a single wrong grade moves the delta by `1/num_assertions` (often 0.15–0.25). That's bigger than most real deltas.
+At n=1 per bucket, a single wrong grade moves the delta by `1/num_assertions` (often 0.15–0.25). At n=5, judge non-determinism at temperature=0 on the NVIDIA inference API moves deltas by up to ~0.05 at the skill level and up to ~0.20 at the per-cell level even with bit-identical inputs.
 
-**Rule of thumb:** n=1 gives you rank ordering. n=3 gives you direction. n=5 gives you magnitude. Don't claim a skill "improved by 8%" at n≤3.
+**Rule of thumb:**
 
-We ran the same scoreboard at n=1 and n=5. Three things moved between them:
+- n=1 gives you rank ordering, not magnitudes.
+- n=5 gives you detectable effects ≥ ~0.10 per cell, ≥ ~0.05 skill-level.
+- Bump to n=10–20 on a cell if you need to resolve a smaller effect.
 
-| skill | n=1 delta | n=5 delta | change |
-|---|---|---|---|
-| add-benchmark | +0.237 | +0.069 | over-stated by 3× |
-| gym-scaffold-agent | +0.067 | +0.133 | doubled, now strongest |
-| gym-config | +0.000 | −0.112 | flipped sign — masked by noise |
+Don't claim a skill "helps by 8%" at n=5 on a single cell. Do claim it on consistent evidence across cells with effects outside the noise floor.
 
-The n=1 run got the *top-three* right as a group. It got the *order within* that group wrong, and it completely missed `gym-config` becoming a net-negative. This is the rank-vs-magnitude distinction in action.
+### Pitfall 3: Negative deltas on the realistic contrast are diagnostic, not proof of misleading content
 
-### Pitfall 3: Negative deltas are diagnostic
+A negative `skill | refs=T` doesn't mean the skill is bad in isolation. It means the skill competes poorly *with its own references on disk*. Check `skill | refs=F` before concluding anything:
 
-`gym-run −0.200` is not noise to average away. Either the skill's guidance is misleading, it conflicts with the model's priors, or the scenarios are badly designed. Chase it — read the `tool_calls` and `grades[].evidence` for the failing rollouts and find out which.
+- **Negative on both** → the skill is genuinely misleading. Read the failing `grades[].evidence`, find the specific noun being missed.
+- **Negative on `refs=T`, positive on `refs=F`** → the skill is a good standalone doc but redundant-with-conflicting-framing alongside its references. Rewrite SKILL.md to cross-reference the references rather than duplicate them.
+
+gym-profile in v7 is an example of the second pattern: `skill | refs=F` = +0.278, `skill | refs=T` = −0.107.
 
 ### Pitfall 4: Over-literal assertions
 
@@ -329,57 +358,36 @@ The `provenance diff` column in two-file mode tells you which inputs actually ch
 
 **Attribution rule:** a delta-of-delta is only attributable to what the provenance diff points at. `same-all` plus a big delta change is a noise or drift finding, not a "the skill got worse" finding. Don't report it as the latter.
 
-### A real v1 → v2 diff
+### Worked example: contamination fix, measured
 
-Between v1 and v2 we made three targeted edits: rewrote `gym-config/SKILL.md` (hash change expected), reworded two over-literal assertions in `gym-run/evals.json` (same SHA expected), and stripped the host's `.venv` from the workspace sandbox PATH (a stack-level change — affects every skill). Here is what the diff tool reported:
+The most instructive run we've produced is v6 → v7: the v7 harness fixed a contamination bug in which the control arm was seeing the skill's `references/` on disk (see the contamination sidebar in the methodology section). Nothing else changed — no skill edits, no assertion edits, no fixture edits. Just the gating flag.
 
-| skill | v1 delta | v2 delta | change | note |
-|---|---|---|---|---|
-| gym-config | −0.112 | +0.033 | **+0.146** | SHA changed |
-| gym-run | −0.149 | −0.084 | +0.064 | same-sha |
-| gym-debug | −0.027 | −0.013 | +0.013 | same-sha |
-| gym-review | +0.010 | +0.010 | +0.000 | same-sha |
-| gym-data | +0.000 | −0.013 | −0.013 | same-sha |
-| add-benchmark | +0.069 | +0.022 | −0.047 | same-sha |
-| gym-scaffold-agent | +0.133 | +0.053 | −0.080 | same-sha |
-| gym-profile | +0.038 | −0.053 | −0.091 | same-sha |
+The diff tool correctly flags the change as `harness`-attributable, and the movements fall into two camps:
 
-Three things to read off:
+| skill | v6 "Δreward" (contaminated) | v7 `skill \| refs=T` (clean) | interpretation |
+|---|---|---|---|
+| gym-run | +0.487 | +0.436 | holds — no references/ dir, so v6 was already clean |
+| gym-review | +0.152 | +0.029 | mostly reference value, not skill value |
+| gym-debug | +0.133 | +0.080 | shrinks but survives |
+| add-benchmark | +0.110 | +0.141 | holds |
+| gym-config | +0.089 | +0.111 | holds |
+| gym-scaffold-agent | +0.040 | −0.040 | was within noise either direction |
+| gym-data | −0.013 | +0.013 | ceiling-clipped both iterations |
+| gym-profile | −0.144 | −0.107 | still negative, but smaller and now decomposable |
 
-1. **The skill edit moved the skill.** `gym-config` flipped from net-negative to mildly positive (+0.146 delta-of-deltas), the SHA changed, and the sign flip is well above our n=5 noise floor (~±0.05–0.08). Assertion-level grade inspection on the partial-credit rollouts showed the "Before you answer" checklist pushing the model to read the referenced files before citing them — which is exactly what we wrote it to do.
-2. **The assertion rewrite captured half the gap.** `gym-run` moved +0.064 on the *same* SHA. The assertions changed; the skill body did not. So the +0.064 is assertion-phrasing debt we were paying in v1, not a behavior change. That leaves a real −0.084 residual to chase.
-3. **Stack changes contaminate "same-sha".** Look at the `without_skill` column in the raw tables: gym-config went 0.920 → 0.956, gym-run 0.927 → 0.956, add-benchmark 0.808 → 0.849. The sandbox PATH strip (see `_build_sandbox_env` in `resources_servers/skill_workspace/app.py`) ironically *helped* the baseline by removing distractions — the model can no longer "find" `ng_*` binaries in the sandbox and wander off investigating them. Same-sha deltas moved as a side effect.
+**Takeaways:**
 
-**Takeaway:** interpret diffs by column, not by row. The `with_skill` column moves with skill edits; the `without_skill` column moves with stack edits; the delta moves with both. If you want to isolate the effect of a skill edit, keep the stack frozen and vice versa.
+1. **gym-run's number survived.** Predictable in hindsight: it's the only skill with no `references/` directory, so its control arm was never contaminated. The pre-fix number measured the right thing by accident.
+2. **gym-review's apparent value was mostly its references' value.** The v6 read was "this skill adds +0.152 on top of baseline." The v7 read is "the skill adds +0.029 on top of a reader who already has the repo." Same skill, two very different product claims — and only one is defensible.
+3. **Attribution requires both the provenance diff AND a correct measurement design.** The provenance tool can tell you "harness changed"; it can't tell you whether that change fixed a measurement bug or created a new one. You still need to think about what the control arm represents.
 
-### A real v3 → v4 diff (and its honest failure mode)
+### Judge drift is a real noise source — document what n buys you
 
-Later we added the four additional provenance fields (`evals_sha`, `fixtures_sha`, `judge_prompt_sha`, `harness_version`) and reran with zero input changes as a noise calibration. The tool's response to asymmetric provenance is exactly what we hoped:
+Separately, we ran two "zero-edit" reruns (v4 and v5 — identical inputs, identical harness, just re-collected). The diff tool correctly reported `same-all` across every skill, but deltas still moved by up to 0.053 at the skill level and 0.20 at the per-cell level. That's judge non-determinism: Opus at temperature=0 on the NVIDIA inference API is not bitwise-deterministic, and at n=5 the stochasticity dominates subtle effects.
 
-```
-skill                    v3 delta  v4 delta   change  provenance diff
-add-benchmark             +0.108    +0.097   -0.011   evals?+fx?+judge?+harness?
-gym-config                -0.011    -0.022   -0.011   evals?+fx?+judge?+harness?
-gym-data                  +0.013    +0.013   -0.000   evals?+fx?+judge?+harness?
-gym-debug                 -0.027    +0.027   +0.053   evals?+fx?+judge?+harness?
-gym-profile               +0.011    +0.071   +0.060   evals?+fx?+judge?+harness?
-gym-review                +0.000    -0.010   -0.010   evals?+fx?+judge?+harness?
-gym-run                   -0.011    +0.020   +0.031   evals?+fx?+judge?+harness?
-gym-scaffold-agent        +0.080    -0.013   -0.093   evals?+fx?+judge?+harness?
-```
+**The practical implication:** at n=5, claims below ~±0.10 on a single cell are not distinguishable from noise. If you need smaller effects reliably, bump `num_repeats` — every doubling roughly halves the per-cell stderr. Budget accordingly.
 
-The `?` suffix says: "v3 didn't carry this hash, so I can't prove those fields matched — they *might* have changed between runs." This is the tool refusing to lie. We know from git that only the harness changed (python symlink), but the JSONL can't prove it, so the diff says so.
-
-This run produced one signal that is essential to record honestly: **the observed noise floor at n=5 is wider than we initially estimated, because the judge itself drifts.** At the scenario-cell level:
-
-- `gym-scaffold-agent sc3 without_skill`: v3 = 0.60, v4 = **0.80** (+0.20, same prompt, same assertions)
-- `gym-scaffold-agent sc1 without_skill`: v3 = 0.88, v4 = **1.00** (+0.12, same prompt, same assertions)
-
-These cells drive the skill's delta-of-delta change of −0.093 — but the skill body, assertions, fixtures, and judge prompt are bit-identical across the two runs. The only moving part is the judge's own temperature-0 stochasticity at the inference API. We verified this manually by pulling both runs' rollouts for sc3-without: the model's reviews were substantively similar critical reviews; the *judge* graded the "What's correct" sections more generously in v4.
-
-**The practical implication:** `same-all` rows with |change| < ~0.10 should be read as noise, not as real deltas. If you need to detect a smaller effect reliably, bump `num_repeats` — every doubling of n roughly halves the per-cell stderr. We've been claiming ±0.05–0.08 at n=5; the receipts say ~±0.10 on a bad cell.
-
-This finding also makes it clear what provenance *can't* hash: the model and judge endpoints' internal non-determinism. `same-all` is necessary for attribution but not sufficient — it's a cache-hit check, not a p-value.
+Provenance is a necessary prerequisite for attribution, but it isn't sufficient. `same-all` is a cache-hit check, not a p-value.
 
 ### The iteration loop
 
@@ -401,10 +409,14 @@ The "one input at a time" rule is load-bearing. We once edited both a SKILL.md a
 
 ## What's next
 
-Two common follow-on investments:
+Follow-on investments that are already paying off or that the receipts point at:
 
-- **Harder scenarios for ceiling-saturated skills** — until `without_skill` drops below ~0.90, you can't measure improvement.
-- **Assertion audit** — sweep existing assertions for over-literal phrasing that punishes the model for paraphrasing. The `gym-run` assertion rewrite above was worth +0.064 on its own.
+- **Harder scenarios for ceiling-clipped skills** — until `docs-only` drops below ~0.90, you can't measure improvement. `gym-data`, `gym-review`, and some cells of `gym-debug` are currently stuck here.
+- **Rewrite SKILL.md for skills where `skill | refs=T` < `refs | skill=F`** — those skills are competing with their own references. The fix is to narrate *to* the references, not duplicate them (see the Diátaxis-flavored reading in `skill-eval-findings.md`).
+- **Calibration run at n=20 on one cell** — to pin down the real detectable effect size and answer the power-analysis question honestly.
+- **Doc-defect classifier** — `scripts/diagnose_doc_defects.py` (planned) will automate the per-assertion triage: content-present-but-not-recalled (isolated info), content-missing (info gap), actively-misleading, etc.
+
+For the actual per-skill findings from v7 and the retraction log for earlier claims, see [`skill-eval-findings.md`](skill-eval-findings.md). For a sharable infra/gotchas artifact, see [`skill-eval-infra-v1.md`](skill-eval-infra-v1.md).
 
 :::{button-ref} skill-eval-harness
 :color: secondary

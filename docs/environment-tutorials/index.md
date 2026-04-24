@@ -71,7 +71,7 @@ Configure a second model to score rollouts from `verify()` when ground truth is 
 :::{grid-item-card} {octicon}`beaker;1.5em;sd-mr-1` Evaluating Agent Skills — Part 1: Build the Harness
 :link: skill-eval-harness
 :link-type: doc
-Scaffold the three-server Gym harness (workspace + judge + orchestrator) that grades agent skills via a with-vs-without rollout.
+Scaffold the three-server Gym harness (workspace + judge + orchestrator) that grades agent skills via a 4-cell 2×2 over (skill-in-prompt × references-on-disk).
 +++
 {bdg-primary}`advanced`
 :::
@@ -79,7 +79,7 @@ Scaffold the three-server Gym harness (workspace + judge + orchestrator) that gr
 :::{grid-item-card} {octicon}`graph;1.5em;sd-mr-1` Evaluating Agent Skills — Part 2: Running the Scoreboard
 :link: skill-eval-scoreboard
 :link-type: doc
-Write `evals.json`, generate input JSONL, run the scoreboard, and interpret with-vs-without deltas — including ceiling effects and judge calibration.
+Write `evals.json`, generate input JSONL, run the 4-cell scoreboard, and interpret multi-axis deltas (accuracy, tool calls, output tokens) — including ceiling effects and judge calibration.
 +++
 {bdg-primary}`advanced`
 :::
