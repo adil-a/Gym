@@ -107,6 +107,8 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         missing_end_think_count = 0
 
         time_taken = time()
+        time_taken_model_call = 0
+        time_taken_tool_call = 0
         while True:
             step += 1
 
@@ -117,6 +119,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
             if not body.metadata:
                 new_body = new_body.model_dump(exclude={"metadata"}, exclude_none=True)
 
+            time_taken_model_call -= time()
             for _ in range(self.config.max_run_retries):
                 model_response = await self.server_client.post(
                     server_name=self.config.model_server.name,
@@ -146,6 +149,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
 
                 missing_end_think_count += 1
                 print(f"A model call is missing the end think ({missing_end_think_count} for this sample)")
+            time_taken_model_call += time()
 
             output = model_response.output
             new_outputs.extend(output)
@@ -175,6 +179,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 break
 
             # --- Execute tool calls ---
+            time_taken_tool_call -= time()
             for output_function_call in all_fn_calls:
                 num_tool_calls += 1
                 api_response = await self.server_client.post(
@@ -197,6 +202,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     output=tool_output,
                 )
                 new_outputs.append(tool_response)
+            time_taken_tool_call += time()
 
             # --- Nudge the model at milestone steps ---
             if self.config.nudge_steps and all_fn_calls:
@@ -266,7 +272,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
 
             if step % 3 == 0:
                 print(
-                    f"Step {step} | Time: {time() - time_taken:.2f}s | Missing end thinks count: {missing_end_think_count}"
+                    f"Step {step} | Time: {time() - time_taken:.2f}s (model calls {time_taken_model_call:.2f}s, tool calls {time_taken_tool_call:.2f}s) | Missing end thinks count: {missing_end_think_count}"
                 )
 
         # record final context
