@@ -61,7 +61,7 @@ from nemo_gym.openai_utils import (
     NeMoGymSummary,
     TokenIDLogProbMixin,
 )
-from nemo_gym.server_utils import SESSION_ID_KEY, is_nemo_gym_fastapi_worker
+from nemo_gym.server_utils import SESSION_ID_KEY, is_nemo_gym_fastapi_entrypoint
 
 
 class VLLMModelConfig(BaseResponsesAPIModelConfig):
@@ -71,6 +71,7 @@ class VLLMModelConfig(BaseResponsesAPIModelConfig):
     return_token_id_information: bool
 
     uses_reasoning_parser: bool
+    uses_interleaved_reasoning: bool = True
     replace_developer_role_with_system: bool = False
 
     # Whether or not the model can generate a reasoning output, and called again to produce additional reasoning output.
@@ -148,6 +149,12 @@ class VLLMModel(SimpleResponsesAPIModel):
                 + chat_completion_response.usage.completion_tokens,
             )
 
+        incomplete_details = None
+        if choice.finish_reason == "length":
+            incomplete_details = {"reason": "max_output_tokens"}
+        elif choice.finish_reason == "content_filter":
+            incomplete_details = {"reason": "content_filter"}
+
         # Chat Completion -> Response
         return NeMoGymResponse(
             id=f"resp_{uuid4().hex}",
@@ -173,7 +180,7 @@ class VLLMModel(SimpleResponsesAPIModel):
             metadata=body.metadata,
             instructions=body.instructions,
             user=body.user,
-            incomplete_details={"reason": "max_output_tokens"} if choice.finish_reason == "length" else None,
+            incomplete_details=incomplete_details,
             usage=usage,
         )
 
@@ -269,7 +276,7 @@ class VLLMModel(SimpleResponsesAPIModel):
                 if isinstance(content, str):
                     reasoning_matches, remaining_content = self._converter._extract_reasoning_from_content(content)
                     message_dict["content"] = remaining_content
-                    if reasoning_matches:
+                    if reasoning_matches and self.config.uses_interleaved_reasoning:
                         message_dict["reasoning_content"] = reasoning_matches[0]
 
                         # TODO when NeMo RL migrates to vLLM>=0.16.0, remove the reasoning_content support above.
@@ -287,7 +294,7 @@ class VLLMModel(SimpleResponsesAPIModel):
 
                         # Even though we set the reasoning content already here, we still loop through all the content item dicts for the assert above.
                         content_item_dict["text"] = remaining_content
-                        if reasoning_matches:
+                        if reasoning_matches and self.config.uses_interleaved_reasoning:
                             message_dict["reasoning_content"] = reasoning_matches[0]
                             # See the TODO wrt reasoning_content above
                             message_dict["reasoning"] = reasoning_matches[0]
@@ -313,7 +320,9 @@ class VLLMModel(SimpleResponsesAPIModel):
         if not self.config.sequential_reasoning_allowed:
             last_message = body_dict["messages"][-1]
             if last_message["role"] == "assistant" and not (last_message["content"] or last_message.get("tool_calls")):
-                return self._create_empty_chat_completion()
+                res = self._create_empty_chat_completion()
+                res.choices[0].finish_reason = "content_filter"
+                return res
 
         try:
             chat_completion_dict = await client.create_chat_completion(**body_dict)
@@ -335,23 +344,9 @@ class VLLMModel(SimpleResponsesAPIModel):
                 "context length" in result_content_str or "max_tokens" in result_content_str
             )
             if is_out_of_context_length:
-                return NeMoGymChatCompletion(
-                    id="chtcmpl-123",
-                    object="chat.completion",
-                    created=int(time()),
-                    model=self.config.model,
-                    choices=[
-                        NeMoGymChoice(
-                            index=0,
-                            finish_reason="stop",
-                            message=NeMoGymChatCompletionMessage(
-                                role="assistant",
-                                content=None,
-                                tool_calls=None,
-                            ),
-                        )
-                    ],
-                )
+                res = self._create_empty_chat_completion()
+                res.choices[0].finish_reason = "length"
+                return res
             else:
                 raise e
 
@@ -376,7 +371,7 @@ class VLLMModel(SimpleResponsesAPIModel):
                 f"NeMo Gym server `{self.config.name}` config has explicitly been set to not use a reasoning parser i.e. `uses_reasoning_parser: false`. Please do not use a reasoning parser in your vLLM endpoint, or fix the `{self.config.name}` server config!"
             )
 
-        if self.config.return_token_id_information:
+        if self.config.return_token_id_information and "prompt_token_ids" not in choice_dict["message"]:
             log_probs = choice_dict["logprobs"]["content"]
             generation_log_probs = [log_prob["logprob"] for log_prob in log_probs]
 
@@ -423,6 +418,25 @@ class VLLMModel(SimpleResponsesAPIModel):
             # choice_dict.pop("token_ids")
 
         return NeMoGymChatCompletion.model_validate(chat_completion_dict)
+
+    def _create_empty_chat_completion(self) -> NeMoGymChatCompletion:
+        return NeMoGymChatCompletion(
+            id="chtcmpl-123",
+            object="chat.completion",
+            created=int(time()),
+            model=self.config.model,
+            choices=[
+                NeMoGymChoice(
+                    index=0,
+                    finish_reason="stop",
+                    message=NeMoGymChatCompletionMessage(
+                        role="assistant",
+                        content=None,
+                        tool_calls=None,
+                    ),
+                )
+            ],
+        )
 
     def _resolve_client(self, request: Request) -> NeMoGymAsyncOpenAI:
         session_id = request.session[SESSION_ID_KEY]
@@ -784,6 +798,9 @@ class VLLMConverter(BaseModel):
         for message in messages:
             role = message["role"]
             if role in ("user", "system", "developer"):
+                # vLLM may return None content
+                if message["content"] is None:
+                    message["content"] = ""
                 output_items.append(NeMoGymEasyInputMessage.model_validate(message))
             elif role == "assistant":
                 output_items.extend(self.postprocess_assistant_message_dict(message))
@@ -808,10 +825,15 @@ def split_responses_input_output_items(
         return [], []
 
     for i, item in enumerate(items):
-        if getattr(item, "role", None) == "assistant" or getattr(item, "type", None) in {
-            "reasoning",
-            "reasoning_item",
-        }:
+        if (
+            getattr(item, "role", None) == "assistant"
+            or getattr(item, "type", None)
+            in {
+                "reasoning",
+                "reasoning_item",
+            }
+            or getattr(item, "type", None) in ("function_call",)
+        ):
             break
 
     return items[:i], items[i:]
@@ -819,5 +841,5 @@ def split_responses_input_output_items(
 
 if __name__ == "__main__":
     VLLMModel.run_webserver()
-elif is_nemo_gym_fastapi_worker():
+elif is_nemo_gym_fastapi_entrypoint(__file__):
     app = VLLMModel.run_webserver()  # noqa: F401
