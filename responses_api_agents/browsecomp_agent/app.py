@@ -25,8 +25,6 @@ from typing import List, Optional
 from fastapi import Request, Response
 from pydantic import ConfigDict, ValidationError
 
-from nemo_gym.global_config import NEMO_GYM_LOG_DIR_KEY_NAME, get_global_config_dict
-
 from nemo_gym.base_resources_server import (
     AggregateMetrics,
     AggregateMetricsRequest,
@@ -40,7 +38,13 @@ from nemo_gym.base_responses_api_agent import (
     SimpleResponsesAPIAgent,
 )
 from nemo_gym.config_types import ModelServerRef, ResourcesServerRef
+from nemo_gym.global_config import (
+    NEMO_GYM_LOG_DIR_KEY_NAME,
+    get_first_server_config_dict,
+    get_global_config_dict,
+)
 from nemo_gym.openai_utils import (
+    NeMoGymAsyncOpenAI,
     NeMoGymEasyInputMessage,
     NeMoGymFunctionCallOutput,
     NeMoGymResponse,
@@ -51,6 +55,7 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseUsage,
 )
 from nemo_gym.server_utils import get_response_json, raise_for_status
+from responses_api_models.vllm_model.app import VLLMConverter
 
 
 class BrowsecompAgentConfig(BaseResponsesAPIAgentConfig):
@@ -72,6 +77,11 @@ class BrowsecompAgentConfig(BaseResponsesAPIAgentConfig):
     # deleted. Lets a slurm restart resume from the last completed step instead
     # of redoing the whole sample.
     resume_from_trajectory: bool = False
+    # vLLM-specific optimization: before each model call, hit the model server's
+    # /tokenize endpoint to get the prompt's token count. If it exceeds the reset
+    # threshold, skip the model call entirely and reset context — saving the cost
+    # of generating an output that would just be discarded.
+    save_model_call_using_vllm_tokenize_endpoint: bool = False
 
 
 class BrowsecompAgentRunRequest(BaseRunRequest):
@@ -88,6 +98,27 @@ class BrowsecompAgentVerifyResponse(BaseVerifyResponse):
 
 class BrowsecompAgent(SimpleResponsesAPIAgent):
     config: BrowsecompAgentConfig
+
+    _policy_model_openai_client: Optional[NeMoGymAsyncOpenAI] = None
+
+    def setup_webserver(self):
+        res = super().setup_webserver()
+
+        if self.config.save_model_call_using_vllm_tokenize_endpoint:
+            global_config = get_global_config_dict()
+            policy_model_config_dict = get_first_server_config_dict(global_config, self.config.model_server.name)
+
+            # The logic below is fixed to only vllm_model! Other models like openai_model and local_vllm_model don't work.
+
+            # Just call the first base_url endpoint with the tokenize request.
+            base_urls = policy_model_config_dict["base_url"]
+            base_url = base_urls if isinstance(base_urls, str) else base_urls[0]
+
+            self._policy_model_openai_client = NeMoGymAsyncOpenAI(
+                base_url=base_url, api_key=policy_model_config_dict["api_key"]
+            )
+
+        return res
 
     async def responses(
         self,
@@ -240,14 +271,62 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 if self.config.keep_rounds is not None and new_outputs:
                     new_outputs = self._compact_old_tool_messages(new_outputs)
 
-                # Capture the input list separately so we can log it even after model_dump() turns new_body into a dict.
-                _input_for_logging = body.input + new_outputs
-                new_body = body.model_copy(update={"input": _input_for_logging})
-                if not body.metadata:
-                    new_body = new_body.model_dump(exclude={"metadata"}, exclude_none=True)
+                new_body = body.model_copy(update={"input": body.input + new_outputs})
+
+                # --- Optional pre-call tokenize check (vLLM-specific): avoid wasted model call ---
+                # If enabled, hit the model server's /tokenize endpoint to count prompt tokens
+                # before generation. If over threshold, reset context immediately and skip the
+                # model call. This violates Gym's abstractions (only works on vLLM-style models
+                # exposing /tokenize) but saves the cost of generating an output we'd discard.
+                if self.config.save_model_call_using_vllm_tokenize_endpoint:
+                    converter = VLLMConverter(return_token_id_information=False)
+                    chat_completion_create_params = converter.responses_to_chat_completion_create_params(new_body)
+                    chat_completion_create_params = chat_completion_create_params.model_dump()
+
+                    # Same projection as vllm_model/app.py:384.
+                    tokenize_body_dict = {}
+                    for key in ("model", "messages", "tools", "chat_template_kwargs"):
+                        if key in chat_completion_create_params:
+                            tokenize_body_dict[key] = chat_completion_create_params[key]
+
+                    tokenize_response = await self._policy_model_openai_client.create_tokenize(**tokenize_body_dict)
+                    pre_prompt_tokens = len(tokenize_response["tokens"])
+                    if (
+                        reset_threshold
+                        and pre_prompt_tokens > reset_threshold
+                        and (max_reset_count is None or reset_count < max_reset_count)
+                    ):
+                        reset_count += 1
+                        log_event(
+                            "context_reset",
+                            source="tokenize",
+                            reset_count=reset_count,
+                            prompt_tokens=pre_prompt_tokens,
+                        )
+                        print(
+                            f"Step {step} hit {reset_count} reset(s) inside the tokenize flow at "
+                            f"prompt_tokens={pre_prompt_tokens}",
+                            flush=True,
+                        )
+                        if self.config.snap_dir:
+                            self._save_snapshot(
+                                messages=body.input + new_outputs,
+                                task_index=task_index,
+                                attempt=attempt,
+                                reset_count=reset_count,
+                                is_final=False,
+                            )
+                        if self.config.context_reset_keep_rounds > 0:
+                            new_outputs = self._extract_last_rounds(new_outputs)
+                        else:
+                            new_outputs = []
+                        context_reset_steps.append(step)
+                        save_ckpt()
+                        continue
 
                 # --- Model call (with per-call retry on empty <think>-only output) ---
                 model_call_start = time.monotonic()
+                returned_valid_response = False
                 for retry_idx in range(self.config.max_run_retries):
                     log_event("model_call_begin", retry=retry_idx)
                     model_response = await self.server_client.post(
@@ -274,6 +353,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                         not model_response.incomplete_details
                         or model_response.incomplete_details.reason == "content_filter"
                     ) and (cleaned_output_text or any(o for o in model_response.output if o.type == "function_call")):
+                        returned_valid_response = True
                         break
 
                     missing_end_think_count += 1
@@ -289,6 +369,16 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     )
                 model_call_dur = time.monotonic() - model_call_start
 
+                # If we retried all the way through and still didn't get a valid response, exit.
+                if not returned_valid_response:
+                    log_event("model_response_invalid_break", retries=self.config.max_run_retries)
+                    print(
+                        f"Exited the agent loop due to no valid model response after "
+                        f"{self.config.max_run_retries} retries (step={step})",
+                        flush=True,
+                    )
+                    break
+
                 prompt_tokens = model_response.usage.input_tokens if model_response.usage else 0
                 output_tokens = model_response.usage.output_tokens if model_response.usage else None
                 incomplete = (
@@ -302,11 +392,45 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     incomplete=incomplete,
                     output=[o.model_dump(exclude_none=True) for o in model_response.output],
                     input=(
-                        [m.model_dump(exclude_none=True) if hasattr(m, "model_dump") else m for m in _input_for_logging]
+                        [m.model_dump(exclude_none=True) if hasattr(m, "model_dump") else m for m in new_body.input]
                         if incomplete
                         else None
                     ),
                 )
+
+                # --- Post-call context-reset check (fallback when tokenize pre-flight wasn't enabled) ---
+                if (
+                    reset_threshold
+                    and prompt_tokens > reset_threshold
+                    and (max_reset_count is None or reset_count < max_reset_count)
+                ):
+                    reset_count += 1
+                    log_event(
+                        "context_reset",
+                        source="model_call",
+                        reset_count=reset_count,
+                        prompt_tokens=prompt_tokens,
+                    )
+                    print(
+                        f"Step {step} hit {reset_count} reset(s) inside the model call flow at "
+                        f"prompt_tokens={prompt_tokens}",
+                        flush=True,
+                    )
+                    if self.config.snap_dir:
+                        self._save_snapshot(
+                            messages=body.input + new_outputs,
+                            task_index=task_index,
+                            attempt=attempt,
+                            reset_count=reset_count,
+                            is_final=False,
+                        )
+                    if self.config.context_reset_keep_rounds > 0:
+                        new_outputs = self._extract_last_rounds(new_outputs)
+                    else:
+                        new_outputs = []
+                    context_reset_steps.append(step)
+                    save_ckpt()
+                    continue
 
                 output = model_response.output
                 new_outputs.extend(output)
@@ -448,35 +572,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 if self.config.max_steps and step >= self.config.max_steps:
                     break
 
-                # --- Check context reset threshold (at end of loop, AFTER tool calls) ---
-                total_tokens = (
-                    (model_response.usage.input_tokens + model_response.usage.output_tokens)
-                    if model_response.usage
-                    else 0
-                )
-                if (
-                    reset_threshold
-                    and total_tokens > reset_threshold
-                    and (max_reset_count is None or reset_count < max_reset_count)
-                ):
-                    reset_count += 1
-                    # record current context
-                    if self.config.snap_dir:
-                        self._save_snapshot(
-                            messages=body.input + new_outputs,
-                            task_index=task_index,
-                            attempt=attempt,
-                            reset_count=reset_count,
-                            is_final=False,
-                        )
-                    # reset context
-                    if self.config.context_reset_keep_rounds > 0:
-                        new_outputs = self._extract_last_rounds(new_outputs)
-                    else:
-                        new_outputs = []
-                    context_reset_steps.append(step)
-
-                # End of iteration — checkpoint reflects the post-step (post-reset if any) state.
+                # End of iteration — checkpoint reflects the post-step state.
                 save_ckpt()
 
             print_log("final")
@@ -498,8 +594,11 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     is_final=True,
                 )
         except Exception as e:
-            err_input_source = locals().get("_input_for_logging")
-            err_input = err_input_source if err_input_source is not None else body.input
+            err_input_source = locals().get("new_body")
+            if err_input_source is not None and hasattr(err_input_source, "input"):
+                err_input = err_input_source.input
+            else:
+                err_input = body.input
             log_event(
                 "error",
                 error_type=type(e).__name__,
