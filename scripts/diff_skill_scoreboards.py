@@ -188,20 +188,14 @@ def print_scoreboard_2x2(board: dict[str, SkillStats], label: str) -> None:
                 print(f"  {c:12s}  {_fmt_cell(cs)}  {cs.n}")
         print(f"  {'effect':14s}  {'Δreward':>8s}  {'Δtools':>7s}  {'Δtokens':>8s}")
         for effect_name, (dr, dt, dk) in _effects_2x2(stats).items():
-            print(
-                f"  {effect_name:14s}  {_fmt_signed(dr, 8, 3)}  "
-                f"{_fmt_signed(dt, 7, 2)}  {_fmt_signed(dk, 8, 0)}"
-            )
+            print(f"  {effect_name:14s}  {_fmt_signed(dr, 8, 3)}  {_fmt_signed(dt, 7, 2)}  {_fmt_signed(dk, 8, 0)}")
     _print_prov_footer(board)
 
 
 def print_scoreboard_legacy(board: dict[str, SkillStats], label: str) -> None:
     """Pre-Phase-1 two-arm rendering. Kept for historical JSONLs."""
     print(f"\n=== {label} (legacy 2-arm mode) ===")
-    print(
-        f"{'skill':24s}  {'with':>8s}  {'without':>8s}  {'Δreward':>8s}  "
-        f"{'Δtools':>7s}  {'Δtokens':>8s}  {'n':>4s}"
-    )
+    print(f"{'skill':24s}  {'with':>8s}  {'without':>8s}  {'Δreward':>8s}  {'Δtools':>7s}  {'Δtokens':>8s}  {'n':>4s}")
     print("-" * 82)
     for name in sorted(board):
         stats = board[name]
@@ -220,7 +214,7 @@ def print_scoreboard_legacy(board: dict[str, SkillStats], label: str) -> None:
 
 
 def _print_prov_footer(board: dict[str, SkillStats]) -> None:
-    print(f"\n  provenance per skill:")
+    print("\n  provenance per skill:")
     for name in sorted(board):
         p = board[name].prov
         tags = [f"{_PROV_ABBREV[f]}={p.get(f) or '—'}" for f in _PROV_FIELDS]
@@ -271,10 +265,7 @@ def print_diff(v1: dict[str, SkillStats], v2: dict[str, SkillStats]) -> None:
             dr = c2.mean_reward - c1.mean_reward
             dt = c2.mean_tools - c1.mean_tools
             dk = c2.mean_tokens - c1.mean_tokens
-            print(
-                f"  {c:12s}  {_fmt_signed(dr, 9, 3)}  "
-                f"{_fmt_signed(dt, 8, 2)}  {_fmt_signed(dk, 9, 0)}"
-            )
+            print(f"  {c:12s}  {_fmt_signed(dr, 9, 3)}  {_fmt_signed(dt, 8, 2)}  {_fmt_signed(dk, 9, 0)}")
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:

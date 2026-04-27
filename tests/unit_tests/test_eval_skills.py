@@ -416,7 +416,6 @@ class TestEvaluateScenario:
         assert report.delta == 1.0
         assert len(report.with_grades) == 2
 
-
     @pytest.mark.asyncio
     async def test_n_rollouts_averages_scores_and_reports_stddev(self, tmp_path: Path) -> None:
         ws = _make_workspace(tmp_path)

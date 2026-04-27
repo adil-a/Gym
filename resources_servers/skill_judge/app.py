@@ -31,7 +31,6 @@ from nemo_gym.openai_utils import (
     NeMoGymResponse,
 )
 from nemo_gym.server_utils import get_response_json
-
 from resources_servers.skill_judge.schemas import (
     EVIDENCE_MAX_CHARS,
     AssertionGrade,

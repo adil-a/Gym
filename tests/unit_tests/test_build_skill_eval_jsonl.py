@@ -15,7 +15,7 @@
 import json
 from pathlib import Path
 
-from scripts.build_skill_eval_jsonl import build_jsonl
+from scripts.build_skill_eval_jsonl import build_jsonl, main
 
 
 def _write_skill(
@@ -66,8 +66,7 @@ class TestProvenance:
         assert cells == ["blind", "docs-only", "skill+docs", "skill-only"]
 
         flag_pairs = sorted(
-            (r["verifier_metadata"]["with_skill"], r["verifier_metadata"]["with_references"])
-            for r in records
+            (r["verifier_metadata"]["with_skill"], r["verifier_metadata"]["with_references"]) for r in records
         )
         assert flag_pairs == [(False, False), (False, True), (True, False), (True, True)]
 
@@ -187,3 +186,79 @@ class TestProvenance:
         build_jsonl(skills_dir=skills, output=tmp_path / "a.jsonl")
         build_jsonl(skills_dir=skills, output=tmp_path / "b.jsonl")
         assert (tmp_path / "a.jsonl").read_text() == (tmp_path / "b.jsonl").read_text()
+
+    def test_skip_scenarios_missing_required_fields(self, tmp_path: Path) -> None:
+        """Scenarios without assertions, prompt, or id are silently skipped —
+        ensure build_jsonl just emits fewer records rather than crashing."""
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        _write_skill(skills)
+        # Append a malformed scenario
+        ev = skills / "demo" / "evals" / "evals.json"
+        data = json.loads(ev.read_text())
+        data["evals"].append({"id": 99, "prompt": "", "assertions": []})
+        ev.write_text(json.dumps(data))
+
+        build_jsonl(skills_dir=skills, output=tmp_path / "out.jsonl")
+        records = _load_records(tmp_path / "out.jsonl")
+        # Still 4 cells × 1 valid scenario = 4 records; malformed scenario skipped.
+        assert len(records) == 4
+
+    def test_skips_dirs_without_evals_json(self, tmp_path: Path) -> None:
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        (skills / "not-a-skill").mkdir()  # no evals/ at all
+        _write_skill(skills)
+        build_jsonl(skills_dir=skills, output=tmp_path / "out.jsonl")
+        records = _load_records(tmp_path / "out.jsonl")
+        # Only the demo skill contributes — the bare directory is ignored.
+        assert {r["verifier_metadata"]["skill_name"] for r in records} == {"demo"}
+
+
+class TestCLI:
+    def test_main_writes_output_and_returns_zero(self, tmp_path: Path, capsys) -> None:
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        _write_skill(skills)
+        out = tmp_path / "cli_out.jsonl"
+        rc = main(["--skills-dir", str(skills), "--output", str(out)])
+        assert rc == 0
+        assert out.is_file()
+        captured = capsys.readouterr()
+        assert "wrote" in captured.out and str(out) in captured.out
+
+    def test_main_cells_flag_parses_comma_list(self, tmp_path: Path) -> None:
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        _write_skill(skills)
+        out = tmp_path / "cli_out.jsonl"
+        rc = main(["--skills-dir", str(skills), "--output", str(out), "--cells", "blind,skill+docs"])
+        assert rc == 0
+        records = _load_records(out)
+        assert {r["verifier_metadata"]["cell"] for r in records} == {"blind", "skill+docs"}
+
+    def test_main_custom_judge_prompt_and_harness_paths(self, tmp_path: Path) -> None:
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        _write_skill(skills)
+        prompt = tmp_path / "judge.txt"
+        prompt.write_text("judge prompt body")
+        harness = tmp_path / "harness.py"
+        harness.write_text("# pretend this is harness source\n")
+        out = tmp_path / "cli_out.jsonl"
+        rc = main(
+            [
+                "--skills-dir",
+                str(skills),
+                "--output",
+                str(out),
+                "--judge-prompt",
+                str(prompt),
+                "--harness-path",
+                str(harness),
+            ]
+        )
+        assert rc == 0
+        md = _load_records(out)[0]["verifier_metadata"]
+        assert md["judge_prompt_sha"]  # populated from the file we passed
+        assert md["harness_version"]  # populated from the file we passed

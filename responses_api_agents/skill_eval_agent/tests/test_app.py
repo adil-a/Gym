@@ -122,7 +122,9 @@ class FakeServerClient:
     def queue(self, server_name: str, url_path: str, *resps: FakeResponse) -> None:
         self.responses.setdefault((server_name, url_path), []).extend(resps)
 
-    async def post(self, *, server_name: str, url_path: str, json: Any = None, cookies: Any = None, **_) -> FakeResponse:
+    async def post(
+        self, *, server_name: str, url_path: str, json: Any = None, cookies: Any = None, **_
+    ) -> FakeResponse:
         self.calls.append(Call(server_name=server_name, url_path=url_path, json=json, cookies=cookies))
         queue = self.responses.get((server_name, url_path))
         if not queue:

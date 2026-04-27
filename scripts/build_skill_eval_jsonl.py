@@ -50,6 +50,7 @@ import json
 import sys
 from pathlib import Path
 
+
 _DEFAULT_JUDGE_PROMPT = Path("resources_servers/skill_judge/prompt_templates/skill_judge.txt")
 _DEFAULT_HARNESS_PATHS = (
     Path("resources_servers/skill_workspace/app.py"),
@@ -208,10 +209,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--cells",
         type=str,
         default=None,
-        help=(
-            "Comma-separated subset of 2×2 cells to emit. "
-            f"Valid: {','.join(_CELLS.keys())}. Default: all four."
-        ),
+        help=(f"Comma-separated subset of 2×2 cells to emit. Valid: {','.join(_CELLS.keys())}. Default: all four."),
     )
     return p.parse_args(argv)
 

@@ -202,9 +202,7 @@ def load_skill(skill_path: Path) -> Optional[EvalSkill]:
     ]
     skill_md_path = skill_path / "SKILL.md"
     skill_md_sha = (
-        hashlib.sha256(skill_md_path.read_text().encode("utf-8")).hexdigest()[:12]
-        if skill_md_path.is_file()
-        else ""
+        hashlib.sha256(skill_md_path.read_text().encode("utf-8")).hexdigest()[:12] if skill_md_path.is_file() else ""
     )
     return EvalSkill(
         skill_name=str(data.get("skill_name", skill_path.name)),

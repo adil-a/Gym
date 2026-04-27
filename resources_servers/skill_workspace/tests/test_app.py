@@ -117,9 +117,7 @@ class TestSeedSession:
         server = _make_server(tmp_path)
         skill = _make_skill(tmp_path)
         resp = await server.seed_session(
-            SkillWorkspaceSeedSessionRequest(
-                skill_path=str(skill), scenario_id=1, files=[], with_references=False
-            )
+            SkillWorkspaceSeedSessionRequest(skill_path=str(skill), scenario_id=1, files=[], with_references=False)
         )
         ws = server.env_id_to_workspace[resp.env_id]
         assert not (ws / "references").exists()
@@ -131,9 +129,7 @@ class TestSeedSession:
         server = _make_server(tmp_path)
         skill = _make_skill(tmp_path)
         resp = await server.seed_session(
-            SkillWorkspaceSeedSessionRequest(
-                skill_path=str(skill), scenario_id=1, files=[], with_scripts=False
-            )
+            SkillWorkspaceSeedSessionRequest(skill_path=str(skill), scenario_id=1, files=[], with_scripts=False)
         )
         ws = server.env_id_to_workspace[resp.env_id]
         assert not (ws / "scripts").exists()
