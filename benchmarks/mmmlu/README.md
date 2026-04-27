@@ -10,15 +10,18 @@ resource server.
 - Evaluation: multiple choice with multilingual answer extraction regexes
 - Prompt: shared passthrough prompt, matching Skills' `generic/default`
 
-## Prepare
+## Example usage
 
 ```bash
+# Prepare benchmark data
 ng_prepare_benchmark "+config_paths=[benchmarks/mmmlu/config.yaml]"
-```
 
-## Rollouts
+# Running servers
+config_paths="responses_api_models/vllm_model/configs/vllm_model.yaml,\
+benchmarks/mmmlu/config.yaml"
+ng_run "+config_paths=[$config_paths]"
 
-```bash
+# Collecting rollouts
 ng_collect_rollouts \
     +agent_name=mmmlu_mcqa_simple_agent \
     +input_jsonl_fpath=benchmarks/mmmlu/data/mmmlu_benchmark.jsonl \

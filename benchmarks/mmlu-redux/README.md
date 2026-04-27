@@ -11,15 +11,18 @@ Migrates NeMo Skills' `mmlu-redux` benchmark to Gym on top of the shared
 - Prompt: mirrors Skills' `generic/general-boxed`
 - `wrong_groundtruth` rows use the dataset's corrected answer label
 
-## Prepare
+## Example usage
 
 ```bash
+# Prepare benchmark data
 ng_prepare_benchmark "+config_paths=[benchmarks/mmlu-redux/config.yaml]"
-```
 
-## Rollouts
+# Running servers
+config_paths="responses_api_models/vllm_model/configs/vllm_model.yaml,\
+benchmarks/mmlu-redux/config.yaml"
+ng_run "+config_paths=[$config_paths]"
 
-```bash
+# Collecting rollouts
 ng_collect_rollouts \
     +agent_name=mmlu-redux_mcqa_simple_agent \
     +input_jsonl_fpath=benchmarks/mmlu-redux/data/mmlu-redux_benchmark.jsonl \
