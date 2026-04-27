@@ -221,6 +221,9 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
 
             # If we retried all the way through and still didn't get a valid model call, break and return the response as is.
             if not returned_valid_response:
+                print(
+                    f"Exited the agent loop due to no valid model response after {self.config.max_run_retries} retries ({step=})"
+                )
                 break
 
             # --- Check context reset threshold ---
