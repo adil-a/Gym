@@ -19,7 +19,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import Request, Response
 from pydantic import ConfigDict, ValidationError
@@ -59,7 +59,9 @@ class BrowsecompAgentConfig(BaseResponsesAPIAgentConfig):
     max_context_tokens: int = 196608
     context_reset_pct: float = 0.3
     context_reset_keep_rounds: int = 3
+    max_reset_count: Optional[int] = None
     max_run_retries: int = 1
+    snap_dir: Optional[str] = None
 
 
 class BrowsecompAgentRunRequest(BaseRunRequest):
@@ -88,15 +90,26 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         if isinstance(body.input, str):
             body.input = [NeMoGymEasyInputMessage(role="user", content=body.input)]
 
+        task_index, attempt = None, None
+        if self.config.snap_dir:
+            task_index = body.metadata.pop("task_index")
+            attempt = body.metadata.pop("attempt")
+            body.metadata = body.metadata or {}
+
         new_outputs = []
         usage = None
         step = 0
+        num_tool_calls = 0
         model_server_cookies = None  # update the cookies on every model response
         resources_server_cookies = request.cookies  # update the cookies on every resources server response
 
         reset_threshold = 0
+        reset_count = 0
+        max_reset_count = self.config.max_reset_count
         if self.config.max_context_tokens and self.config.context_reset_pct:
             reset_threshold = int(self.config.max_context_tokens * self.config.context_reset_pct)
+
+        missing_end_think_count = 0
 
         # Per-step wall times since the last loop/start print; cleared after each loop log.
         step_times: List[float] = []
@@ -123,6 +136,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 f"  step_times: {stats}\n"
                 f"  step_times_s: {series}\n"
                 f"  context_cleared_at: {ctx}\n"
+                f"  missing_end_think: {missing_end_think_count}\n"
                 f"  q:    {q}\n"
                 f"  last: {getattr(last, 'type', 'none')} → {last}",
                 flush=True,
@@ -166,52 +180,73 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 if self.config.keep_rounds is not None and new_outputs:
                     new_outputs = self._compact_old_tool_messages(new_outputs)
 
-                new_body = body.model_copy(update={"input": body.input + new_outputs})
+                # Capture the input list separately so we can log it even after model_dump() turns new_body into a dict.
+                _input_for_logging = body.input + new_outputs
+                new_body = body.model_copy(update={"input": _input_for_logging})
+                if not body.metadata:
+                    new_body = new_body.model_dump(exclude={"metadata"}, exclude_none=True)
 
-                # --- Model call (with explicit begin/end timing for bottleneck tracking) ---
-                log_event("model_call_begin")
+                # --- Model call (with per-call retry on empty <think>-only output) ---
                 model_call_start = time.monotonic()
-                model_response = await self.server_client.post(
-                    server_name=self.config.model_server.name,
-                    url_path="/v1/responses",
-                    json=new_body,
-                    cookies=model_server_cookies,
-                )
-                # We raise for status here since we expect model calls to always work.
-                await raise_for_status(model_response)
-                model_response_json = await get_response_json(model_response)
-                model_server_cookies = model_response.cookies
-                try:
-                    model_response = NeMoGymResponse.model_validate(model_response_json)
-                except ValidationError as e:
-                    raise RuntimeError(
-                        f"Received an invalid response from model server: {json.dumps(model_response_json)}"
-                    ) from e
+                for retry_idx in range(self.config.max_run_retries):
+                    log_event("model_call_begin", retry=retry_idx)
+                    model_response = await self.server_client.post(
+                        server_name=self.config.model_server.name,
+                        url_path="/v1/responses",
+                        json=new_body,
+                        cookies=model_server_cookies,
+                    )
+                    # We raise for status here since we expect model calls to always work.
+                    await raise_for_status(model_response)
+                    model_response_json = await get_response_json(model_response)
+                    model_server_cookies = model_response.cookies
+                    try:
+                        model_response = NeMoGymResponse.model_validate(model_response_json)
+                    except ValidationError as e:
+                        raise RuntimeError(
+                            f"Received an invalid response from model server: {json.dumps(model_response_json)}"
+                        ) from e
+
+                    # Retry if the model only produced <think> content with no final answer.
+                    raw_output_text = model_response.output_text
+                    cleaned_output_text = re.sub(r"<think>.*?</think>", "", raw_output_text, flags=re.DOTALL).strip()
+                    if (
+                        not model_response.incomplete_details
+                        or model_response.incomplete_details.reason == "content_filter"
+                    ) and (cleaned_output_text or any(o for o in model_response.output if o.type == "function_call")):
+                        break
+
+                    missing_end_think_count += 1
+                    print(
+                        f"A model call is missing the end think ({missing_end_think_count} for this sample)",
+                        flush=True,
+                    )
+                    log_event(
+                        "model_call_retry",
+                        reason="empty_after_think_strip",
+                        retry=retry_idx,
+                        raw_output_text_len=len(raw_output_text),
+                    )
                 model_call_dur = time.monotonic() - model_call_start
 
-                # --- Check context reset threshold ---
                 prompt_tokens = model_response.usage.input_tokens if model_response.usage else 0
                 output_tokens = model_response.usage.output_tokens if model_response.usage else None
-                incomplete = model_response.incomplete_details.reason if model_response.incomplete_details else None
-                will_reset = bool(reset_threshold and prompt_tokens > reset_threshold)
-                had_issue = bool(incomplete) or will_reset
+                incomplete = (
+                    model_response.incomplete_details.reason if model_response.incomplete_details else None
+                )
                 log_event(
                     "model_call",
                     duration_s=round(model_call_dur, 3),
                     input_tokens=prompt_tokens,
                     output_tokens=output_tokens,
                     incomplete=incomplete,
-                    reset=will_reset,
                     output=[o.model_dump(exclude_none=True) for o in model_response.output],
-                    input=([m.model_dump(exclude_none=True) if hasattr(m, "model_dump") else m for m in new_body.input] if had_issue else None),
+                    input=(
+                        [m.model_dump(exclude_none=True) if hasattr(m, "model_dump") else m for m in _input_for_logging]
+                        if incomplete
+                        else None
+                    ),
                 )
-                if reset_threshold and prompt_tokens > reset_threshold:
-                    if self.config.context_reset_keep_rounds > 0:
-                        new_outputs = self._extract_last_rounds(new_outputs)
-                    else:
-                        new_outputs = []
-                    context_reset_steps.append(step)
-                    continue
 
                 output = model_response.output
                 new_outputs.extend(output)
@@ -229,7 +264,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     usage.input_tokens_details.cached_tokens = 0
                     usage.output_tokens_details.reasoning_tokens = 0
 
-                if model_response.incomplete_details and model_response.incomplete_details.reason == "max_output_tokens":
+                if model_response.incomplete_details:
                     break
 
                 # --- If the model decided to answer (no tool calls), we are done ---
@@ -243,6 +278,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 # --- Execute tool calls (sequentially; timed individually) ---
                 tool_total_dur = 0.0
                 for output_function_call in all_fn_calls:
+                    num_tool_calls += 1
                     log_event("tool_call_begin", name=output_function_call.name, args=output_function_call.arguments)
                     tool_start = time.monotonic()
                     api_response = await self.server_client.post(
@@ -336,7 +372,8 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     f"tools={tool_total_dur:.1f}s "
                     f"n_tools={len(all_fn_calls)} "
                     f"input_tokens={prompt_tokens} "
-                    f"output_tokens={output_tokens}",
+                    f"output_tokens={output_tokens} "
+                    f"missing_end_think={missing_end_think_count}",
                     flush=True,
                 )
 
@@ -351,11 +388,55 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 if self.config.max_steps and step >= self.config.max_steps:
                     break
 
+                # --- Check context reset threshold (at end of loop, AFTER tool calls) ---
+                total_tokens = (
+                    (model_response.usage.input_tokens + model_response.usage.output_tokens)
+                    if model_response.usage
+                    else 0
+                )
+                if (
+                    reset_threshold
+                    and total_tokens > reset_threshold
+                    and (max_reset_count is None or reset_count < max_reset_count)
+                ):
+                    reset_count += 1
+                    # record current context
+                    if self.config.snap_dir:
+                        self._save_snapshot(
+                            messages=body.input + new_outputs,
+                            task_index=task_index,
+                            attempt=attempt,
+                            reset_count=reset_count,
+                            is_final=False,
+                        )
+                    # reset context
+                    if self.config.context_reset_keep_rounds > 0:
+                        new_outputs = self._extract_last_rounds(new_outputs)
+                    else:
+                        new_outputs = []
+                    context_reset_steps.append(step)
+
             print_log("final")
-            log_event("final", total_steps=step)
+            log_event(
+                "final",
+                total_steps=step,
+                missing_end_think_count=missing_end_think_count,
+                num_tool_calls=num_tool_calls,
+                reset_count=reset_count,
+            )
+
+            # record final context
+            if self.config.snap_dir:
+                self._save_snapshot(
+                    messages=body.input + new_outputs,
+                    task_index=task_index,
+                    attempt=attempt,
+                    reset_count=None,
+                    is_final=True,
+                )
         except Exception as e:
-            err_input_source = locals().get("new_body")
-            err_input = err_input_source.input if err_input_source is not None else body.input
+            err_input_source = locals().get("_input_for_logging")
+            err_input = err_input_source if err_input_source is not None else body.input
             log_event(
                 "error",
                 error_type=type(e).__name__,
@@ -373,6 +454,9 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
 
         model_response.output = new_outputs
         model_response.usage = usage
+        model_response.reset_count = reset_count
+        model_response.num_tool_calls = num_tool_calls
+        model_response.metadata = {"missing_end_think_count": str(missing_end_think_count)}
         return model_response
 
     async def run(self, request: Request, body: BrowsecompAgentRunRequest) -> BrowsecompAgentVerifyResponse:
@@ -387,77 +471,37 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         await raise_for_status(seed_session_response)
         cookies = seed_session_response.cookies
 
-        last_verify_response = None
-        for attempt in range(self.config.max_run_retries):
-            response = await self.server_client.post(
-                server_name=self.config.name,
-                url_path="/v1/responses",
-                json=body.responses_create_params,
-                cookies=cookies,
-            )
-            await raise_for_status(response)
-            cookies = response.cookies
+        # prepare for recording
+        if self.config.snap_dir:
+            body.responses_create_params.metadata = dict(body.responses_create_params.metadata or {})
+            body.responses_create_params.metadata["task_index"] = str(body._ng_task_index)
+            body.responses_create_params.metadata["attempt"] = str(0)
 
-            # Retry if the model only produced <think> content with no final answer.
-            response_json = await get_response_json(response)
-            raw_output_text = NeMoGymResponse.model_validate(response_json).output_text
-            cleaned_output_text = re.sub(r"<think>.*?</think>", "", raw_output_text, flags=re.DOTALL).strip()
-            # Need to get last_verify_response if all attempts are exhausted
-            if not cleaned_output_text and attempt != self.config.max_run_retries - 1:
-                # Log the retry: stdout (agent log) + append to the trajectory file of the
-                # just-closed attempt so the next file plus the previous one together tell
-                # the whole story.
-                input_list = getattr(body.responses_create_params, "input", None) or []
-                if isinstance(input_list, str):
-                    input_list = []
-                user_msg_content = next(
-                    (m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
-                     for m in input_list
-                     if (m.get("role") if isinstance(m, dict) else getattr(m, "role", None)) == "user"),
-                    "",
-                )
-                sample_id = hashlib.sha1((user_msg_content or "").encode("utf-8")).hexdigest()[:12] if user_msg_content else "anon"
-                print(
-                    f"[browsecomp run_retry sample={sample_id} attempt={attempt + 1}/{self.config.max_run_retries}] "
-                    f"model produced <think>-only output (len={len(raw_output_text)}); restarting trajectory.",
-                    flush=True,
-                )
-                try:
-                    log_dir = Path(get_global_config_dict().get(NEMO_GYM_LOG_DIR_KEY_NAME) or "nemo_gym_logs")
-                    candidates = sorted((log_dir / "trajectories").glob(f"{sample_id}__*.jsonl"))
-                    if candidates:
-                        with candidates[-1].open("a", encoding="utf-8") as rf:
-                            rec = {
-                                "ts": datetime.utcnow().isoformat() + "Z",
-                                "event": "run_retry",
-                                "attempt": attempt + 1,
-                                "max_attempts": self.config.max_run_retries,
-                                "reason": "empty_after_think_strip",
-                                "raw_output_text": raw_output_text,
-                            }
-                            rf.write(json.dumps(rec, default=str) + "\n")
-                except Exception:
-                    pass  # best-effort, don't break the rollout
-                continue
+        response = await self.server_client.post(
+            server_name=self.config.name,
+            url_path="/v1/responses",
+            json=body.responses_create_params,
+            cookies=cookies,
+        )
+        await raise_for_status(response)
+        cookies = response.cookies
 
-            verify_request = BrowsecompAgentVerifyRequest.model_validate(
-                body.model_dump() | {"response": response_json}
-            )
+        response_json = await get_response_json(response)
 
-            verify_response = await self.server_client.post(
-                server_name=self.config.resources_server.name,
-                url_path="/verify",
-                json=verify_request.model_dump(),
-                cookies=cookies,
-            )
-            await raise_for_status(verify_response)
+        verify_request = BrowsecompAgentVerifyRequest.model_validate(body.model_dump() | {"response": response_json})
 
-            last_verify_response = BrowsecompAgentVerifyResponse.model_validate(
-                await get_response_json(verify_response)
-            )
-            break
+        verify_response = await self.server_client.post(
+            server_name=self.config.resources_server.name,
+            url_path="/verify",
+            json=verify_request.model_dump(),
+            cookies=cookies,
+        )
+        await raise_for_status(verify_response)
 
-        return last_verify_response
+        return BrowsecompAgentVerifyResponse.model_validate(
+            await get_response_json(verify_response)
+            | {"missing_end_think_count": response_json["metadata"]["missing_end_think_count"]}
+        )
 
     async def aggregate_metrics(self, body: AggregateMetricsRequest = Body()) -> AggregateMetrics:
         """Proxy aggregate_metrics to the resources server."""
@@ -521,6 +565,20 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
             result.extend(fn_calls)
             result.extend(tool_outputs)
         return result
+
+    def _save_snapshot(self, messages, task_index, attempt, reset_count, is_final):
+        sample_dir = Path(f"{self.config.snap_dir}/sample_{task_index}")
+        if not sample_dir.exists():
+            sample_dir.mkdir(parents=True)
+
+        if is_final:
+            sample_path = f"{sample_dir}/attempt_{attempt}_final.jsonl"
+        else:
+            sample_path = f"{sample_dir}/attempt_{attempt}_reset_{reset_count}.jsonl"
+
+        with open(sample_path, "w", encoding="utf-8") as f:
+            for msg in messages:
+                f.write(msg.model_dump_json() + "\n")
 
 
 if __name__ == "__main__":
