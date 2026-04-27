@@ -54,6 +54,17 @@ class BaseSeedSessionResponse(BaseModel):
     pass
 
 
+class BaseGetStateRequest(BaseModel):
+    pass
+
+
+class BaseGetStateResponse(BaseModel):
+    # Empty string = no state; the agent falls back to conversation-passing.
+    # Override `get_state` on your resources server to return a non-empty
+    # snapshot when your environment has state visible to both sides.
+    state: str = ""
+
+
 class SimpleResourcesServer(BaseResourcesServer, AggregateMetricsMixin, SimpleServer):
     config: BaseResourcesServerConfig
 
@@ -63,6 +74,7 @@ class SimpleResourcesServer(BaseResourcesServer, AggregateMetricsMixin, SimpleSe
         self.setup_session_middleware(app)
 
         app.post("/seed_session")(self.seed_session)
+        app.post("/get_state")(self.get_state)
         app.post("/verify")(self.verify)
         app.post("/aggregate_metrics")(self.aggregate_metrics)
 
@@ -70,6 +82,19 @@ class SimpleResourcesServer(BaseResourcesServer, AggregateMetricsMixin, SimpleSe
 
     async def seed_session(self, body: BaseSeedSessionRequest) -> BaseSeedSessionResponse:
         return BaseSeedSessionResponse()
+
+    async def get_state(self, body: BaseGetStateRequest) -> BaseGetStateResponse:
+        """Return a textual snapshot of environment state visible to both sides.
+
+        Default: empty string, signalling that the environment has no external
+        state and the multi-turn agent should fall back to passing each side's
+        most recent text message as the other side's observation.
+
+        Override this on resources servers whose environment has meaningful
+        state (a game board, a repo diff, an API response) that should be
+        shown to both the policy and the user simulator.
+        """
+        return BaseGetStateResponse()
 
     @abstractmethod
     async def verify(self, body: BaseVerifyRequest) -> BaseVerifyResponse:

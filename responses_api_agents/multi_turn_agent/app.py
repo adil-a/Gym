@@ -112,6 +112,23 @@ class MultiTurnAgentVerifyResponse(BaseVerifyResponse):
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _merge_cookies(existing, new):
+    """Merge a new cookie collection into an existing one without dropping keys.
+
+    aiohttp `response.cookies` only contains cookies the *immediate* response
+    set. Replacing `existing` with `response.cookies` would lose session
+    cookies from other servers we talked to earlier (resources, policy model,
+    etc.). Each server's SessionMiddleware uses a distinct cookie name, so
+    we can safely union them by key.
+    """
+    merged = dict(existing.items()) if hasattr(existing, "items") else dict(existing or {})
+    if new:
+        for k, v in new.items():
+            # aiohttp SimpleCookie entries are Morsel objects; grab the value.
+            merged[k] = v.value if hasattr(v, "value") else v
+    return merged
+
+
 def _extract_text_from_outputs(outputs: list) -> str:
     """Pull a text observation out of a turn's output items.
 
@@ -277,7 +294,10 @@ class MultiTurnAgent(SimpleResponsesAPIAgent):
             "assistant" messages
         Only the policy trajectory is sent to /verify.
         """
-        cookies = request.cookies
+        # `cookies` is the shared wallet: a dict keyed by cookie name. Each
+        # server's SessionMiddleware uses a distinct cookie name, so merging
+        # by key is safe and preserves every server's session across calls.
+        cookies = _merge_cookies({}, request.cookies)
 
         # Phase 1: Seed the resources server session (e.g. initialize game board)
         seed_response = await self.server_client.post(
@@ -287,7 +307,7 @@ class MultiTurnAgent(SimpleResponsesAPIAgent):
             cookies=cookies,
         )
         await raise_for_status(seed_response)
-        cookies = seed_response.cookies
+        cookies = _merge_cookies(cookies, seed_response.cookies)
 
         # If the user simulator is an agent, seed its session too.
         if isinstance(self.config.user_model_server, AgentServerRef):
@@ -298,7 +318,7 @@ class MultiTurnAgent(SimpleResponsesAPIAgent):
                 cookies=cookies,
             )
             await raise_for_status(user_seed)
-            cookies = user_seed.cookies
+            cookies = _merge_cookies(cookies, user_seed.cookies)
 
         # original_params carries tools/temperature/etc. — reused for every policy turn.
         original_params = body.responses_create_params.model_dump(exclude_unset=True)
@@ -333,7 +353,7 @@ class MultiTurnAgent(SimpleResponsesAPIAgent):
                 cookies=cookies,
             )
             await raise_for_status(policy_response)
-            cookies = policy_response.cookies
+            cookies = _merge_cookies(cookies, policy_response.cookies)
             model_response_json = await get_response_json(policy_response)
             last_model_response_json = model_response_json
 
@@ -451,7 +471,7 @@ class MultiTurnAgent(SimpleResponsesAPIAgent):
                 cookies=cookies,
             )
             await raise_for_status(user_response)
-            cookies = user_response.cookies
+            cookies = _merge_cookies(cookies, user_response.cookies)
             user_response_json = await get_response_json(user_response)
             outputs = user_response_json.get("output", []) or []
             return _extract_text_from_outputs(outputs), cookies
@@ -470,7 +490,7 @@ class MultiTurnAgent(SimpleResponsesAPIAgent):
                 cookies=cookies,
             )
             await raise_for_status(user_response)
-            cookies = user_response.cookies
+            cookies = _merge_cookies(cookies, user_response.cookies)
             user_response_json = await get_response_json(user_response)
 
             outputs = user_response_json.get("output", []) or []

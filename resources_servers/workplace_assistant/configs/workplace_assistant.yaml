@@ -35,3 +35,29 @@ workplace_assistant_simple_agent:
         - name: example
           type: example
           jsonl_fpath: resources_servers/workplace_assistant/data/example.jsonl
+workplace_assistant_multi_turn_agent:
+  responses_api_agents:
+    multi_turn_agent:
+      entrypoint: app.py
+      resources_server:
+        type: resources_servers
+        name: workplace_assistant
+      model_server:
+        type: responses_api_models
+        name: policy_model
+      user_model_server:
+        type: responses_api_models
+        name: user_model
+      max_turns: 5
+      max_steps_per_turn: null
+      user_model_tool_choice: null
+      user_model_stop_token: "END_CONVERSATION"
+      user_model_system_prompt: >-
+        You are a workplace user who asked an AI assistant for help.
+        Answer clarifying questions briefly and naturally. Do not volunteer
+        unrequested details. Stop once the task is done.
+      datasets:
+        - name: train
+          type: train
+          jsonl_fpath: resources_servers/workplace_assistant/data/workplace_assistant_multiturn_train.jsonl
+          license: Apache 2.0
