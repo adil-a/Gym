@@ -29,12 +29,6 @@ jobs:
         with:
           submodules: 'recursive'
 
-      - name: Fail on draft PRs
-        if: github.event.pull_request.draft == true
-        run: |
-          echo "Failing on draft PR to enforce this check to run"
-          exit 1
-
       - name: Detect changed files
         id: changes
         run: |
