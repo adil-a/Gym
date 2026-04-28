@@ -131,7 +131,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
 
         missing_end_think_count = 0
 
-        user_query = [i for i in body.input if i.role == "user"][0]["content"]
+        user_query = [i for i in body.input if i.role == "user"][0].content
         user_query = user_query if isinstance(user_query, str) else user_query[0]["text"]
 
         time_taken = time()
