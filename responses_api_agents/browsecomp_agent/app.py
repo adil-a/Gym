@@ -131,6 +131,9 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
 
         missing_end_think_count = 0
 
+        user_query = [i for i in body.input if i.role == "user"][0]
+        user_query = user_query if isinstance(user_query, str) else user_query[0]["text"]
+
         time_taken = time()
         time_taken_model_call = 0
         time_taken_tool_call = 0
@@ -379,10 +382,8 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                     new_outputs = []
 
             if step % 3 == 0:
-                query_print = body.input[0].content
-                query_print = query_print if isinstance(query_print, str) else query_print[0]["text"]
                 print(
-                    f"{query_print[:20]}... | Step {step} | Time: {time() - time_taken:.2f}s (model {time_taken_model_call:.2f}s, tool {time_taken_tool_call:.2f}s) | Max output tokens: {max_output_tokens} | Missing end thinks: {missing_end_think_count}"
+                    f"{user_query[:20]}... | Step {step} | Time: {time() - time_taken:.2f}s (model {time_taken_model_call:.2f}s, tool {time_taken_tool_call:.2f}s) | Max output tokens: {max_output_tokens} | Missing end thinks: {missing_end_think_count}"
                 )
 
         # record final context
