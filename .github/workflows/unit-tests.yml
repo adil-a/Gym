@@ -58,17 +58,18 @@ jobs:
           DOCS_PATTERN='^(docs/|fern/|README\.md|CONTRIBUTING\.md|CODE_OF_CONDUCT\.md|SECURITY\.md|ATTRIBUTIONS\.md|LICENSE)'
           SERVER_PATTERN='^(resources_servers|responses_api_agents|responses_api_models)/[^/]+/'
 
-          # Classify: docs-only, servers-only, or full
+          # Classify: docs-only, servers-only (+ optional docs), or full
           NON_DOCS=$(echo "$CHANGED_FILES" | grep -cvE "$DOCS_PATTERN" || true)
-          NON_SERVER=$(echo "$CHANGED_FILES" | grep -cvE "$SERVER_PATTERN" || true)
           HAS_SERVERS=$(echo "$CHANGED_FILES" | grep -cE "$SERVER_PATTERN" || true)
+          # Files that are neither docs nor servers
+          NON_DOCS_OR_SERVER=$(echo "$CHANGED_FILES" | grep -vE "$DOCS_PATTERN" | grep -cvE "$SERVER_PATTERN" || true)
 
           if [ "$NON_DOCS" -eq 0 ]; then
             echo "category=docs" >> $GITHUB_OUTPUT
             echo "Only docs changed - will skip all tests"
-          elif [ "$NON_SERVER" -eq 0 ] && [ "$HAS_SERVERS" -gt 0 ]; then
+          elif [ "$NON_DOCS_OR_SERVER" -eq 0 ] && [ "$HAS_SERVERS" -gt 0 ]; then
             echo "category=servers" >> $GITHUB_OUTPUT
-            echo "Only server files changed - will test changed servers only"
+            echo "Only server files (+ docs) changed - will test changed servers only"
           else
             echo "category=full" >> $GITHUB_OUTPUT
             echo "Running full test suite"
