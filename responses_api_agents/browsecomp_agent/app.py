@@ -400,6 +400,10 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         for k, v in (*resources_server_cookies.items(), *model_server_cookies.items()):
             response.set_cookie(k, v)
 
+        print(
+            f"{user_query[:20]}... | FINISHED | Step {step} | Time: {time() - time_taken:.2f}s (model {time_taken_model_call:.2f}s, tool {time_taken_tool_call:.2f}s) | Max output tokens: {max_output_tokens} | Missing end thinks: {missing_end_think_count}"
+        )
+
         model_response.output = new_outputs
         model_response.usage = usage
         model_response.reset_count = reset_count
