@@ -28,7 +28,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           submodules: 'recursive'
-          fetch-depth: 0
 
       - name: Fail on draft PRs
         if: github.event.pull_request.draft == true
@@ -46,6 +45,10 @@ jobs:
             echo "No base_ref available (workflow_call?) - will run full suite"
             exit 0
           fi
+
+          # Fetch just the tip of the base branch (e.g. main) so we can diff against it.
+          # The default checkout is shallow (depth=1), so origin/<base> doesn't exist yet.
+          git fetch origin ${{ github.base_ref }} --depth=1
 
           CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }} HEAD)
 
@@ -248,9 +251,11 @@ jobs:
 
           # Poll head server until ready (default port 11000), max 120s
           echo "Waiting for ng_run head server to become ready..."
+          SERVER_READY="false"
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:11000/ > /dev/null 2>&1; then
               echo "Head server ready after $((i*2))s"
+              SERVER_READY="true"
               break
             fi
             if ! kill -0 $NG_RUN_PID 2>/dev/null; then
@@ -259,6 +264,10 @@ jobs:
             fi
             sleep 2
           done
+          if [ "$SERVER_READY" != "true" ]; then
+            echo "Head server did not become ready within 120s"
+            exit 1
+          fi
 
           mkdir -p results
           ng_collect_rollouts \
@@ -277,9 +286,11 @@ jobs:
 
           # Poll head server until ready (default port 11000), max 120s
           echo "Waiting for ng_run head server to become ready..."
+          SERVER_READY="false"
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:11000/ > /dev/null 2>&1; then
               echo "Head server ready after $((i*2))s"
+              SERVER_READY="true"
               break
             fi
             if ! kill -0 $NG_RUN_PID 2>/dev/null; then
@@ -288,6 +299,10 @@ jobs:
             fi
             sleep 2
           done
+          if [ "$SERVER_READY" != "true" ]; then
+            echo "Head server did not become ready within 120s"
+            exit 1
+          fi
 
           ng_collect_rollouts \
             +agent_name=hello_world_simple_agent \
