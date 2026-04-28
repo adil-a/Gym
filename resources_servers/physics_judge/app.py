@@ -41,17 +41,13 @@ name when filling the YAML so the prompt is character-for-character identical.
 """
 
 import re
-from typing import Any, ClassVar, Dict, List, Optional, Union
+from typing import Any, ClassVar, Dict, List, Optional
 
 from pydantic import Field
 
 from nemo_gym.openai_utils import NeMoGymEasyInputMessage, NeMoGymResponse
 from nemo_gym.prompt import PromptConfig, fill_prompt, load_prompt_config
-from nemo_gym.reward_profile import (
-    compute_pass_majority_metrics,
-    compute_subset_metrics,
-    highest_k_metrics,
-)
+from nemo_gym.reward_profile import compute_subset_metrics
 from nemo_gym.server_utils import get_response_json
 from resources_servers.math_with_judge.app import (
     JudgeEvaluation,
@@ -89,10 +85,11 @@ class PhysicsJudgeResourcesServer(LibraryJudgeMathResourcesServer):
     JUDGE_EQUAL_LABEL: ClassVar[str] = "[Correct]"
     JUDGE_NOT_EQUAL_LABEL: ClassVar[str] = "[Incorrect]"
 
-    # Compiled once at class load.  `\[correct\]` / `\[incorrect\]` are the
-    # exact regexes Skills uses; the case-insensitive flag matches Skills.
+    # Skills' PhysicsMetrics.is_correct_judgement matches `\[correct\]`
+    # case-insensitively; only when absent does it check `\[incorrect\]`,
+    # and the unparseable-default is also False — so the equal-side regex
+    # alone determines the verdict.
     _RE_EQUAL: ClassVar[re.Pattern] = re.compile(r"\[correct\]", re.IGNORECASE)
-    _RE_NOT_EQUAL: ClassVar[re.Pattern] = re.compile(r"\[incorrect\]", re.IGNORECASE)
 
     def model_post_init(self, context: Any) -> None:
         super().model_post_init(context)
@@ -170,70 +167,32 @@ class PhysicsJudgeResourcesServer(LibraryJudgeMathResourcesServer):
     def _parse_verdict(cls, text: str) -> bool:
         """Return True if the text contains a `[Correct]` verdict, False otherwise.
 
-        Mirrors Skills' ``PhysicsMetrics.is_correct_judgement``: the regex
-        ``\\[correct\\]`` is checked first, and only if it is not found is
-        ``\\[incorrect\\]`` checked. Both checks are case-insensitive.
-        Unparseable judgements default to False (incorrect).
+        Mirrors Skills' ``PhysicsMetrics.is_correct_judgement``: ``\\[correct\\]``
+        is checked first (case-insensitive); only when it is absent does the
+        ``\\[incorrect\\]`` check matter — and that branch, plus the
+        unparseable-default branch, both return False.
         """
-        if cls._RE_EQUAL.search(text):
-            return True
-        if cls._RE_NOT_EQUAL.search(text):
-            return False
-        return False
+        return cls._RE_EQUAL.search(text) is not None
 
-    # ──────────────────────────────────────────────────────────
-    # Aggregate metrics overrides — Tier 1 + Tier 2 (per-domain).
-    # ──────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _math_score_fn(r: dict) -> Dict[str, Union[float, bool]]:
-        scores: Dict[str, Union[float, bool]] = {}
-        if "library_reward" in r:
-            scores["symbolic_accuracy"] = r["library_reward"]
-        if "judge_evaluations" in r and r["judge_evaluations"] is not None:
-            scores["judge_accuracy"] = r["reward"]
-        return scores
-
+    # Override compute_metrics to layer Tier-2 per-domain breakdown on top of
+    # math_with_judge's Tier-1 pass@k. _math_score_fn and get_key_metrics are
+    # inherited unchanged.
     def compute_metrics(self, tasks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
-        """Compute Tier-1 pass@k metrics plus Tier-2 per-domain breakdown.
-
-        Skills' ``PhysicsMetrics`` exposes a ``subset_for_metrics=domain``
-        breakdown (``mechanics/``, ``thermodynamics/`` etc.). We mirror that
-        with ``compute_subset_metrics(field="domain")`` so each domain shows
-        up as ``<domain>/pass@1[avg-of-k]/...`` keys in the metrics JSON.
-        """
-        metrics = compute_pass_majority_metrics(
-            tasks,
-            score_fn=self._math_score_fn,
-            answer_key="extracted_answer",
-        )[0]
-        # Per-domain breakdown (Tier 2). The `domain` field is written by
-        # benchmarks/physics/prepare.py from the upstream Skills field of
-        # the same name.  Tasks without a `domain` field are silently
-        # skipped by compute_subset_metrics.
-        if tasks and any("domain" in r for rs in tasks for r in rs):
-            subset = compute_subset_metrics(
-                tasks,
-                subset_key="domain",
-                score_fn=self._math_score_fn,
-                answer_key="extracted_answer",
+        metrics = super().compute_metrics(tasks)
+        # The `domain` field is written by benchmarks/physics/prepare.py
+        # from the upstream Skills field of the same name. Other consumers
+        # of this server may pass tasks without a `domain` — skip the
+        # breakdown in that case.
+        if any("domain" in r for rs in tasks for r in rs):
+            metrics.update(
+                compute_subset_metrics(
+                    tasks,
+                    subset_key="domain",
+                    score_fn=self._math_score_fn,
+                    answer_key="extracted_answer",
+                )
             )
-            metrics.update(subset)
         return metrics
-
-    def get_key_metrics(self, agent_metrics: Dict[str, Any]) -> Dict[str, Any]:
-        """Select headline metrics for this physics benchmark."""
-        key: Dict[str, Any] = {}
-
-        for name in ("mean/input_tokens", "mean/output_tokens"):
-            if name in agent_metrics:
-                key[name] = agent_metrics[name]
-
-        key.update(highest_k_metrics(agent_metrics, "pass@1[avg-of-{k}]"))
-        key.update(highest_k_metrics(agent_metrics, "pass@{k}", exclude_names=["no_answer"]))
-        key.update(highest_k_metrics(agent_metrics, "majority@{k}", exclude_names=["no_answer"]))
-
-        return key
 
 
 if __name__ == "__main__":
