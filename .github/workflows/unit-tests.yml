@@ -34,8 +34,7 @@ jobs:
         run: |
           # workflow_call or non-PR context: no base_ref available, run everything
           if [ -z "${{ github.base_ref }}" ]; then
-            echo "core=true" >> $GITHUB_OUTPUT
-            echo "servers=true" >> $GITHUB_OUTPUT
+            echo "category=full" >> $GITHUB_OUTPUT
             echo "No base_ref available (workflow_call?) - will run full suite"
             exit 0
           fi
@@ -50,22 +49,24 @@ jobs:
           echo "$CHANGED_FILES"
           echo ""
 
-          # Check if core files changed (library, tests, deps, CI)
-          CORE_CHANGED="false"
-          if echo "$CHANGED_FILES" | grep -qE '^(nemo_gym/|tests/unit_tests/|pyproject.toml|uv.lock|.github/workflows/)'; then
-            CORE_CHANGED="true"
-            echo "Core files changed detected"
-          fi
+          DOCS_PATTERN='^(docs/|fern/|README\.md|CONTRIBUTING\.md|CODE_OF_CONDUCT\.md|SECURITY\.md|ATTRIBUTIONS\.md|LICENSE)'
+          SERVER_PATTERN='^(resources_servers|responses_api_agents|responses_api_models)/[^/]+/'
 
-          # Check if any server files changed (match two levels deep)
-          SERVERS_CHANGED="false"
-          if echo "$CHANGED_FILES" | grep -qE '^(resources_servers|responses_api_agents|responses_api_models)/[^/]+/'; then
-            SERVERS_CHANGED="true"
-            echo "Server files changed detected"
-          fi
+          # Classify: docs-only, servers-only, or full
+          NON_DOCS=$(echo "$CHANGED_FILES" | grep -cvE "$DOCS_PATTERN" || true)
+          NON_SERVER=$(echo "$CHANGED_FILES" | grep -cvE "$SERVER_PATTERN" || true)
+          HAS_SERVERS=$(echo "$CHANGED_FILES" | grep -cE "$SERVER_PATTERN" || true)
 
-          echo "core=$CORE_CHANGED" >> $GITHUB_OUTPUT
-          echo "servers=$SERVERS_CHANGED" >> $GITHUB_OUTPUT
+          if [ "$NON_DOCS" -eq 0 ]; then
+            echo "category=docs" >> $GITHUB_OUTPUT
+            echo "Only docs changed - will skip all tests"
+          elif [ "$NON_SERVER" -eq 0 ] && [ "$HAS_SERVERS" -gt 0 ]; then
+            echo "category=servers" >> $GITHUB_OUTPUT
+            echo "Only server files changed - will test changed servers only"
+          else
+            echo "category=full" >> $GITHUB_OUTPUT
+            echo "Running full test suite"
+          fi
 
       - name: Cache uv dependencies
         uses: actions/cache@v4
@@ -92,53 +93,45 @@ jobs:
         run: |
           source .venv/bin/activate
 
-          # Always run core library tests
-          echo "Running core library tests..."
-          ng_dev_test
+          CATEGORY="${{ steps.changes.outputs.category }}"
 
-          # Determine which server tests to run based on what changed
-          if [[ "${{ steps.changes.outputs.core }}" == "true" ]]; then
-            echo "Core files changed - running ALL server tests for safety"
-            ng_test_all +fail_on_total_and_test_mismatch=true +delete_venvs_after_each_test=true
+          if [ "$CATEGORY" = "docs" ]; then
+            echo "Docs-only change - skipping all tests"
+            exit 0
 
-          elif [[ "${{ steps.changes.outputs.servers }}" == "true" ]]; then
-            echo "Server files changed - testing only changed servers"
+          elif [ "$CATEGORY" = "servers" ]; then
+            echo "Server-only change - testing changed servers"
 
-            # Get list of changed server folders (e.g. resources_servers/arc_agi)
             CHANGED_SERVERS=$(git diff --name-only origin/${{ github.base_ref }} HEAD | \
               grep -E '^(resources_servers|responses_api_agents|responses_api_models)/[^/]+/' | \
               cut -d'/' -f1-2 | sort -u)
 
-            if [ -z "$CHANGED_SERVERS" ]; then
-              echo "No server folders identified - running full test suite to be safe"
-              ng_test_all +fail_on_total_and_test_mismatch=true +delete_venvs_after_each_test=true
-            else
-              echo "Changed servers detected:"
-              echo "$CHANGED_SERVERS" | sed 's/^/  - /'
+            echo "Changed servers:"
+            echo "$CHANGED_SERVERS" | sed 's/^/  - /'
 
-              EXIT_CODE=0
-              for server in $CHANGED_SERVERS; do
-                echo ""
-                echo "================================================"
-                echo "Testing: $server"
-                echo "================================================"
-                if ng_test +entrypoint=$server; then
-                  echo "PASS: $server"
-                else
-                  echo "FAIL: $server"
-                  EXIT_CODE=1
-                fi
-              done
-
-              if [ $EXIT_CODE -ne 0 ]; then
-                echo "Some server tests failed"
-                exit 1
+            EXIT_CODE=0
+            for server in $CHANGED_SERVERS; do
+              echo ""
+              echo "================================================"
+              echo "Testing: $server"
+              echo "================================================"
+              if ng_test +entrypoint=$server; then
+                echo "PASS: $server"
+              else
+                echo "FAIL: $server"
+                EXIT_CODE=1
               fi
+            done
+
+            if [ $EXIT_CODE -ne 0 ]; then
+              echo "Some server tests failed"
+              exit 1
             fi
 
           else
-            echo "No core or server files changed - skipping server tests"
-            echo "Only core library tests were run"
+            echo "Running full test suite"
+            ng_dev_test
+            ng_test_all +fail_on_total_and_test_mismatch=true +delete_venvs_after_each_test=true
           fi
 
   test-wheel-install:

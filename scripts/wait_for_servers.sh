@@ -24,18 +24,25 @@ check_pid() {
   fi
 }
 
-# Phase 1: Wait for head server to respond (max 60s)
+# Phase 1: Wait for head server to respond on /server_instances (max 60s)
+# The head server has no root route, but /server_instances returns 200.
 echo "Waiting for head server on port ${HEAD_PORT}..."
+HEAD_READY="false"
 for i in $(seq 1 $((60 / POLL_INTERVAL))); do
-  if curl -s -o /dev/null "${HEAD_URL}/server_instances" 2>/dev/null; then
+  if curl -sf "${HEAD_URL}/server_instances" > /dev/null 2>&1; then
     echo "Head server up after $((i * POLL_INTERVAL))s"
+    HEAD_READY="true"
     break
   fi
   check_pid
   sleep "$POLL_INTERVAL"
 done
+if [ "$HEAD_READY" != "true" ]; then
+  echo "Head server did not respond within 60s"
+  exit 1
+fi
 
-# Phase 2: Poll child servers until all respond (max $MAX_WAIT seconds)
+# Phase 2: Poll child servers on /docs (returns 200 via FastAPI) until all ready.
 echo "Waiting for all child servers..."
 ITERATIONS=$((MAX_WAIT / POLL_INTERVAL))
 ALL_READY="false"
@@ -51,7 +58,7 @@ print(' '.join(inst['url'] for inst in instances if inst.get('url')))" 2>/dev/nu
     TOTAL=0
     for url in $URLS; do
       TOTAL=$((TOTAL + 1))
-      if curl -s -o /dev/null "$url/" 2>/dev/null; then
+      if curl -sf "$url/docs" > /dev/null 2>&1; then
         READY=$((READY + 1))
       fi
     done
