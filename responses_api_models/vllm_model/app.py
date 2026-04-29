@@ -810,11 +810,22 @@ class VLLMConverter(BaseModel):
         if self.return_token_id_information and "prompt_token_ids" in message_dict:
             last_response_output_item = response_output[-1]
             train_cls = RESPONSES_TO_TRAIN[last_response_output_item.__class__]
+            # Forward any backend-specific extras (e.g. policy_epoch / kv_cache_epoch
+            # from a Megatron inference server) as Pydantic extras on the training
+            # output item. extra="allow" on TokenIDLogProbMixin keeps them accessible
+            # downstream without this adapter knowing about the specific backend.
+            handled_keys = set(NeMoGymChatCompletionMessage.model_fields.keys()) | {
+                "prompt_token_ids",
+                "generation_token_ids",
+                "generation_log_probs",
+            }
+            extras = {k: v for k, v in message_dict.items() if k not in handled_keys}
             response_output[-1] = train_cls(
                 **last_response_output_item.model_dump(),
                 prompt_token_ids=message_dict["prompt_token_ids"],
                 generation_token_ids=message_dict["generation_token_ids"],
                 generation_log_probs=message_dict["generation_log_probs"],
+                **extras,
             )
 
         return response_output

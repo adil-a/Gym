@@ -260,7 +260,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.uv]
 managed = true
-required-version = ">=0.9.30"
+required-version = ">=0.9.18"
 exclude-dependencies = [
     # Exclude unwanted dependencies from mlflow
     "alembic",
