@@ -13,7 +13,7 @@ By the end of this tutorial, you will have written a tiny **"Guess the Number"**
 **In this tutorial, you will**:
 
 1. Subclass `GymnasiumServer` and implement `reset()` / `step()`.
-2. Wire the environment to a `gymnasium_agent` via YAML.
+2. Wire the environment to a `gymnasium_agent` with YAML.
 3. Author the JSONL dataset that drives rollouts.
 4. Run the env and read the agent's reward from `ng_reward_profile`.
 
@@ -23,7 +23,7 @@ By the end of this tutorial, you will have written a tiny **"Guess the Number"**
 
 1. Completed the [Quickstart](/latest/get-started/quickstart) (you've run Blackjack end-to-end).
 2. NeMo Gym virtual environment activated.
-3. `env.yaml` configured (see [Configuration](/latest/get-started/configuration)).
+3. `env.yaml` configured (refer to [Configuration](/latest/get-started/configuration)).
 
 <Tip>
 **Time estimate**: ~15 minutes including the rollout run.
@@ -148,7 +148,7 @@ if __name__ == "__main__":
            jsonl_fpath: resources_servers/guess_number/data/example.jsonl
    ```
 
-2. **Add the example dataset** at `resources_servers/guess_number/data/example.jsonl`. One JSON object per line — duplicate the row below 5 times so the agent gets 5 chances.
+2. **Add the example dataset** at `resources_servers/guess_number/data/example.jsonl`. One JSON object per line — duplicate the row below five times so the agent gets five chances.
 
    <Accordion title="Show the JSONL row">
    ```json
@@ -205,7 +205,7 @@ Here is what you built.
 **You completed:**
 
 - ✅ Subclassed `GymnasiumServer` and implemented `reset()` / `step()`.
-- ✅ Wired the environment to `gymnasium_agent` via a single YAML config.
+- ✅ Wired the environment to `gymnasium_agent` with a single YAML config.
 - ✅ Authored a JSONL dataset that drives the rollouts.
 - ✅ Ran the env end-to-end and read the agent's reward.
 
@@ -247,4 +247,4 @@ Train a model on your custom environment.
 
 ## Troubleshooting
 
-If you hit issues, see the patterns documented in the [Quickstart](/latest/get-started/quickstart#troubleshooting) — most failures are credential or activation problems, not code. For Gymnasium-API-specific issues, refer to the [Gymnasium README](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/gymnasium).
+If you hit issues, refer to the patterns documented in the [Quickstart](/latest/get-started/quickstart#troubleshooting) — most failures are credential or activation problems, not code. For Gymnasium-API-specific issues, refer to the [Gymnasium README](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/gymnasium).

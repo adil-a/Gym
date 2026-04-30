@@ -13,7 +13,7 @@ Before you start, verify the following:
 1. Operating system matches a [verified configuration](/latest/get-started/prerequisites#verified-configurations).
 2. Python 3.12+ is installed and on PATH.
 3. You have at least 2 GB of free disk space for dependencies.
-4. (Optional) GPU drivers installed for local inference or RL training.
+4. Optional: GPU drivers installed for local inference or RL training.
 
 <Note title="See Also">
 For comprehensive system requirements, refer to [Prerequisites](/latest/get-started/prerequisites).
@@ -24,7 +24,7 @@ For comprehensive system requirements, refer to [Prerequisites](/latest/get-star
 Choose the method that fits your use case.
 
 <Tip>
-**Not sure which path?** Use **Source** unless you have a reason not to — it's the only path that ships the bundled benchmarks and `ng_list_benchmarks` today.
+**Not sure which path?** Use **Source** unless you have a reason not to — it is the only path that ships the bundled benchmarks and `ng_list_benchmarks` today.
 </Tip>
 
 <Tabs>
@@ -47,7 +47,7 @@ The Source path gives you the full set of bundled environments, benchmarks, and 
    uv sync
    ```
 
-3. **Install `uv` if you don't have it**:
+3. **Install `uv` if you do not have it**:
 
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -97,7 +97,7 @@ Verify that the install succeeded and core CLIs are accessible.
    ng_help
    ```
 
-   **✅ Success Check**: A table of `ng_*` commands prints. If you get `command not found`, the virtual environment isn't activated — re-run `source .venv/bin/activate`.
+   **✅ Success Check**: A table of `ng_*` commands prints. If you get `command not found`, the virtual environment is not activated — re-run `source .venv/bin/activate`.
 
 2. **Discover bundled benchmarks** (Source install only):
 
@@ -105,7 +105,7 @@ Verify that the install succeeded and core CLIs are accessible.
    ng_list_benchmarks
    ```
 
-   **✅ Success Check**: A table of ~30 benchmarks prints (`gpqa`, `aime25`, `ifbench`, etc.). Empty or missing? You're on the PyPI path — switch to Source to pick up the benchmarks directory.
+   **✅ Success Check**: A table of ~30 benchmarks prints (`gpqa`, `aime25`, `ifbench`, and others). Empty or missing? You are on the PyPI path — switch to Source to pick up the benchmarks directory.
 
 3. **Basic import test**:
 
@@ -118,7 +118,7 @@ Verify that the install succeeded and core CLIs are accessible.
 ## Troubleshoot Installation
 
 <Accordion title="Command not found: ng_run / ng_help">
-Activate the virtual environment in the terminal you're using:
+Activate the virtual environment in the terminal you are using:
 
 ```bash
 source .venv/bin/activate
@@ -132,7 +132,7 @@ pip show nemo-gym
 </Accordion>
 
 <Accordion title="ng_list_benchmarks shows no benchmarks">
-You're on the PyPI install path. The bundled benchmarks under `benchmarks/` only ship via the Source path. Switch to the Source install or wait for the next PyPI release.
+You are on the PyPI install path. The bundled benchmarks under `benchmarks/` only ship with the Source install. Switch to the Source path or wait for the next PyPI release.
 </Accordion>
 
 <Accordion title="uv sync fails on dependency resolution">
@@ -146,7 +146,7 @@ uv sync
 </Accordion>
 
 <Accordion title="ImportError: No module named 'nemo_gym'">
-The package isn't installed in the active environment. Verify and reinstall:
+The package is not installed in the active environment. Verify and reinstall:
 
 ```bash
 pip list | grep nemo-gym
@@ -157,7 +157,7 @@ pip install nemo-gym   # PyPI path
 </Accordion>
 
 <Accordion title="Ray socket path error on cluster filesystem">
-On systems with long working directory paths (e.g. Lustre), Ray's AF_UNIX socket can exceed the 107-byte Linux limit. Set:
+On systems with long working directory paths (for example, Lustre), Ray's AF_UNIX socket can exceed the 107-byte Linux limit. Set:
 
 ```bash
 export RAY_TMPDIR=/tmp

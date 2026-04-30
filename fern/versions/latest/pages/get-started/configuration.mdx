@@ -12,8 +12,8 @@ Already have `env.yaml` from a previous run? Jump to the [Quickstart](/latest/ge
 
 ## Prerequisites
 
-1. NeMo Gym installed via the [Installation Guide](/latest/get-started/installation).
-2. An OpenAI-compatible inference endpoint and API key (see [Prerequisites — API and Service Access](/latest/get-started/prerequisites#api-and-service-access)).
+1. NeMo Gym installed using the [Installation Guide](/latest/get-started/installation).
+2. An OpenAI-compatible inference endpoint and API key (refer to [Prerequisites — API and Service Access](/latest/get-started/prerequisites#api-and-service-access)).
 3. Virtual environment activated.
 
 ## Configure Your Model Credentials
@@ -32,7 +32,7 @@ Create `env.yaml` in the project root:
 
 2. **Replace the placeholder API key** with your real key.
 
-3. **Verify the file isn't tracked by git** (it's gitignored by default):
+3. **Verify the file is not tracked by git** (it is gitignored by default):
 
    ```bash
    git status env.yaml   # should show no output
@@ -105,7 +105,7 @@ Use this for one-off runs without editing `env.yaml`.
 ## Troubleshoot Configuration
 
 <Accordion title="Missing mandatory value: policy_api_key">
-`env.yaml` doesn't exist or isn't in the project root. From the project root:
+`env.yaml` does not exist or is not in the project root. From the project root:
 
 ```bash
 ls env.yaml

@@ -22,7 +22,7 @@ NeMo Gym itself runs on a standard development laptop. GPU resources are only re
 | **GPU** | None | NVIDIA GPU 16 GB+ VRAM | Only required for local vLLM inference or NeMo RL training. |
 
 <Note>
-Some bundled environments (e.g. local model inference, vision-language tasks) have GPU requirements above the base library. Check the per-environment README for specifics.
+Some bundled environments (for example, local model inference and vision-language tasks) have GPU requirements above the base library. Check the per-environment README for specifics.
 </Note>
 
 ## Software Requirements
@@ -31,14 +31,14 @@ Some bundled environments (e.g. local model inference, vision-language tasks) ha
 
 - **Linux**: Ubuntu 20.04+, CentOS 7+, or equivalent.
 - **macOS**: 11.0+ for Intel, 12.0+ for Apple Silicon.
-- **Windows**: via WSL2 (Ubuntu 20.04+ recommended).
+- **Windows**: through WSL2 (Ubuntu 20.04+ recommended).
 
 ### Runtime Dependencies
 
 - **Python**: 3.12 or higher (required).
 - **Git**: for cloning the repository (Source install path).
 - **Docker**: for the container install path.
-- **uv**: recommended for the Source install path. Auto-installed via `curl` on first run if missing.
+- **uv**: recommended for the Source install path. Auto-installed with `curl` on first run if missing.
 - **Ray**: installed automatically as a dependency — no separate setup.
 
 ## Verified Configurations
@@ -83,7 +83,7 @@ Work through each item before starting installation.
 
 ## Troubleshoot Prerequisites
 
-If you can't tick a box above, check these first.
+If you cannot tick a box above, check these first.
 
 <Accordion title="Python version not 3.12+">
 Check the version on PATH:
@@ -92,7 +92,7 @@ Check the version on PATH:
 python3 --version
 ```
 
-If you have a newer Python installed but `python3` resolves to an older version, use `python3.12` explicitly or install via `pyenv` / `uv python install 3.12`.
+If you have a newer Python installed but `python3` resolves to an older version, use `python3.12` explicitly or install with `pyenv` / `uv python install 3.12`.
 </Accordion>
 
 <Accordion title="Insufficient disk space">
@@ -108,7 +108,7 @@ The Source install (`uv sync`) downloads ~1.5 GB of dependencies under `.venv/`.
 <Accordion title="API key not yet obtained">
 For OpenAI: create a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) and add ~$5 of credits at [billing](https://platform.openai.com/account/billing). The Quickstart uses ~$0.05.
 
-For self-hosted vLLM or Azure: see [Configuration](/latest/get-started/configuration) for the matching `env.yaml` shape.
+For self-hosted vLLM or Azure: refer to [Configuration](/latest/get-started/configuration) for the matching `env.yaml` shape.
 </Accordion>
 
 ## Next Steps
