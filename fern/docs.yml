@@ -2,11 +2,13 @@ instances:
   - url: https://gym.docs.buildwithfern.com/nemo/gym
     custom-domain: docs.nvidia.com/nemo/gym
 
-# NOTE: a `check.rules` block here breaks `fern check` — fern (4.99.0–5.1.0)
-# silently exits 1 with no output whenever broken-links or missing-redirects
-# is configured at any level. Broken links and missing redirects are still
-# caught at publish time by `fern generate --docs`. Restore this block once
-# fern-api fixes the bug.
+# Test: only missing-redirects, paired with FERN_TOKEN in fern-docs-ci.yml.
+# Probing whether the silent-exit fern bug is fixed by passing the token
+# (per fern docs, missing-redirects requires auth and should otherwise be
+# skipped). broken-links left out for now — looks like a separate bug.
+check:
+  rules:
+    missing-redirects: error
 
 title: NeMo Gym
 
