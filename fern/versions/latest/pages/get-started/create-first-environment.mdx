@@ -1,10 +1,10 @@
 ---
 title: "Create Your First Environment"
-description: "Build your first NeMo Gym environment by subclassing GymnasiumServer in 25 lines."
+description: "Build a single-decision Blackjack environment by subclassing GymnasiumServer."
 position: 5
 ---
 
-By the end of this tutorial, you will have written a tiny **"Guess the Number"** environment in ~25 lines of Python, wired it through a YAML config and a JSONL dataset, and scored an LLM agent against it. The shape is identical to [`blackjack`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/blackjack), the showcase Gymnasium-style environment.
+You ran [`blackjack`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/blackjack) end-to-end in the [Quickstart](/latest/get-started/quickstart). Now you'll build a stripped-down version of it — **MiniBlackjack** — in ~30 lines of Python. Same `reset()` / `step()` shape; only one decision per hand instead of looping hits.
 
 <Card>
 
@@ -64,15 +64,15 @@ For multi-step, tool-calling, and LLM-as-judge patterns, refer to the [Gymnasium
 1. **Create the directory tree**:
 
    ```bash
-   mkdir -p resources_servers/guess_number/{configs,data}
+   mkdir -p resources_servers/mini_blackjack/{configs,data}
    ```
 
    Final layout:
 
    ```text
-   resources_servers/guess_number/
+   resources_servers/mini_blackjack/
    ├── app.py
-   ├── configs/guess_number.yaml
+   ├── configs/mini_blackjack.yaml
    ├── data/example.jsonl
    └── requirements.txt
    ```
@@ -83,11 +83,11 @@ For multi-step, tool-calling, and LLM-as-judge patterns, refer to the [Gymnasium
    -e nemo-gym[dev] @ ../../
    ```
 
-**✅ Success Check**: `ls resources_servers/guess_number/` shows the expected directories.
+**✅ Success Check**: `ls resources_servers/mini_blackjack/` shows the expected directories.
 
 ### Implement the Environment
 
-Write `resources_servers/guess_number/app.py`:
+Write `resources_servers/mini_blackjack/app.py`. Each rollout: deal a hand worth 12-20, the model picks `<action>hit</action>` or `<action>stand</action>`, score against a fixed dealer hand of 17.
 
 ```python
 import random
@@ -98,48 +98,65 @@ from nemo_gym.openai_utils import NeMoGymResponse
 from resources_servers.gymnasium import GymnasiumServer, extract_text
 
 
-class GuessNumberEnv(GymnasiumServer):
+class MiniBlackjackEnv(GymnasiumServer):
     async def reset(self, metadata: dict, session_id: Optional[str] = None) -> tuple[Optional[str], dict]:
-        secret = random.randint(1, 5)
-        self.session_state[session_id] = {"secret": secret}
-        return "Guess a number between 1 and 5. Respond with <answer>N</answer>.", {}
+        rng = random.Random()
+        player = rng.randint(12, 20)
+        self.session_state[session_id] = {"player": player, "rng": rng}
+        return (
+            f"Your hand is worth {player}. Dealer stands on 17. "
+            "Respond with <action>hit</action> or <action>stand</action>."
+        ), {}
 
     async def step(
         self, action: NeMoGymResponse, metadata: dict, session_id: Optional[str] = None
     ) -> tuple[Optional[str], float, bool, bool, dict]:
-        secret = self.session_state[session_id]["secret"]
+        state = self.session_state[session_id]
         text = extract_text(action)
-        m = re.search(r"<answer>\s*(\d+)\s*</answer>", text)
-        guess = int(m.group(1)) if m else -1
-        reward = 1.0 if guess == secret else 0.0
-        return None, reward, True, False, {"secret": secret, "guess": guess}
+        m = re.search(r"<action>\s*(hit|stand)\s*</action>", text, re.IGNORECASE)
+        decision = m.group(1).lower() if m else "stand"
+
+        player = state["player"]
+        if decision == "hit":
+            player += state["rng"].randint(2, 11)
+
+        if player > 21:
+            reward, result = -1.0, "bust"
+        elif player > 17:
+            reward, result = 1.0, "beat dealer"
+        elif player == 17:
+            reward, result = 0.0, "push"
+        else:
+            reward, result = -1.0, "lost to dealer"
+
+        return None, reward, True, False, {"final": player, "result": result}
 
 
 if __name__ == "__main__":
-    GuessNumberEnv.run_webserver()
+    MiniBlackjackEnv.run_webserver()
 ```
 
-**✅ Success Check**: `reset()` picks a secret and primes the model. `step()` parses the model's `<answer>` tag, scores it, and terminates.
+**✅ Success Check**: `reset()` returns the hand description; `step()` parses the action tag, settles against a fixed-17 dealer, and terminates with `+1`, `0`, or `-1`.
 
 ### Wire the Configuration and Dataset
 
-1. **Add the config** at `resources_servers/guess_number/configs/guess_number.yaml`:
+1. **Add the config** at `resources_servers/mini_blackjack/configs/mini_blackjack.yaml`:
 
    ```yaml
-   guess_number:
+   mini_blackjack:
      resources_servers:
-       guess_number:
+       mini_blackjack:
          entrypoint: app.py
          domain: games
          verified: false
 
-   guess_number_gymnasium_agent:
+   mini_blackjack_gymnasium_agent:
      responses_api_agents:
        gymnasium_agent:
          entrypoint: app.py
          resources_server:
            type: resources_servers
-           name: guess_number
+           name: mini_blackjack
          model_server:
            type: responses_api_models
            name: policy_model
@@ -147,26 +164,28 @@ if __name__ == "__main__":
          datasets:
          - name: example
            type: example
-           jsonl_fpath: resources_servers/guess_number/data/example.jsonl
+           jsonl_fpath: resources_servers/mini_blackjack/data/example.jsonl
    ```
 
-2. **Add the example dataset** at `resources_servers/guess_number/data/example.jsonl`. One JSON object per line — duplicate the row below five times so the agent gets five chances.
+2. **Add the example dataset** at `resources_servers/mini_blackjack/data/example.jsonl`. One JSON object per line — duplicate the row below five times so the agent plays five hands.
 
    <Accordion title="Show the JSONL row">
    ```json
-   {"responses_create_params": {"input": [{"role": "system", "content": "You are playing a guessing game. Reply with <answer>N</answer>."}, {"role": "user", "content": "Begin."}]}, "agent_ref": {"type": "responses_api_agents", "name": "guess_number_gymnasium_agent"}}
+   {"responses_create_params": {"input": [{"role": "system", "content": "You are playing Blackjack. Decide whether to hit or stand based on your hand."}, {"role": "user", "content": "Deal me in."}]}, "agent_ref": {"type": "responses_api_agents", "name": "mini_blackjack_gymnasium_agent"}}
    ```
    </Accordion>
 
-**✅ Success Check**: `wc -l resources_servers/guess_number/data/example.jsonl` returns 5.
+**✅ Success Check**: `wc -l resources_servers/mini_blackjack/data/example.jsonl` returns 5.
 
 ### Run and Verify
+
+Same three commands you ran in the [Quickstart](/latest/get-started/quickstart), pointed at your new env.
 
 1. **Start the servers** (Terminal 1):
 
    ```bash
    ng_run "+config_paths=[\
-   resources_servers/guess_number/configs/guess_number.yaml,\
+   resources_servers/mini_blackjack/configs/mini_blackjack.yaml,\
    responses_api_models/openai_model/configs/openai_model.yaml]"
    ```
 
@@ -175,9 +194,9 @@ if __name__ == "__main__":
    ```bash
    mkdir -p results
    ng_collect_rollouts \
-       +agent_name=guess_number_gymnasium_agent \
-       +input_jsonl_fpath=resources_servers/guess_number/data/example.jsonl \
-       +output_jsonl_fpath=results/guess_rollouts.jsonl \
+       +agent_name=mini_blackjack_gymnasium_agent \
+       +input_jsonl_fpath=resources_servers/mini_blackjack/data/example.jsonl \
+       +output_jsonl_fpath=results/mini_blackjack_rollouts.jsonl \
        +num_repeats=4
    ```
 
@@ -185,24 +204,13 @@ if __name__ == "__main__":
 
    ```bash
    ng_reward_profile \
-       +materialized_inputs_jsonl_fpath=results/guess_rollouts_materialized_inputs.jsonl \
-       +rollouts_jsonl_fpath=results/guess_rollouts.jsonl
+       +materialized_inputs_jsonl_fpath=results/mini_blackjack_rollouts_materialized_inputs.jsonl \
+       +rollouts_jsonl_fpath=results/mini_blackjack_rollouts.jsonl
    ```
 
-   Example output:
-
-   ```text
-   key_metrics:
-     mean/reward: 0.20
-     max/reward:  1.00
-     min/reward:  0.00
-   ```
-
-**✅ Success Check**: `mean/reward` lands near `0.2` for random guessing on 1-5. A model that anchors on a single number will hit higher or lower depending on the secret distribution.
+**✅ Success Check**: A `mean/reward` line prints. A reasonable strategy (stand on 17+, hit on 12-16) lands near `0.0` to `+0.3`. A model that always hits busts often and lands negative.
 
 ## Summary
-
-Here is what you built.
 
 **You completed:**
 
@@ -217,7 +225,7 @@ Here is what you built.
 <Cards>
 
 <Card title="Read blackjack/app.py" href="https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/blackjack">
-Same shape, multi-step. The reference implementation.
+The full multi-step Blackjack you ran in Quickstart. Same shape, plus dealer logic and ace handling.
 
 <Badge minimal outlined>example</Badge>
 </Card>

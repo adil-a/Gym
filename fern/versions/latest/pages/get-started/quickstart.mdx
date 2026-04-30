@@ -4,25 +4,25 @@ description: "Run your first NeMo Gym rollout end-to-end against the Blackjack e
 position: 4
 ---
 
-In about **10 minutes**, you will run the Blackjack environment end-to-end and read your first scored agent rollout. NeMo Gym environments use the same **`reset()` / `step()` API** you know from [Gymnasium](https://gymnasium.farama.org/) — except the agent is an LLM and the actions are model outputs.
+By the end of this Quickstart, `ng_reward_profile` prints a `mean/reward` line like this:
 
-**Outcome**: a `mean/reward` win rate printed by `ng_reward_profile`. **Cost**: ~$0.05 in OpenAI usage.
+```text
+key_metrics:
+  mean/reward:  -0.60
+  max/reward:    1.00
+  min/reward:   -1.00
+  mean/total_tokens:  73.8
+```
+
+That is GPT-4.1's win rate playing 10 hands of Blackjack against the dealer. Below is the full path from a fresh terminal to that number, in **about 10 minutes** and **~$0.05** of OpenAI usage.
 
 ## Prerequisites
 
-Before you start, complete the following:
-
-1. Install NeMo Gym using the [Installation Guide](/latest/get-started/installation) (use the **Source** path — `ng_list_benchmarks` is not yet in the PyPI release).
-2. Set your model credentials in `env.yaml` (refer to [Configuration](/latest/get-started/configuration)).
-3. Activate the virtual environment: `source .venv/bin/activate`.
-
-<Tip>
-For comprehensive setup details and verified configurations, refer to [Prerequisites](/latest/get-started/prerequisites).
-</Tip>
+1. NeMo Gym installed via the [Source path](/latest/get-started/installation) (`ng_list_benchmarks` is not yet in the PyPI release).
+2. `env.yaml` configured with your model credentials ([Configuration](/latest/get-started/configuration)).
+3. Virtual environment activated: `source .venv/bin/activate`.
 
 ## Quickstart Steps
-
-Follow these steps to discover environments, run a rollout, and read the win rate.
 
 1. **Discover the CLI**
 
@@ -30,14 +30,7 @@ Follow these steps to discover environments, run a rollout, and read the win rat
    ng_help
    ```
 
-   Lists every `ng_*` command. Append `+h=true` or `+help=true` to any of them for detailed usage:
-
-   ```bash
-   ng_run +h=true
-   ng_collect_rollouts +h=true
-   ```
-
-   **✅ Success Check**: You see a table of CLI commands.
+   **✅ Success Check**: A table of `ng_*` commands prints. Append `+h=true` to any one of them for detailed usage.
 
 2. **List Available Benchmarks**
 
@@ -45,25 +38,9 @@ Follow these steps to discover environments, run a rollout, and read the win rat
    ng_list_benchmarks
    ```
 
-   Example output:
+   **✅ Success Check**: A table prints with ~30 benchmarks (`gpqa`, `aime25`, `ifbench`, and others). For this Quickstart, you'll run the smaller, self-contained Blackjack environment to learn the flow.
 
-   ```text
-   Available benchmarks in NeMo Gym
-   ┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
-   ┃ Benchmark name   ┃ Agent name                        ┃ Num repeats ┃
-   ┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━┩
-   │ aime25           │ aime25_math_with_judge_simple_ag… │ 32          │
-   │ gpqa             │ gpqa_mcqa_simple_agent            │ 8           │
-   │ ifbench          │ ifbench_benchmark_simple_agent    │ 5           │
-   │ ...              │ ...                               │ ...         │
-   └──────────────────┴───────────────────────────────────┴─────────────┘
-   ```
-
-   These are the canonical baselined benchmarks under `benchmarks/`. You'll run the smaller, self-contained Blackjack environment first to learn the flow.
-
-3. **Start the Servers (Terminal 1)**
-
-   Point `ng_run` at the Blackjack environment plus an OpenAI model server:
+3. **Start the Servers** (Terminal 1)
 
    ```bash
    ng_run "+config_paths=[\
@@ -71,21 +48,9 @@ Follow these steps to discover environments, run a rollout, and read the win rat
    responses_api_models/openai_model/configs/openai_model.yaml]"
    ```
 
-   The head server starts on port 11000; resources, model, and agent servers get auto-assigned ports. Leave this terminal running.
+   **✅ Success Check**: Four `Uvicorn running on http://127.0.0.1:<port>` lines print. Leave this terminal running.
 
-   **✅ Success Check**: You see four `Uvicorn running on http://127.0.0.1:<port>` lines.
-
-   <Tip>
-   List the running servers any time:
-
-   ```bash
-   curl http://localhost:11000/server_instances
-   ```
-   </Tip>
-
-4. **Collect Rollouts (Terminal 2)**
-
-   In a second terminal (with the venv activated), score the agent on Blackjack's example dataset (five hands, repeated twice):
+4. **Collect Rollouts** (Terminal 2)
 
    ```bash
    mkdir -p results
@@ -96,24 +61,18 @@ Follow these steps to discover environments, run a rollout, and read the win rat
        +num_repeats=2
    ```
 
+   **✅ Success Check**: `Collecting rollouts: 100%|████| 10/10` prints. Each rollout is one full hand: the model saw its cards, replied `<action>hit</action>` or `<action>stand</action>`, and the env returned reward `+1` (win), `0` (draw), or `-1` (loss/bust).
+
    <Accordion title="Flag reference">
    | Flag | Meaning |
    |---|---|
-   | `+agent_name` | Which agent server to invoke (from `ng_list_benchmarks` or your YAML). |
+   | `+agent_name` | Agent server to invoke (from `ng_list_benchmarks` or your YAML). |
    | `+input_jsonl_fpath` | Input dataset, one task per line. |
-   | `+output_jsonl_fpath` | Where to write rollouts (also writes `<output>_materialized_inputs.jsonl`). |
-   | `+num_repeats` | Rollouts per task — increase for stable metrics, decrease for speed. |
-   | `+limit` | Cap the number of input tasks (great for smoke tests). |
+   | `+output_jsonl_fpath` | Output file. Also writes `<output>_materialized_inputs.jsonl`. |
+   | `+num_repeats` | Rollouts per task. Higher = stabler metrics. |
+   | `+limit` | Cap the number of input tasks (smoke tests). |
    | `+num_samples_in_parallel` | Concurrency. Defaults to unlimited. |
    </Accordion>
-
-   **✅ Success Check**: A progress bar finishes at `10/10`:
-
-   ```text
-   Collecting rollouts: 100%|████████████| 10/10 [00:08<00:00,  1.25s/it]
-   ```
-
-   Each rollout is a full transcript: the model saw its hand, decided `<action>hit</action>` or `<action>stand</action>`, and `step()` returned a reward of +1 (win), 0 (draw), or -1 (loss/bust).
 
 5. **Read the Win Rate**
 
@@ -123,20 +82,18 @@ Follow these steps to discover environments, run a rollout, and read the win rat
        +rollouts_jsonl_fpath=results/blackjack_rollouts.jsonl
    ```
 
-   The profiler prints aggregate metrics — mean/max/min reward, token usage, win/loss distribution. For Blackjack, GPT-4.1 lands around **`mean/reward = -0.6`** on this 10-rollout sample.
-
-   **✅ Success Check**: You see `mean/reward`, `max/reward`, and `min/reward` printed in a table. A real evaluation needs `+num_repeats=16` or more for stable numbers.
+   **✅ Success Check**: The output at the top of this page prints. GPT-4.1 lands around `mean/reward = -0.6` on this 10-rollout sample. A real evaluation uses `+num_repeats=16` or higher for stable numbers.
 
 6. **Stop the Servers**
 
-   In terminal 1: `Ctrl+C`.
+   In Terminal 1: `Ctrl+C`.
 
-That's the full eval loop: discover → run → collect → score. The same three commands work for every environment in `ng_list_benchmarks` — only the config paths and dataset change.
+The same three commands — `ng_run`, `ng_collect_rollouts`, `ng_reward_profile` — work for every environment listed by `ng_list_benchmarks`. Only the config paths and dataset change.
 
 ## Troubleshooting
 
 <Accordion title="Command not found: ng_run">
-Activate the virtual environment in this terminal:
+The virtual environment is not activated in this terminal:
 
 ```bash
 source .venv/bin/activate
@@ -153,18 +110,16 @@ Add credits at [platform.openai.com/account/billing](https://platform.openai.com
 
 ## Next Steps
 
-Now that you've run an environment end-to-end, explore these resources to go further.
-
 <Cards>
 
 <Card title="Create Your First Environment" href="/latest/get-started/create-first-environment">
-Build your own environment by subclassing `GymnasiumServer` in 25 lines.
+Build a Gymnasium-style env from scratch — same shape as Blackjack.
 
 <Badge intent="success" minimal outlined>build your own</Badge>
 </Card>
 
 <Card title="Run a Real Benchmark" href="https://github.com/NVIDIA-NeMo/Gym#-available-environments">
-Pick a benchmark from `ng_list_benchmarks` and run it with the same flow.
+Run `gpqa`, `aime25`, or any other entry from `ng_list_benchmarks`.
 
 <Badge minimal outlined>benchmarks</Badge>
 </Card>
@@ -176,7 +131,7 @@ How environments define tasks, tools, and verification.
 </Card>
 
 <Card title="Training Tutorials" href="/latest/training-tutorials">
-Improve your agent or model with RL or fine-tuning.
+Train a model on a NeMo Gym environment.
 
 <Badge minimal outlined>training</Badge>
 </Card>
