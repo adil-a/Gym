@@ -62,9 +62,7 @@ Averaging those over 10 rollouts gives GPT-4.1 around `-0.6` against a fixed dea
    responses_api_models/openai_model/configs/openai_model.yaml]"
    ```
 
-   `ng_run` blocks while the [resources, model, and agent servers](/latest/about/concepts/core-components) run. Leave Terminal 1 running and open a second terminal.
-
-   **✅ Success Check**: Four `Uvicorn running on http://127.0.0.1:<port>` lines print — one each for the head, resources, model, and agent servers.
+   `ng_run` blocks while the [resources, model, and agent servers](/latest/about/concepts/core-components) run. Four `Uvicorn running on http://127.0.0.1:<port>` lines print — one each for the head, resources, model, and agent servers. Leave Terminal 1 running and open a second terminal.
 
    <Tip>
    On a repeat run with no dependency changes, append `+skip_venv_if_present=true` to `ng_run` to skip venv re-creation.
@@ -81,9 +79,7 @@ Averaging those over 10 rollouts gives GPT-4.1 around `-0.6` against a fixed dea
        +num_repeats=2
    ```
 
-   5 example tasks × 2 repeats = 10 rollouts.
-
-   **✅ Success Check**: `Collecting rollouts: 100%|████| 10/10` prints. Each [rollout](/latest/about/concepts/key-terminology#rollout--data-collection-terms) is one full hand: the model saw its cards, replied `<action>hit</action>` or `<action>stand</action>`, and the env returned reward `+1` (win), `0` (draw), or `-1` (loss/bust).
+   5 example tasks × 2 repeats = 10 rollouts. Each [rollout](/latest/about/concepts/key-terminology#rollout--data-collection-terms) is one full hand: the model sees its cards, replies `<action>hit</action>` or `<action>stand</action>`, and the env returns reward `+1` (win), `0` (draw), or `-1` (loss / bust).
 
    <Accordion title="Flag reference">
    | Flag | Meaning |
@@ -106,7 +102,7 @@ Averaging those over 10 rollouts gives GPT-4.1 around `-0.6` against a fixed dea
    "
    ```
 
-   **✅ Success Check**: Prints something like `mean reward: -0.60 (10 rollouts)`. For a stable evaluation, raise `+num_repeats` to 16 or higher.
+   Outputs `mean reward: -0.60 (10 rollouts)` or similar. For a stable evaluation, raise `+num_repeats` to 16 or higher.
 
 6. **Stop the Servers**
 
