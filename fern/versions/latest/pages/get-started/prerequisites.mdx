@@ -1,10 +1,10 @@
 ---
 title: "Prerequisites"
-description: "System requirements, verified configurations, and pre-installation checklist for NeMo Gym."
+description: "System requirements for running NeMo Gym."
 position: 1
 ---
 
-Confirm your machine meets the requirements below before installing NeMo Gym.
+What you need to install and run NeMo Gym.
 
 <Tip>
 **30-second check**: Python 3.12+, 8 GB RAM, an OpenAI-compatible API key. If all three are true, skip to [Installation](/latest/get-started/installation).
@@ -12,106 +12,25 @@ Confirm your machine meets the requirements below before installing NeMo Gym.
 
 ## Hardware Requirements
 
-NeMo Gym itself runs on a standard development laptop. GPU resources are only required for local model inference (vLLM) or RL training (NeMo RL).
-
-| Component | Minimum | Recommended | Notes |
-| --- | --- | --- | --- |
-| **CPU** | Any modern x86_64 or ARM64 | — | Intel, AMD, or Apple Silicon. |
-| **RAM** | 8 GB | 16 GB+ | More for larger environments and concurrent rollouts. |
-| **Storage** | 2 GB free | 5 GB+ | Source install plus benchmark data. |
-| **GPU** | None | NVIDIA GPU 16 GB+ VRAM | Only required for local vLLM inference or NeMo RL training. |
-
-<Note>
-Some bundled environments (for example, local model inference and vision-language tasks) have GPU requirements above the base library. Check the per-environment README for specifics.
-</Note>
+| Component | Minimum | Notes |
+| --- | --- | --- |
+| **CPU** | Any modern x86_64 or ARM64 | Intel, AMD, or Apple Silicon |
+| **RAM** | 8 GB | 16 GB+ recommended for concurrent rollouts |
+| **Storage** | 2 GB free | More for benchmark data |
+| **GPU** | None | Required only for local vLLM inference or NeMo RL training |
 
 ## Software Requirements
 
 | Component | Requirement |
 | --- | --- |
-| **Linux** | Ubuntu 20.04+, CentOS 7+, or equivalent |
-| **macOS** | 11.0+ for Intel, 12.0+ for Apple Silicon |
-| **Windows** | Through WSL2 (Ubuntu 20.04+ recommended) |
-| **Python** | 3.12 or higher (required) |
+| **OS** | Linux (Ubuntu 20.04+), macOS (11.0+), or Windows (WSL2) |
+| **Python** | 3.12 or higher |
 | **Git** | For cloning the repository (Source install path) |
 | **Docker** | For the container install path |
-| **uv** | Recommended for the Source install path; auto-installed with `curl` if missing |
-| **Ray** | Auto-installed as a dependency — no separate setup |
+| **API key** | OpenAI, Azure, or self-hosted vLLM endpoint (refer to [Configuration — Do You Need an API Key?](/latest/get-started/configuration#do-you-need-an-api-key)) |
 
-## Verified Configurations
-
-The following configurations are tested in CI and verified to work.
-
-| Operating System | Architecture | Python | Status |
-| --- | --- | --- | --- |
-| Ubuntu 22.04 LTS | x86_64 | 3.12 | ✅ Verified |
-| macOS 14+ | Apple Silicon (M1/M2/M3) | 3.12 | ✅ Verified |
-| macOS 13+ | x86_64 (Intel) | 3.12 | ✅ Verified |
-| Windows 11 | x86_64 (WSL2) | 3.12 | ✅ Verified |
-
-## Network Requirements
-
-Internet access is required during installation to download Python packages, and at runtime for any environment that calls a model API or fetches external datasets.
-
-- **Internet Connection**: Required for downloading dependencies and calling model APIs.
-- **Proxy**: Standard `HTTPS_PROXY` / `HTTP_PROXY` environment variables are honored.
-
-### API and Service Access
-
-The Quickstart and most bundled environments call an OpenAI-compatible inference endpoint. Pick one of:
-
-- **OpenAI**: API key from [platform.openai.com](https://platform.openai.com/api-keys). Quickstart cost: about $0.05.
-- **Azure OpenAI**: same shape, different `base_url` and key.
-- **Self-hosted**: vLLM or any OpenAI-compatible server with function-calling support. No real key required — the field exists but is ignored.
-
-The model must support function calling for tool-using agents.
-
-<Note>
-Metadata-only CLIs (`ng_help`, `ng_list_benchmarks`, `ng_dump_config`, `ng_prepare_data`) do not need an API key or any model configuration. Refer to [Configuration — Do You Need an API Key?](/latest/get-started/configuration#do-you-need-an-api-key) for the full breakdown.
-</Note>
-
-## Pre-Installation Checklist
-
-Work through each item before starting installation.
-
-- [ ] **Operating system** meets a verified configuration above
-- [ ] **Python 3.12+** installed and on PATH
-- [ ] **8 GB RAM** available
-- [ ] **2 GB disk space** available
-- [ ] **Git** installed (Source install path)
-- [ ] **Network access** to PyPI and your model API endpoint
-- [ ] **API key** obtained for OpenAI, Azure, or your self-hosted endpoint
-
-## Troubleshoot Prerequisites
-
-If you cannot tick a box above, check these first.
-
-<Accordion title="Python version not 3.12+">
-Check the version on PATH:
-
-```bash
-python3 --version
-```
-
-If you have a newer Python installed but `python3` resolves to an older version, use `python3.12` explicitly or install with `pyenv` / `uv python install 3.12`.
-</Accordion>
-
-<Accordion title="Insufficient disk space">
-Check available disk:
-
-```bash
-df -h
-```
-
-The Source install (`uv sync`) downloads about 1.5 GB of dependencies under `.venv/`. Move the install to a roomier volume if needed.
-</Accordion>
-
-<Accordion title="API key not yet obtained">
-For OpenAI: create a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) and add about $5 in credits at [billing](https://platform.openai.com/account/billing). The Quickstart uses about $0.05.
-
-For self-hosted vLLM or Azure: refer to [Configuration](/latest/get-started/configuration) for the matching `env.yaml` shape.
-</Accordion>
+For cluster, Kubernetes, or production deployment specifics, refer to [Deployment Topology](/latest/infrastructure/deployment-topology).
 
 ## Next Steps
 
-Ready to install? Proceed to the [Installation Guide](/latest/get-started/installation).
+Continue to [Installation](/latest/get-started/installation).

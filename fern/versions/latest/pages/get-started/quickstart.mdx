@@ -102,6 +102,8 @@ Averaging those over 10 rollouts gives GPT-4.1 around `-0.6` against a fixed dea
 
    In Terminal 1: `Ctrl+C`.
 
+Blackjack is wired up for fast smoke testing. The same `ng_run` + `ng_collect_rollouts` flow runs any benchmark from `ng_list_benchmarks` (`gpqa`, `aime25`, `ifbench`, and others) — only the config paths and dataset change.
+
 ## Troubleshooting
 
 <Accordion title="Command not found: ng_run">
