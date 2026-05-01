@@ -103,23 +103,6 @@ Many teams will use both. A typical pattern: classic benchmarks on lm-eval, safe
 
 ---
 
-## What We Promise
-
-Most competing frameworks hide complexity until users hit it — vLLM context surprises, sandbox network behavior, scoring-on-error semantics, dataset drift. NeMo Gym docs commit to documenting the hard parts up front. The audit of competitor issue queues showed the same recurring complaints across every framework; the table below is what we promise to surface explicitly, with the proof-point pages we hold ourselves to.
-
-| Promise | Where it lives |
-| --- | --- |
-| Tested model and provider matrix — vLLM, OpenAI Responses vs chat completions, Azure, OpenRouter, reasoning blocks per model family | [Provider Compatibility](/v0.2/reference/provider-compatibility) |
-| Sandbox and execution backends — local, Ray, Docker / Podman, network behavior, security boundaries, install strategy | [Sandbox & Execution Matrix](/v0.2/reference/sandbox-execution-matrix) |
-| Reward and scoring semantics — what happens on verifier errors, timeouts, parse failures, retries, pass@k aggregation | [Reward Semantics](/v0.2/about/concepts/reward-semantics) |
-| Environment quality bar — deterministic verifiers, no oracle leakage, locked dependencies, expected baseline variance | [Quality Checklist](/v0.2/build-environments/quality-checklist) |
-| Reproducibility contracts — every official benchmark ships a `validate-your-setup` command with expected output and locked dataset version | [Validate Your Setup](/v0.2/evaluate/validate-your-setup) |
-| Symptom-organized failure modes — Hydra quoting, vLLM `max_seq_length`, Ray socket length, cookies-across-servers, reward-always-zero | [Footguns](/v0.2/troubleshooting/footguns) |
-
-Pages marked above are part of the 0.3.0 IA buildout; some are stubs today and will fill in as the contracts they document harden. The promise is that every hard part lives at a known URL — not buried in a GitHub issue thread.
-
----
-
 ## Where to Start
 
 - **[Quickstart](/v0.2/get-started/quickstart)** — install, configure, run, and collect rollouts on one page.
