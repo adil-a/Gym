@@ -74,7 +74,7 @@ If you already train with one of these frameworks, here is how `env.yaml` maps t
 | --- | --- | --- |
 | **NeMo RL** | `policy_base_url` points at your generation backend; `policy_model_name` matches the served model name in your NeMo RL config | NeMo Gym calls the same OpenAI-compatible endpoint your training loop uses for rollout generation |
 | **veRL** | `policy_base_url` is the inference server you serve from (vLLM, SGLang, etc.); `policy_model_name` is the served alias | Wire NeMo Gym to the same inference endpoint your training loop uses; keys/secrets stay in `env.yaml`, never in environment configs |
-| **Unsloth** | `policy_base_url: http://localhost:8000/v1` (vLLM served by Unsloth); `policy_model_name` matches the LoRA adapter name | Refer to the [Unsloth tutorial](/latest/training-tutorials/unsloth) for end-to-end wiring |
+| **Unsloth** | `policy_base_url: http://localhost:8000/v1` (vLLM served by Unsloth); `policy_model_name` matches the LoRA adapter name | Refer to the [Unsloth tutorial](/latest/train-models/unsloth) for end-to-end wiring |
 
 The same `env.yaml` is read by every NeMo Gym CLI — `ng_run`, `ng_collect_rollouts`, `ng_reward_profile`, and the others. You configure once.
 

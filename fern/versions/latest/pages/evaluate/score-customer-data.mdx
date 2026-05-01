@@ -10,7 +10,7 @@ When you need to score a model against your own dataset — production validatio
 
 | Your data fits an existing scorer | Your data needs custom scoring |
 |---|---|
-| Reuse the resources_server's `verify()` logic. Author a JSONL in the shape that scorer expects, point `ng_collect_rollouts` at it. **Covered on this page.** | Build a new resources_server with your own `verify()`. Refer to [Design a Customer Evaluation](/latest/environment-tutorials/designing-customer-evaluation). |
+| Reuse the resources_server's `verify()` logic. Author a JSONL in the shape that scorer expects, point `ng_collect_rollouts` at it. **Covered on this page.** | Build a new resources_server with your own `verify()`. Refer to [Design a Customer Evaluation](/latest/build-environments/designing-customer-evaluation). |
 
 If your customer's task is "math problems with a single boxed answer," reuse `math_with_judge`. If it's "did the model call the right tool with the right arguments," reuse `single_step_tool_use_with_argument_comparison`. If it's "domain-specific structured output that needs a custom checker," build a new resources_server.
 
@@ -125,11 +125,11 @@ Reuse stops paying off the moment your task diverges from what the env scores. B
 - **Your rollout shape doesn't match.** A single-turn env can't score a multi-turn refinement loop, and vice versa. Pick the agent that matches your interaction shape, or author a new one.
 - **Your reward isn't binary and the env's is.** If you need partial credit graded against a rubric and the env returns `{0.0, 1.0}`, the verifier is the wrong tool.
 
-For the build-side flow — designing custom verification, fitting messy production data, working with customers to define "good" — refer to [Design a Customer Evaluation](/latest/environment-tutorials/designing-customer-evaluation).
+For the build-side flow — designing custom verification, fitting messy production data, working with customers to define "good" — refer to [Design a Customer Evaluation](/latest/build-environments/designing-customer-evaluation).
 
 ## Next Steps
 
 - [Validate Your Setup](/latest/evaluate/validate-your-setup) — confirm the install on the env's `example.jsonl` before pointing at your data.
 - [Profile Rewards](/latest/evaluate/profile-rewards) — drill from aggregate score into per-task pass rates.
 - [Inspect Failures](/latest/evaluate/inspect-failures) — open the rollouts JSONL on the customer-data tasks the model failed.
-- [Design a Customer Evaluation](/latest/environment-tutorials/designing-customer-evaluation) — build-side counterpart for when reuse isn't enough.
+- [Design a Customer Evaluation](/latest/build-environments/designing-customer-evaluation) — build-side counterpart for when reuse isn't enough.

@@ -31,14 +31,14 @@ navigation:
       - folder: ./latest/pages/data
         title: "Data"
         title-source: frontmatter
-      - folder: ./latest/pages/environment-tutorials
-        title: "Environment Tutorials"
+      - folder: ./latest/pages/build-environments
+        title: "Build Environments"
         title-source: frontmatter
       - folder: ./latest/pages/evaluate
         title: "Evaluate Models"
         title-source: frontmatter
-      - folder: ./latest/pages/training-tutorials
-        title: "Training Tutorials"
+      - folder: ./latest/pages/train-models
+        title: "Train Models"
         title-source: frontmatter
       - folder: ./latest/pages/model-recipes
         title: "Model Recipes"

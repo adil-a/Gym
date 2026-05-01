@@ -21,7 +21,7 @@ The agent gets one prompt, emits one answer, and the verifier scores it. Most ev
 
 **Reference environment:** [`resources_servers/example_single_tool_call`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/example_single_tool_call) — minimal weather tool with single-call verification.
 
-**Tutorial:** [Single-Step Environment](/latest/environment-tutorials/single-step-environment).
+**Tutorial:** [Single-Step Environment](/latest/build-environments/single-step-environment).
 
 ---
 
@@ -36,7 +36,7 @@ The agent and a simulated user (or evaluator) exchange messages over multiple tu
 
 **Reference environment:** [`resources_servers/multichallenge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/multichallenge) — multi-turn conversational benchmark.
 
-**Tutorial:** [Multi-Step Environment](/latest/environment-tutorials/multi-step-environment) covers iterative tool calls; multi-turn dialog reuses the same agent loop but with the environment producing user-role messages.
+**Tutorial:** [Multi-Step Environment](/latest/build-environments/multi-step-environment) covers iterative tool calls; multi-turn dialog reuses the same agent loop but with the environment producing user-role messages.
 
 ---
 
@@ -51,7 +51,7 @@ The resources server holds per-episode state across tool calls (counter, game st
 
 **Reference environment:** [`resources_servers/example_session_state_mgmt`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/example_session_state_mgmt) — counter with per-session state. [`resources_servers/blackjack`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/blackjack) is a fuller game-state example.
 
-**Tutorial:** [Stateful Environment](/latest/environment-tutorials/stateful-environment).
+**Tutorial:** [Stateful Environment](/latest/build-environments/stateful-environment).
 
 ---
 
@@ -66,7 +66,7 @@ The resources server registers structured tool endpoints; the agent decides when
 
 **Reference environment:** [`resources_servers/example_multi_step`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/example_multi_step) — two tools called in sequence, ground-truth verification. [`resources_servers/tavily_search`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/tavily_search) is a real external-API tool.
 
-**Tutorial:** [Multi-Step Environment](/latest/environment-tutorials/multi-step-environment).
+**Tutorial:** [Multi-Step Environment](/latest/build-environments/multi-step-environment).
 
 ---
 
@@ -81,7 +81,7 @@ The agent emits code (Python, SQL, Lean, shell). The resources server runs it in
 
 **Reference environment:** [`resources_servers/code_gen`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/code_gen) — subprocess execution with Ray for compilation/execution benchmarks. [`resources_servers/math_with_code`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/math_with_code) and [`resources_servers/math_formal_lean`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/math_formal_lean) are domain-specific variants.
 
-**Tutorial:** Adapt the [Single-Step Environment](/latest/environment-tutorials/single-step-environment) `verify()` to shell out to a subprocess. See `code_gen/app.py` for the bounded-concurrency pattern with `asyncio.Semaphore`.
+**Tutorial:** Adapt the [Single-Step Environment](/latest/build-environments/single-step-environment) `verify()` to shell out to a subprocess. See `code_gen/app.py` for the bounded-concurrency pattern with `asyncio.Semaphore`.
 
 ---
 
@@ -96,7 +96,7 @@ A second model grades open-ended output against a rubric or reference answer. Us
 
 **Reference environment:** [`resources_servers/math_with_judge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/math_with_judge) — math problems graded by a judge model. [`resources_servers/equivalence_llm_judge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/equivalence_llm_judge) is the general-purpose pattern.
 
-**Tutorial:** [LLM-as-a-judge in verification](/latest/environment-tutorials/llm-as-judge-verification).
+**Tutorial:** [LLM-as-a-judge in verification](/latest/build-environments/llm-as-judge-verification).
 
 ---
 
@@ -111,7 +111,7 @@ The environment wraps an existing third-party benchmark library (Aviary, Reasoni
 
 **Reference environment:** [`resources_servers/aviary`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/aviary) (paired with [`responses_api_agents/aviary_agent`](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/aviary_agent)). [`resources_servers/reasoning_gym`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/reasoning_gym), [`resources_servers/gymnasium`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/gymnasium), and the [`responses_api_agents/verifiers_agent`](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/verifiers_agent) follow the same shape.
 
-**Tutorial:** [Integrate external libraries](/latest/environment-tutorials/integrate-external-environments).
+**Tutorial:** [Integrate external libraries](/latest/build-environments/integrate-external-environments).
 
 ---
 
@@ -141,7 +141,7 @@ The environment generates rollouts usable for training: deterministic verifier, 
 
 **Reference environment:** [`resources_servers/instruction_following`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/instruction_following) — deterministic rule-based verification with train and validation splits. [`resources_servers/math_with_code`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/math_with_code) is the math/code analog.
 
-**Cross-link:** [NeMo RL (GRPO)](/latest/training-tutorials/nemo-rl-grpo) and [Reward Semantics](/latest/about/concepts/reward-semantics).
+**Cross-link:** [NeMo RL (GRPO)](/latest/train-models/nemo-rl-grpo) and [Reward Semantics](/latest/about/concepts/reward-semantics).
 
 ---
 
