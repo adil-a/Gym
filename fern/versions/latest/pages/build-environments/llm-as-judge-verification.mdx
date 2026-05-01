@@ -8,16 +8,9 @@ position: 11
 ---
 import { NavButton } from "../../../../components/NavButton";
 
-Use a **second language model** inside your resources server's `verify()` when rewards depend on semantic equivalence, rubrics, or other judgments that are expensive or awkward to encode in deterministic code.
+Call a second language model inside the resources server's `verify()` when rewards depend on semantic equivalence, rubrics, or other judgments that are expensive or awkward to encode in deterministic code. The walkthrough uses [`over_refusal_detection`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/over_refusal_detection) with `gpt-4o-mini` for both policy and judge — minimal path first, production variants after.
 
-This tutorial is a beginner-first walkthrough. It gives you a minimal path that works first, then shows common production variants.
-
-The walkthrough uses [`over_refusal_detection`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/over_refusal_detection) as its running example. By the end, you will:
-
-- Understand where the judge runs in NeMo Gym.
-- Wire judge model config in YAML.
-- Call the judge from `verify()` and parse strict verdict labels.
-- Handle failures without crashing verification.
+The page covers where the judge runs in NeMo Gym, how to wire its model config in YAML, how to call it from `verify()` and parse strict verdict labels, and how to handle failures without crashing verification.
 
 <NavButton href="/latest/build-environments" label="Back to Build Environments" direction="back" />
 
@@ -25,12 +18,12 @@ The walkthrough uses [`over_refusal_detection`](https://github.com/NVIDIA-NeMo/G
 
 ## Quick mental model
 
-- The **agent server** orchestrates each rollout by calling the **policy model server** for inference and the **resources server** for tool execution and verification. Together they produce the full rollout.
-- When the rollout ends, the **resources server** receives the output in `verify()`.
-- `verify()` may call a **judge model** to score semantic quality.
-- The judge's text output gets parsed and returned as a response with a numeric `reward` field — the RL training signal.
+- The agent server (the agent harness) orchestrates each rollout by calling the policy model server for inference and the resources server (the verifier) for tool execution and verification.
+- When the rollout ends, the resources server receives the output in `verify()`.
+- `verify()` calls a judge model to score semantic quality.
+- The judge's text output is parsed into a numeric `reward` field — the RL training signal.
 
-The judge is a verifier dependency — it is **not** the policy.
+The judge is a verifier dependency — not the policy.
 
 ---
 
@@ -44,7 +37,7 @@ The judge is a verifier dependency — it is **not** the policy.
 
 ## Architecture: where the judge runs
 
-During rollout collection, the **agent** first calls the **policy model**. When the episode ends, the **resources server** runs `verify()`. An LLM judge is **not** the policy: it is an extra inference call **started from inside `verify()`**, after you have the model’s final output (and any verifier metadata from the JSONL line).
+During rollout collection, the agent calls the policy model first. When the episode ends, the resources server runs `verify()`. An LLM judge is **not** the policy — it's an extra inference call started from inside `verify()` after the model's final output (and any verifier metadata from the JSONL line) is in hand.
 
 ```mermaid
 %%{init: {'theme': 'default', 'themeVariables': { 'lineColor': '#5c6bc0', 'primaryTextColor': '#333'}}}%%
@@ -58,15 +51,15 @@ flowchart LR
   J --> R
 ```
 
-**Typical in-repo pattern (Gym-internal):** `verify()` uses `self.server_client.post(..., url_path="/v1/responses", ...)` to call a **named model server** declared in the same Hydra config. The judge therefore goes through NeMo Gym’s **Responses API** surface, same as rollouts.
+**Typical in-repo pattern (Gym-internal):** `verify()` uses `self.server_client.post(..., url_path="/v1/responses", ...)` to call a named model server declared in the same Hydra config. The judge goes through NeMo Gym's Responses API surface, same as rollouts.
 
-**Alternative pattern (external):** some servers call an **OpenAI-compatible** `chat.completions` client pointed at URLs you supply (e.g. HPC or a separate cluster). [`proof_verification`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/proof_verification) routes to external judges when `JUDGE_SERVER_ARGS` is set, and otherwise uses the internal `/v1/responses` path.
+**Alternative pattern (external):** some servers call an OpenAI-compatible `chat.completions` client pointed at URLs you supply (HPC, a separate cluster, ...). [`proof_verification`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/proof_verification) routes to external judges when `JUDGE_SERVER_ARGS` is set; otherwise it uses the internal `/v1/responses` path.
 
 For how NeMo Gym sits next to GPUs and training frameworks, see [Deployment Topology](/latest/reference/deployment-topology).
 
 ---
 
-In production, the judge is typically a **dedicated Gym model server** — a separate `responses_api_models` entry in your Hydra config that can point at any OpenAI-compatible endpoint (a co-located vLLM instance, a remote cluster, or a managed API). For this walkthrough, we skip the separate model and reuse the same OpenAI endpoint for both the policy and the judge.
+Production judges typically run as a dedicated Gym model server — a separate `responses_api_models` entry in the Hydra config pointed at any OpenAI-compatible endpoint (co-located vLLM, remote cluster, managed API). The walkthrough skips the separate server and reuses the same OpenAI endpoint for both the policy and the judge.
 
 ---
 
@@ -74,13 +67,13 @@ In production, the judge is typically a **dedicated Gym model server** — a sep
 
 [`over_refusal_detection`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/over_refusal_detection) trains models to avoid over-refusing safe prompts (e.g., treating "How do I kill a Linux process?" as dangerous). The judge decides whether the policy model helpfully **complied** or inappropriately **refused**.
 
-This walkthrough uses **OpenAI `gpt-4o-mini`** as both the policy and judge model — no GPUs required. It has two parts: first you'll read through how the config and code work, then you'll run it.
+The walkthrough runs OpenAI `gpt-4o-mini` as both the policy and judge — no GPUs required. The first half walks through the config and code; the second half runs it.
 
 ### How it works
 
 #### `env.yaml`: configure your API key
 
-If you haven't already, configure your OpenAI API key in `env.yaml` in the repository root:
+Configure the OpenAI API key in `env.yaml` at the repository root:
 
 ```yaml
 openai_api_key: ???
@@ -89,18 +82,16 @@ policy_base_url: https://api.openai.com/v1
 policy_model_name: gpt-4o-mini
 ```
 
-Since we're reusing the policy model as the judge, no extra endpoint fields are needed.
+Reusing the policy model as the judge means no extra endpoint fields are needed.
 
 #### YAML config: declaring the judge
 
-The resources server config points the judge at the policy model — `judge_model_server.name: policy_model`. Below is a simplified view of `resources_servers/over_refusal_detection/configs/over_refusal_detection.yaml` (the full judge prompt is truncated — see the full file for the complete template including worked examples).
+The resources server config points the judge at the policy model via `judge_model_server.name: policy_model`. Below is a simplified view of `resources_servers/over_refusal_detection/configs/over_refusal_detection.yaml` (the full judge prompt is truncated — see the full file for the complete template including worked examples).
 
 <Info>
-The config file ships with a `judge_model` block that starts a dedicated judge server. In production, you can use a separate judge by setting `judge_model_server.name: judge_model` and pointing the `judge_base_url` / `judge_api_key` / `judge_model_name` variables at a different endpoint. This lets you use a different model, provider, or quota for the judge.
+The shipped config includes a `judge_model` block that starts a dedicated judge server. In production, swap to a separate judge by setting `judge_model_server.name: judge_model` and pointing the `judge_base_url` / `judge_api_key` / `judge_model_name` variables at a different endpoint — useful for a different model, provider, or quota.
 
-Since this walkthrough reuses `policy_model` as the judge, **comment out the `judge_model` block** as shown below — otherwise `ng_run` will start an unused server that still needs its variables to resolve.
-
-Be sure to **set `judge_model_server.name` to `policy_model`** as well.
+For this walkthrough, **comment out the `judge_model` block** (shown below) and **set `judge_model_server.name` to `policy_model`**. Otherwise `ng_run` starts an unused server whose variables still need to resolve.
 
 </Info>
 
@@ -140,14 +131,14 @@ over_refusal_detection:
 
 Key points:
 
-- `judge_model_server` references a model server by name. Here `policy_model` means the judge calls go through the same OpenAI endpoint used for rollouts.
+- `judge_model_server` references a model server by name. `policy_model` here means judge calls go through the same OpenAI endpoint used for rollouts.
 - `judge_responses_create_params` sets generation parameters for the judge call (`temperature: 0.0` for determinism).
-- `complied_label` / `refused_label` are specific to `over_refusal_detection`. Other servers define their own verdict labels — e.g., `equivalence_llm_judge` uses `judge_equal_label` / `judge_not_equal_label`. The names and values are up to each server's design.
-- The bare minimum config for any LLM-as-a-judge server is `judge_model_server` (which model to call) and `judge_responses_create_params` (how to call it). Everything else — prompt templates, verdict labels, reward values — is server-specific.
+- `complied_label` / `refused_label` are specific to `over_refusal_detection`. Other servers define their own verdict labels — e.g., `equivalence_llm_judge` uses `judge_equal_label` / `judge_not_equal_label`. Names and values are up to each server's design.
+- The bare minimum for any LLM-as-a-judge server is `judge_model_server` (which model to call) and `judge_responses_create_params` (how to call it). Prompt templates, verdict labels, and reward values are server-specific.
 
 #### Building judge input and calling `/v1/responses`
 
-Inside `over_refusal_detection/app.py`, the `_evaluate_compliance` method fills in the prompt template and posts to the judge. You don't need to write this code to use the server — this is what happens under the hood when `verify()` runs:
+Inside `over_refusal_detection/app.py`, `_evaluate_compliance` fills in the prompt template and posts to the judge. The user of the server doesn't write this — it's what happens under the hood during `verify()`:
 
 ```python
 user_prompt = cfg.judge_prompt_template.format(
@@ -171,7 +162,7 @@ response = await self.server_client.post(
 
 #### Parsing strict labels and returning reward
 
-The server looks for the configured verdict labels in the judge's text. Whichever label appears first wins; if neither appears, the output is treated as ambiguous:
+The server scans the judge's text for the configured verdict labels. Whichever label appears first wins; if neither appears, the output is treated as ambiguous:
 
 ```python
 complied_pos = text.find(cfg.complied_label)    # "[[COMPLIED]]"
@@ -197,7 +188,7 @@ else:
     reward = self.config.reward_if_unclear    # 0.5
 ```
 
-If you are building your own LLM-judge server, you will write similar code — the pattern above (fill template, POST to judge, parse labels, map to reward) is the same across all judge servers in the repo.
+Custom LLM-judge servers follow the same pattern: fill template, POST to judge, parse labels, map to reward. Every judge server in the repo uses this shape.
 
 ### Try it
 
@@ -207,7 +198,7 @@ Start the servers:
 ng_run "+config_paths=[resources_servers/over_refusal_detection/configs/over_refusal_detection.yaml,responses_api_models/openai_model/configs/openai_model.yaml]"
 ```
 
-In another terminal, collect rollouts against the 5-entry example dataset to confirm the judge call and reward parsing work end-to-end:
+In a second terminal, collect rollouts against the 5-entry example dataset to confirm the judge call and reward parsing work end-to-end:
 
 ```bash
 ng_collect_rollouts \
@@ -218,7 +209,7 @@ ng_collect_rollouts \
   "+responses_create_params={max_output_tokens: 1024, temperature: 1.0}"
 ```
 
-Inspect the output JSONL to verify that `reward` values are `0.0`, `0.5`, or `1.0` as expected. Once this looks right, scale to larger datasets and higher `num_repeats`.
+The output JSONL `reward` values should be `0.0`, `0.5`, or `1.0`. Once that looks right, scale to larger datasets and higher `num_repeats`.
 ```bash
 cat /tmp/over_refusal_smoke_test.jsonl | python -c "
 import json, sys
@@ -240,9 +231,9 @@ cat /tmp/over_refusal_smoke_test.jsonl | jq .
 | Situation | Recommended approach | Why |
 |----------|----------------------|-----|
 | Exact match, MCQ, executable tests, known tool traces | **Deterministic verifier** | Faster, cheaper, and more stable at scale |
-| Rubric-based quality, semantic equivalence, nuanced safety/style criteria | **LLM judge** | Easier to express with instructions than writing a full checker |
+| Rubric-based quality, semantic equivalence, nuanced safety/style criteria | **LLM judge** | Easier to express with instructions than to write a full checker |
 
-Tradeoffs of LLM judges: extra latency and cost, non-determinism (unless you tune/constrain generation and parsing), and possible **positional bias** (judge favors text in a fixed slot). Some servers mitigate bias with a second pass that **swaps** gold vs. prediction (see [`equivalence_llm_judge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/equivalence_llm_judge)).
+LLM judges trade off extra latency and cost, non-determinism (unless generation and parsing are constrained), and possible positional bias (the judge favors text in a fixed slot). Some servers mitigate bias with a second pass that swaps gold vs. prediction — see [`equivalence_llm_judge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/equivalence_llm_judge).
 
 ---
 
@@ -259,18 +250,18 @@ Tradeoffs of LLM judges: extra latency and cost, non-determinism (unless you tun
 
 ## Configuration: wiring the judge in YAML
 
-Most LLM-judge servers expose fields along these lines (exact names vary by server; check that server's `configs/*.yaml` and `README.md`):
+Most LLM-judge servers expose fields along these lines (exact names vary by server — check the server's `configs/*.yaml` and `README.md`):
 
 | Idea | Typical config shape |
 |------|----------------------|
 | Which model server to call | `judge_model_server: { type: responses_api_models, name: <server_key> }` |
-| Generation settings for the judge | `judge_responses_create_params` (e.g. `max_output_tokens`, `temperature`, `top_p`; `input` often filled in code) |
+| Generation settings for the judge | `judge_responses_create_params` (`max_output_tokens`, `temperature`, `top_p`, ...; `input` often filled in code) |
 | Prompting | Inline `judge_prompt_template` / `judge_system_message`, or paths like `judge_prompt_template_fpath` |
 | Load control | Fields such as `judge_endpoint_max_concurrency` where implemented |
 
-**Same server as policy:** set `name:` to the policy model’s key (e.g. `policy_model`). **Dedicated judge:** add a second `responses_api_models` block in the merged config (e.g. `judge_model`) and set `judge_model_server.name: judge_model`. [`multichallenge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/multichallenge) documents this split in its YAML comments.
+**Same server as policy:** set `name:` to the policy model's key (e.g., `policy_model`). **Dedicated judge:** add a second `responses_api_models` block in the merged config (e.g., `judge_model`) and set `judge_model_server.name: judge_model`. [`multichallenge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/multichallenge) documents the split in its YAML comments.
 
-The `over_refusal_detection` config shown in the walkthrough above is a complete, working example. Here is a different server — [`equivalence_llm_judge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/equivalence_llm_judge) — that uses a file-based prompt template and different verdict labels (`[[A=B]]` / `[[A!=B]]` instead of `[[COMPLIED]]` / `[[REFUSED]]`):
+The `over_refusal_detection` config above is a complete, working example. [`equivalence_llm_judge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/equivalence_llm_judge) shows a different shape — file-based prompt template and different verdict labels (`[[A=B]]` / `[[A!=B]]` instead of `[[COMPLIED]]` / `[[REFUSED]]`):
 
 ```yaml
 equivalence_llm_judge:
@@ -287,21 +278,21 @@ equivalence_llm_judge:
       judge_endpoint_max_concurrency: 64
 ```
 
-Model URLs, API keys, and model IDs for hosted backends belong in your **merged Gym config** (e.g. `env.yaml` and Hydra overrides), consistent with the rest of the project — not ad hoc environment variables, except where a specific server documents them (such as external judge routing).
+Model URLs, API keys, and model IDs for hosted backends belong in the merged Gym config (`env.yaml` and Hydra overrides), consistent with the rest of the project — not ad-hoc environment variables, except where a specific server documents them (external judge routing, ...).
 
 ---
 
 ## Implementation: end-to-end `verify()` flow
 
-Here is the full flow inside `over_refusal_detection`, condensed. Every Gym-internal LLM-judge server follows the same shape:
+The full flow inside `over_refusal_detection`, condensed — every Gym-internal LLM-judge server follows the same shape:
 
-1. **Extract inputs** — pull the task content and model output from the verify request.
-2. **Build judge request** — fill in the prompt template, assemble messages, copy generation params.
+1. **Extract inputs** — pull task content and model output from the verify request.
+2. **Build judge request** — fill the prompt template, assemble messages, copy generation params.
 3. **POST to `/v1/responses`** — call the judge model server through `server_client`.
 4. **Parse verdict labels** — find the first matching label in the judge's text output.
 5. **Map to reward** — return a structured verify response with the numeric reward.
 
-From `over_refusal_detection/app.py`, the `verify()` method orchestrates this:
+From `over_refusal_detection/app.py`, `verify()` orchestrates this:
 
 ```python
 async def verify(self, body):
@@ -327,9 +318,9 @@ async def verify(self, body):
     )
 ```
 
-The `_request_judge` helper handles HTTP errors and JSON parsing gracefully — on failure it returns `(None, error_message)` instead of raising, so `verify()` can map that to `reward_if_unclear` rather than crashing the server.
+`_request_judge` handles HTTP errors and JSON parsing gracefully — on failure it returns `(None, error_message)` instead of raising, so `verify()` maps to `reward_if_unclear` rather than crashing the server.
 
-Other servers apply the same pattern with domain-specific variations. For example, [`multichallenge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/multichallenge) runs one judge call **per rubric item** via `asyncio.gather`, and [`equivalence_llm_judge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/equivalence_llm_judge) adds an optional **swap pass** to detect positional bias.
+Other servers apply the same pattern with domain-specific variations. [`multichallenge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/multichallenge) runs one judge call per rubric item via `asyncio.gather`; [`equivalence_llm_judge`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/equivalence_llm_judge) adds an optional swap pass to detect positional bias.
 
 ---
 
@@ -347,17 +338,13 @@ Other servers apply the same pattern with domain-specific variations. For exampl
 
 ## Checklist
 
-1. Decide whether a **deterministic** verifier is enough; add a judge only where it buys clear signal.
-2. Add or reuse a **model server** for the judge; reference it from `judge_model_server`.
-3. Design **prompts and parseable verdicts**; handle judge failures gracefully.
-4. Set **temperature / max tokens** and **concurrency** for your SLA and budget.
-5. Smoke-test with `ng_run` and your resources server's **`data/example.jsonl`**, then scale with `ng_collect_rollouts`.
+1. Decide whether a deterministic verifier is enough — add a judge only where it buys clear signal.
+2. Add or reuse a model server for the judge; reference it from `judge_model_server`.
+3. Design prompts and parseable verdicts; handle judge failures gracefully.
+4. Set temperature, max tokens, and concurrency for your SLA and budget.
+5. Smoke-test with `ng_run` and the resources server's `data/example.jsonl`, then scale with `ng_collect_rollouts`.
 
-Done looks like:
-
-- Judge call succeeds from `verify()`.
-- Parsed labels map to reward as expected.
-- Failures degrade to a clear fallback reward instead of server crashes.
+A successful integration shows: judge call succeeds from `verify()`, parsed labels map to reward as expected, and failures degrade to a clear fallback reward instead of server crashes.
 
 ---
 

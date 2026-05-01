@@ -8,7 +8,7 @@ position: 5
 ---
 import { NavButton } from "../../../../components/NavButton";
 
-This tutorial focuses on the **Resources Server** implementation for environments that maintain state across tool calls within an episode. The full workflow — task data preparation, agent/model configuration, rollout collection, and training — follows the same steps as the [single-step tutorial](/latest/build-environments/single-step-environment). What changes here is the addition of per-episode session state via middleware.
+Add per-episode session state to a resources server (the verifier) using `SESSION_ID_KEY` middleware so concurrent rollouts maintain isolated state across tool calls. The session middleware is what changes here; the rest of the workflow (task data, agent/model config, rollout collection, training) matches the [single-step tutorial](/latest/build-environments/single-step-environment).
 
 <NavButton href="/latest/build-environments/multi-step-environment" label="Multi-Step Environment" direction="prev" />
 
@@ -16,7 +16,7 @@ This tutorial focuses on the **Resources Server** implementation for environment
 
 ## What You'll Build
 
-A counter environment where the user asks the agent to increment a counter by a certain amount and report the final value. The environment seeds the counter with an initial value, and the agent must call `increment_counter` and `get_counter_value` in sequence to produce the correct result. Like the multi-step tutorial, this is single-turn (one user message, multiple tool calls) — but the key difference is that the counter value lives as server-side session state that persists across tool calls within the episode, managed via `SESSION_ID_KEY`.
+A counter environment where the user asks the agent to increment a counter and report the final value. The environment seeds the counter with an initial value, and the agent calls `increment_counter` and `get_counter_value` in sequence. Like the multi-step tutorial, this is single-turn (one user message, multiple tool calls). The difference: the counter lives as server-side session state that persists across tool calls within the episode, managed via `SESSION_ID_KEY`.
 
 ### Episode Flow
 
@@ -144,17 +144,17 @@ if __name__ == "__main__":
 
 ### Key Pattern
 
-Use `SESSION_ID_KEY` from the request session middleware to maintain per-episode state. The session ID is automatically assigned by the framework's middleware (set up in `SimpleResourcesServer.setup_webserver()` via `self.setup_session_middleware(app)`).
+`SESSION_ID_KEY` from the request session middleware keys per-episode state. The framework assigns the session ID automatically via `self.setup_session_middleware(app)` inside `SimpleResourcesServer.setup_webserver()`.
 
-**To access session state:**
-1. Add `request: Request` as a parameter to any endpoint method
-2. Read the session ID with `request.session[SESSION_ID_KEY]`
-3. Store state in an instance-level dictionary keyed by session ID
+To access session state:
+1. Add `request: Request` as a parameter to any endpoint method.
+2. Read the session ID with `request.session[SESSION_ID_KEY]`.
+3. Store state in an instance-level dictionary keyed by session ID.
 
 <Note>
-In `seed_session`, use direct assignment (`self.session_id_to_counter[session_id] = body.initial_count`) rather than `setdefault`. Using `setdefault` would silently ignore re-seed attempts if the session already exists, which can cause subtle bugs when the same session ID is reused across episodes. Note: the current `example_session_state_mgmt` implementation still uses `setdefault` in `seed_session` — the direct assignment shown here is the preferred pattern.
+In `seed_session`, use direct assignment (`self.session_id_to_counter[session_id] = body.initial_count`) rather than `setdefault`. `setdefault` silently ignores re-seed attempts when the session already exists, which causes subtle bugs when session IDs are reused across episodes. The current `example_session_state_mgmt` implementation still uses `setdefault` here — the direct assignment shown above is preferred.
 
-In tool methods like `increment_counter` and `get_counter_value`, `setdefault` is appropriate — it provides a safe fallback of `0` if the session was somehow not initialized.
+In tool methods like `increment_counter` and `get_counter_value`, `setdefault` is appropriate — it falls back to `0` if the session was somehow not initialized.
 
 </Note>
 

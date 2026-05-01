@@ -8,7 +8,7 @@ position: 2
 ---
 import { NavButton } from "../../../../../components/NavButton";
 
-This page covers the **Resources Server** implementation for the [Workplace Assistant](/latest/build-environments/real-world-environment) environment. The full workflow — task data preparation, agent/model configuration, rollout collection, and training — follows the same steps as the [single-step tutorial](/latest/build-environments/single-step-environment). What changes here is the scale and complexity of the Resources Server.
+Implement the [Workplace Assistant](/latest/build-environments/real-world-environment) resources server (the verifier) — dynamic routing across 27 tools, per-session toolkit initialization, and state-based verification. The scale and routing patterns change here; the rest of the workflow (task data, agent/model config, rollout collection, training) matches the [single-step tutorial](/latest/build-environments/single-step-environment).
 
 <NavButton href="/latest/build-environments/real-world-environment/generating-training-data" label="Generating Training Data" direction="prev" />
 
@@ -40,11 +40,11 @@ Flow (state is stored per session_id inside the ResourcesServer)
 
 ## Implementation
 
-This Resources Server introduces three patterns not seen in the earlier tutorials:
+Three patterns distinguish this resources server from the earlier tutorials:
 
-- **Dynamic routing** — a single `/{path}` catch-all endpoint dispatches to any tool function, so you don't need to register each tool individually.
-- **Per-session toolkit initialization** — `seed_session()` creates an independent set of toolkits and data for each episode, so concurrent rollouts don't interfere.
-- **State-based verification** — `verify()` extracts the agent's function calls, replays them in a fresh environment alongside the ground truth, and compares the resulting state rather than the exact call sequence.
+- Dynamic routing — a single `/{path}` catch-all endpoint dispatches to any tool function, so each tool doesn't need its own route.
+- Per-session toolkit initialization — `seed_session()` creates an independent toolkit set and data slice per episode, so concurrent rollouts don't interfere.
+- State-based verification — `verify()` extracts the agent's function calls, replays them and the ground truth in fresh environments, and compares the resulting state rather than the exact call sequence.
 
 **File (simplified from [`resources_servers/workplace_assistant/app.py`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/workplace_assistant/app.py)):**
 
@@ -159,10 +159,10 @@ if __name__ == "__main__":
 
 ### Key Pattern
 
-Dynamic routing with `/{path}` allows the environment to expose an arbitrary number of tools without hardcoding each endpoint. The `route_to_python_function` method dispatches incoming requests to Python functions in the per-session `tool_env["functions"]` dictionary.
+Dynamic routing with `/{path}` exposes an arbitrary number of tools without hardcoding each endpoint. `route_to_python_function` dispatches each incoming request to a Python function in the per-session `tool_env["functions"]` dictionary.
 
 <Warning>
-The `/{path}` catch-all route **must be registered after** `super().setup_webserver()`. The parent method registers `/seed_session` and `/verify` — if your catch-all is registered first, it will intercept those requests and break the server lifecycle.
+Register the `/{path}` catch-all **after** `super().setup_webserver()`. The parent method registers `/seed_session` and `/verify` — registering the catch-all first intercepts those requests and breaks the server lifecycle.
 
 </Warning>
 
@@ -228,34 +228,29 @@ ResourcesServer:
 
 ## Verification: Trajectory Matching vs State Matching
 
-There are two common ways to grade tool-using agents:
+Two common ways grade tool-using agents:
 
 ### 1. Trajectory Matching (Sequence Matching)
 
 Compare the *exact* tool call sequence (names + arguments, sometimes order) against a reference trajectory.
 
-- **Pros**: Simple to implement; easy to debug.
-- **Cons**: Brittle — penalizes alternative correct paths (different searches, different ordering, equivalent updates).
+- Pros: simple to implement; easy to debug.
+- Cons: brittle — penalizes alternative correct paths (different searches, different ordering, equivalent updates).
 
 ### 2. State Matching (Outcome Matching)
 
 Execute the agent's predicted calls in a fresh sandbox, execute the ground truth calls in another fresh sandbox, then compare the **final environment state**.
 
-- **Pros**: Rewards correct outcomes even when the path differs; better reflects "did the work get done?"
-- **Cons**: Requires you to define what "state" is (tables, files, DB rows, etc.) and how to compare it (case sensitivity, ordering, floating-point tolerance).
+- Pros: rewards correct outcomes even when the path differs; better reflects "did the work get done?"
+- Cons: requires a definition of "state" (tables, files, DB rows, ...) and how to compare it (case sensitivity, ordering, floating-point tolerance).
 
 ### What Workplace Assistant Uses
 
-**Workplace Assistant uses state matching.** Its `verify()` extracts only the `function_call` items from the response (text output is ignored for scoring), then calls `is_correct(...)`, which:
-- Replays predicted calls and ground truth calls separately (fresh tool env each time)
+Workplace Assistant uses state matching. `verify()` extracts only the `function_call` items from the response (text output is ignored for scoring), then calls `is_correct(...)`, which:
+- Replays predicted and ground-truth calls separately (fresh tool env each time)
 - Compares five mutable DataFrames (email, calendar, analytics plots, project management tasks, CRM data) mostly case-insensitive
 
-This choice makes sense because workplace tasks often have **multiple valid tool sequences** that reach the same correct final state.
-
-<Tip>
-For a deeper dive into verification strategies, reward shaping, and common pitfalls, see [task-verification](/latest/about/concepts/task-verification).
-
-</Tip>
+Workplace tasks often have multiple valid tool sequences that reach the same correct final state, so state matching grades the right thing. For deeper coverage of verification strategies, reward shaping, and common pitfalls, see [task-verification](/latest/about/concepts/task-verification).
 
 ---
 
