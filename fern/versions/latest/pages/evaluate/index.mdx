@@ -21,6 +21,8 @@ The conceptual one-liner is straightforward: pick a benchmark, an agent, and a m
 
 Future versions may consolidate these into a single `gym eval` invocation. For now, the [Run a Benchmark](/latest/evaluate/run/run-a-benchmark) page walks through each command end-to-end.
 
+Each end-to-end run produces an **experiment** — an immutable snapshot of rollouts plus rewards plus the resolved config that produced them. Compare experiments across model/agent variants by joining the per-task reward profiles on `task_index` (see [Compare Agents](/latest/evaluate/compare/compare-agents)). If you're arriving from a SaaS eval platform like Braintrust or Arize, the NeMo Gym vocabulary maps directly: an experiment is a rollout-collection run, a scorer is a `verify()` function, a dataset is a JSONL file.
+
 ## What You Choose
 
 Every eval run is the combination of four components. Pick them once, and the same flow scores any task.

@@ -62,16 +62,14 @@ Three steps. The whole flow takes about two minutes on a small benchmark.
 
    ```bash
    ng_reward_profile \
-       +input_jsonl_fpath=resources_servers/blackjack/data/example.jsonl \
-       +rollouts_jsonl_fpath=results/blackjack_validation.jsonl \
-       +output_jsonl_fpath=results/blackjack_profiled.jsonl \
-       +pass_threshold=1.0
+       +materialized_inputs_jsonl_fpath=results/blackjack_validation_materialized_inputs.jsonl \
+       +rollouts_jsonl_fpath=results/blackjack_validation.jsonl
    ```
 
 5. **Print aggregate.**
 
    ```bash
-   python scripts/print_aggregate_results.py +jsonl_fpath=results/blackjack_profiled.jsonl
+   python scripts/print_aggregate_results.py +jsonl_fpath=results/blackjack_validation_agent_metrics.json
    ```
 
 ### Expected Output

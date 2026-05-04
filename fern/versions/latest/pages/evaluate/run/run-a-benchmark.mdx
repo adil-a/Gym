@@ -86,13 +86,11 @@ To run a benchmark and score a model, complete the following steps.
 
    ```bash
    ng_reward_profile \
-       +input_jsonl_fpath=resources_servers/gpqa_diamond/data/example.jsonl \
-       +rollouts_jsonl_fpath=results/gpqa_diamond_rollouts.jsonl \
-       +output_jsonl_fpath=results/gpqa_diamond_profiled.jsonl \
-       +pass_threshold=1.0
+       +materialized_inputs_jsonl_fpath=results/gpqa_diamond_rollouts_materialized_inputs.jsonl \
+       +rollouts_jsonl_fpath=results/gpqa_diamond_rollouts.jsonl
    ```
 
-   This joins each task with all of its responses and computes per-task pass rate, average reward, and max reward. The output JSONL has one line per task — useful for finding which tasks the model consistently fails (pass rate 0) versus consistently passes (pass rate 1).
+   Outputs `results/gpqa_diamond_rollouts_reward_profiling.jsonl` (one line per task with `mean/reward`, `max/reward`, `min/reward`, `median/reward`, `std/reward` and the same stats for any custom verify field) and `results/gpqa_diamond_rollouts_agent_metrics.json` (agent-level rollup). Filter the per-task JSONL for tasks the model consistently failed (`mean/reward < 1.0`) or flaky tasks (high `std/reward`).
 
 6. **Print aggregate results.**
 

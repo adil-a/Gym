@@ -44,6 +44,9 @@ Definitions of the vocabulary used across NeMo Gym tutorials, reference material
 **Environment**
 : An overloaded term. In NeMo Gym, the canonical phrase is [training environment](#training-environment), implemented as a [resources server](#resources-server). When used loosely, "environment" often refers to the tools the model has access to.
 
+**Experiment**
+: One end-to-end eval or training-data run — an immutable snapshot of [rollouts](#rollout) plus rewards plus the resolved config that produced them. In NeMo Gym, an experiment is the output of a single `ng_collect_rollouts` invocation; comparing two experiments means joining their per-task reward profiles. If you're arriving from a SaaS eval platform (Braintrust, Arize AX, Langfuse), "experiment" maps to the same concept they ship.
+
 ## G
 
 **GRPO (Group Relative Policy Optimization)**
@@ -100,6 +103,9 @@ Definitions of the vocabulary used across NeMo Gym tutorials, reference material
 : The process of applying the data generation pipeline to input prompts at scale. Driven by `ng_collect_rollouts`.
 
 ## S
+
+**Scorer** (also: evaluator, verifier function)
+: The function inside a [resources server](#resources-server) that consumes a model output and returns a [reward](#reward). NeMo Gym calls this `verify()`; SaaS eval platforms (Braintrust, Arize AX, Langfuse) call it a "scorer" or "evaluator." Same concept, different vocabulary. For the catalog of built-in patterns, see [Scorers Library](/latest/build-environments/verification/scorers).
 
 **Service discovery**
 : The mechanism by which distributed NeMo Gym components find and communicate with each other across machines.

@@ -9,6 +9,8 @@ position: 2
 
 When you need to score a model against your own dataset — production validation, a customer pilot, an internal regression — point an existing resources_server at your JSONL and run. This page covers the simple case: same scoring logic, different data. The eval flow doesn't change; only `+input_jsonl_fpath` does.
 
+If you're arriving from a SaaS eval platform like Braintrust or Arize AX, this is NeMo Gym's analog to an **online evaluator** that runs on a captured production trace. The shape is the same — apply a scorer to a snapshot of inputs/outputs. The difference is that NeMo Gym scores against a JSONL you assemble yourself rather than instrumenting a live application; the scorer runs locally as a `verify()` function rather than as a hosted service.
+
 ## Two Paths
 
 | Your data fits an existing scorer | Your data needs custom scoring |
@@ -85,15 +87,13 @@ Say your customer has 200 internal math problems with known answers and wants to
 
    ```bash
    ng_reward_profile \
-       +input_jsonl_fpath=/path/to/customer_math.jsonl \
-       +rollouts_jsonl_fpath=results/customer_math_rollouts.jsonl \
-       +output_jsonl_fpath=results/customer_math_profiled.jsonl \
-       +pass_threshold=1.0
+       +materialized_inputs_jsonl_fpath=results/customer_math_rollouts_materialized_inputs.jsonl \
+       +rollouts_jsonl_fpath=results/customer_math_rollouts.jsonl
 
-   python scripts/print_aggregate_results.py +jsonl_fpath=results/customer_math_profiled.jsonl
+   python scripts/print_aggregate_results.py +jsonl_fpath=results/customer_math_rollouts_agent_metrics.json
    ```
 
-   Output reports pass@1 (per-rollout accuracy), pass@k (best-of-k), and the count of consistently-passed and consistently-failed problems. That's your customer-data score.
+   Reads `results/customer_math_rollouts_aggregate_metrics.json` (already written by `ng_collect_rollouts`) for the headline pass@1 / pass@k numbers, plus the per-task profiling output for which tasks the model passed or failed consistently. That's your customer-data score.
 
 The score is interpreted exactly like a public benchmark score: pass@1 is the model's accuracy on your data; pass@k is whether it can solve a problem if it tries `k` times; per-task pass rate from the profiled JSONL surfaces the consistently-failed problems for follow-up.
 

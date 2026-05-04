@@ -16,6 +16,7 @@ What NeMo Gym is, where it fits in the NVIDIA NeMo platform, and the core concep
 - [Environment Components](https://docs.nvidia.com/nemo/gym/latest/about/concepts/core-components): The Model, Resources, and Agent server building blocks that compose a NeMo Gym environment.
 - [Reward Semantics](https://docs.nvidia.com/nemo/gym/latest/about/concepts/reward-semantics): What NeMo Gym does on verifier errors, timeouts, retries, multiple rollouts per task, pass@1 vs pass@k, and aggregation.
 - [Reward Debugging](https://docs.nvidia.com/nemo/gym/latest/about/concepts/reward-debugging): Diagnose wrong rewards systematically — read the rollout JSONL, name the symptom, find the source-of-truth file, fix the contract.
+- [Datasets](https://docs.nvidia.com/nemo/gym/latest/about/concepts/datasets): Datasets as the 4th component peer to agent, model, and resources servers — types, lifecycle, storage tiers, agent_ref routing, and the verifier_metadata convention.
 - [Task Verification](https://docs.nvidia.com/nemo/gym/latest/about/concepts/task-verification): What task verification is and how rewards drive model training.
 - [Training Approaches](https://docs.nvidia.com/nemo/gym/latest/about/concepts/training-approaches): The differences between SFT, DPO, and GRPO, and why RLVR puts the focus on environments.
 - [Versioning and Provenance](https://docs.nvidia.com/nemo/gym/latest/about/concepts/versioning-provenance): What gets pinned vs. floats across NeMo Gym runs — datasets, model IDs, prompt configs, judges, and the gaps where reproduction silently drifts.
@@ -28,6 +29,7 @@ Install NeMo Gym, configure your model, and run a first benchmark.
 
 - [Get Started](https://docs.nvidia.com/nemo/gym/latest/get-started): Install NeMo Gym, run your first benchmark, and build your first environment.
 - [Quickstart](https://docs.nvidia.com/nemo/gym/latest/get-started/quickstart): Install NeMo Gym, configure your model, and score a Blackjack agent end-to-end in about 10 minutes.
+- [Inspect Your First Rollout](https://docs.nvidia.com/nemo/gym/latest/get-started/inspect-your-first-rollout): Read the rollouts JSONL the Quickstart just produced — what's in each row, where the headline metrics live, and how to spot a real signal.
 - [Prerequisites](https://docs.nvidia.com/nemo/gym/latest/get-started/prerequisites): System requirements for running NeMo Gym.
 - [Installation](https://docs.nvidia.com/nemo/gym/latest/get-started/installation): Install NeMo Gym from source, PyPI, or a container image.
 - [Configuration](https://docs.nvidia.com/nemo/gym/latest/get-started/configuration): Set up env.yaml with model credentials before running NeMo Gym.
@@ -57,6 +59,7 @@ Patterns and end-to-end guides for authoring new training and evaluation environ
 - [OpenEnv](https://docs.nvidia.com/nemo/gym/latest/build-environments/integrations/openenv): OpenEnv parity status — resources-server-side configs ship; agent wrapper roadmap.
 - [Terminology Translation](https://docs.nvidia.com/nemo/gym/latest/build-environments/integrations/terminology-translation): Vocabulary lookup for users migrating from Harbor, Verifiers, Aviary, LangGraph, or gymnasium.
 - [Verification](https://docs.nvidia.com/nemo/gym/latest/build-environments/verification): How verification logic plugs into NeMo Gym — `verify()` returns reward, `compute_metrics()` aggregates across rollouts.
+- [Scorers Library](https://docs.nvidia.com/nemo/gym/latest/build-environments/verification/scorers): Catalog of `verify()` patterns shipped across resources_servers/, grouped by category (exact-match, LLM-as-judge, code-execution, structural, stateful, custom-domain).
 - [Aggregate Metrics](https://docs.nvidia.com/nemo/gym/latest/build-environments/verification/aggregate-metrics): How NeMo Gym computes aggregate metrics for each agent via the /aggregate_metrics endpoint after rollout collection.
 - [LLM-as-a-judge in Verification](https://docs.nvidia.com/nemo/gym/latest/build-environments/verification/llm-as-judge): Use an LLM as the judge for verifying open-ended outputs that don't have a single deterministic answer.
 - [Author Workflow](https://docs.nvidia.com/nemo/gym/latest/build-environments/author-workflow): Workflow for environment authors — quality checklist, profiling, contribution.

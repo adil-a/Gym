@@ -7,7 +7,7 @@ journey_stage: discover
 position: 2
 ---
 
-NeMo Gym is the open environment and rollout layer for training and evaluating agentic models. It turns benchmarks, tools, sandboxes, and reward functions into scalable RL-ready environments. The same environment that scores a model is the one that produces training rollouts — which is what most other tools in this space cannot do.
+NeMo Gym is the open environment and rollout layer for training and evaluating agentic models. It turns benchmarks, tools, sandboxes, and reward functions into scalable RL-ready environments. **The eval, the environment, and the training-data source are the same artifact** — and that's the cell on the competitive matrix nothing else fully occupies. SaaS eval platforms (Braintrust, Arize AX, Langfuse) observe production LLM apps but don't train them. Open-source environment frameworks (Harbor, Verifiers) score agents but don't bridge to RL training. NeMo Gym sits between them: the same `verify()` that scores a model is the one that emits reward signals for GRPO.
 
 <Tip>
 For what NeMo Gym does and how it works, refer to [Overview](/latest/about) and [Architecture](/latest/about/concepts/architecture). This page is about where it fits relative to other tools.

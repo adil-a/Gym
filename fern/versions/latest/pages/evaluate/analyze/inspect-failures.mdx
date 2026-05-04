@@ -147,19 +147,23 @@ NeMo Gym does not yet ship a built-in trajectory viewer or side-by-side diff UI.
 ```bash
 # Run A
 ng_collect_rollouts +agent_name=... +output_jsonl_fpath=results/run_a.jsonl ...
-ng_reward_profile +rollouts_jsonl_fpath=results/run_a.jsonl +output_jsonl_fpath=results/run_a_profiled.jsonl ...
+ng_reward_profile \
+    +materialized_inputs_jsonl_fpath=results/run_a_materialized_inputs.jsonl \
+    +rollouts_jsonl_fpath=results/run_a.jsonl
 
 # Run B (different model / agent / config)
 ng_collect_rollouts +agent_name=... +output_jsonl_fpath=results/run_b.jsonl ...
-ng_reward_profile +rollouts_jsonl_fpath=results/run_b.jsonl +output_jsonl_fpath=results/run_b_profiled.jsonl ...
+ng_reward_profile \
+    +materialized_inputs_jsonl_fpath=results/run_b_materialized_inputs.jsonl \
+    +rollouts_jsonl_fpath=results/run_b.jsonl
 
 # Join in pandas / jq / your tool of choice
 python3 -c "
 import json
-a = {json.loads(l)['task_index']: json.loads(l) for l in open('results/run_a_profiled.jsonl')}
-b = {json.loads(l)['task_index']: json.loads(l) for l in open('results/run_b_profiled.jsonl')}
+a = {json.loads(l)['task_index']: json.loads(l) for l in open('results/run_a_reward_profiling.jsonl')}
+b = {json.loads(l)['task_index']: json.loads(l) for l in open('results/run_b_reward_profiling.jsonl')}
 for idx in sorted(a):
-    print(f\"task {idx}: A={a[idx]['avg_reward']:.2f} B={b[idx]['avg_reward']:.2f}\")
+    print(f\"task {idx}: A={a[idx]['mean/reward']:.2f} B={b[idx]['mean/reward']:.2f}\")
 "
 ```
 

@@ -139,10 +139,8 @@ Run through these steps in order. Each step is independent — stop and diagnose
        "+responses_create_params={max_output_tokens: 16384, temperature: 1.0}"
 
    ng_reward_profile \
-       +input_jsonl_fpath=<data.jsonl> \
-       +rollouts_jsonl_fpath=results/rollouts.jsonl \
-       +output_jsonl_fpath=results/profiled.jsonl \
-       +pass_threshold=1.0
+       +materialized_inputs_jsonl_fpath=results/rollouts_materialized_inputs.jsonl \
+       +rollouts_jsonl_fpath=results/rollouts.jsonl
    ```
 
    Increase `+num_repeats` until variance is under 1% across runs on the same model.
