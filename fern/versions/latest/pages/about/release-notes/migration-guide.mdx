@@ -1,23 +1,27 @@
 ---
-title: "Migration 0.2 → 0.3"
-description: "What's changing in 0.3.0 and how to update existing 0.2.x setups: breaking changes, deprecations, new options, and a step-by-step upgrade checklist."
+title: "Migration Guide"
+description: "Breaking changes, deprecations, new options, and step-by-step upgrade checklists for each NeMo Gym release. Read this before you bump versions."
 content_type: reference
 audience_level: intermediate
 journey_stage: scale
 position: 2
 ---
 
-# Migration Guide 0.2 → 0.3
+# Migration Guide
 
-0.3.0 is in flight. This guide tracks what's changing relative to 0.2.x — breaking changes, deprecations, new options, and the upgrade checklist. Pinned at 0.2.x today? Read this before you bump.
+Breaking changes, deprecations, new options, and step-by-step upgrade checklists for each NeMo Gym release. Pinned at an older version? Read the relevant section below before you bump. New entries are added at the top per breaking-change release.
 
 <Note>
-0.3.0 has not shipped. This guide is a working draft. The final changelog lands at GA — see [Release Notes](/latest/about/release-notes) for the canonical record once tagged.
+0.3.0 has not shipped. The 0.2 → 0.3 section below is a working draft; the final changelog lands at GA — see [Release Notes](/latest/about/release-notes) for the canonical record once tagged.
 </Note>
 
 ---
 
-## At a Glance
+## 0.2 → 0.3
+
+---
+
+### At a Glance
 
 | Area | Change | Action required |
 |---|---|---|
@@ -32,7 +36,7 @@ position: 2
 
 ---
 
-## Breaking Changes
+### Breaking Changes
 
 No breaking changes are committed for 0.3.0 as of this writing.
 
@@ -42,7 +46,7 @@ If a breaking change lands during the release window, it will be listed here at 
 
 ---
 
-## Deprecations
+### Deprecations
 
 No deprecations are committed for 0.3.0 as of this writing.
 
@@ -50,11 +54,11 @@ One forward-looking note: TRL integration is slated for removal in a post-0.3.0 
 
 ---
 
-## New in 0.3.0
+### New in 0.3.0
 
 The items below are roadmap candidates. Scope and timing may shift before tag.
 
-### Documentation IA refresh
+#### Documentation IA refresh
 
 The docs site got a structural rewrite in the 0.3 train. The user-visible architecture model now names four components (dataset, agent harness, model, verifier) rather than three; see [Architecture](/latest/about/concepts/architecture).
 
@@ -77,15 +81,15 @@ New pages in 0.3:
 - [Provider Compatibility](/latest/reference/provider-compatibility) — supported providers, what works, what doesn't.
 - [Sandbox & Execution Matrix](/latest/reference/sandbox-execution-matrix) — what runs where, isolation guarantees per backend.
 
-### Bounded retry and concurrency cap on `NeMoGymAsyncOpenAI`
+#### Bounded retry and concurrency cap on `NeMoGymAsyncOpenAI`
 
 Tracked in [#1208](https://github.com/NVIDIA-NeMo/Gym/issues/1208). The OpenAI client wrapper gains a bounded retry policy and an opt-in concurrency cap. Default retry behavior changes to a finite ceiling instead of the prior open-ended retry loop — review your aggregate-failure assumptions if you previously relied on indefinite retries to mask transient provider errors.
 
-### vLLM context-length error documentation
+#### vLLM context-length error documentation
 
 Tracked in [#1206](https://github.com/NVIDIA-NeMo/Gym/issues/1206). vLLM context-overflow errors now surface with actionable messages instead of opaque tracebacks. No behavior change — diagnostics only.
 
-### New benchmark coverage
+#### New benchmark coverage
 
 - `bigcodebench` — code generation benchmark ([#1211](https://github.com/NVIDIA-NeMo/Gym/pull/1211)).
 - `human-eval` — Python function-completion benchmark ([#1201](https://github.com/NVIDIA-NeMo/Gym/pull/1201)).
@@ -94,13 +98,13 @@ Tracked in [#1206](https://github.com/NVIDIA-NeMo/Gym/issues/1206). vLLM context
 
 Each ships with example data, a configs YAML, and reward-profile baselines. Wire them into existing pipelines by adding their config path to `+config_paths` — no API changes required.
 
-### Unified execution sandbox infrastructure (gated)
+#### Unified execution sandbox infrastructure (gated)
 
 Tracked in [#1048](https://github.com/NVIDIA-NeMo/Gym/issues/1048). A single execution-sandbox primitive consumed by `code_gen`, `bigcodebench`, `human-eval`, and other code-execution benchmarks. **May slip to 0.4** — listed here so you can plan, not as a commitment.
 
 ---
 
-## Upgrade Checklist
+### Upgrade Checklist
 
 Run through these steps in order. Each step is independent — stop and diagnose if a step fails before continuing.
 
@@ -152,7 +156,7 @@ Run through these steps in order. Each step is independent — stop and diagnose
 
 ---
 
-## URL Redirects You Should Know About
+### URL Redirects You Should Know About
 
 The 0.3 IA shifts navigation. These redirects are live in `fern/docs.yml`:
 
@@ -168,7 +172,7 @@ Legacy Sphinx URLs (`*.html`, `index.html` suffixes) also redirect to their Fern
 
 ---
 
-## What's Coming After 0.3.0
+### What's Coming After 0.3.0
 
 Forward-looking, no dates:
 
@@ -182,7 +186,7 @@ The roadmap is tracked on the [Gym GitHub project board](https://github.com/orgs
 
 ---
 
-## Where to File an Issue
+### Where to File an Issue
 
 Hit a breaking change not listed here? Stuck on a step in the upgrade checklist? Open an issue on the [Gym GitHub repo](https://github.com/NVIDIA-NeMo/Gym/issues) with:
 
@@ -195,7 +199,7 @@ For sensitive reports (security, internal-only benchmark issues), email the main
 
 ---
 
-## Related Topics
+### Related Topics
 
 - [Release Notes](/latest/about/release-notes) — canonical changelog per release.
 - [Reward Semantics](/latest/about/concepts/reward-semantics) — error, timeout, and retry contracts.
