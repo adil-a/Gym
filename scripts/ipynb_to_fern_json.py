@@ -122,7 +122,12 @@ def convert(nb_path: Path) -> dict:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="Input .ipynb file")
-    parser.add_argument("output", type=Path, help="Output .json file")
+    parser.add_argument(
+        "output",
+        type=Path,
+        help="Output file. Use .ts to emit a TypeScript module with default export "
+        "(works with Fern's MDX import pipeline). Use .json for raw JSON.",
+    )
     args = parser.parse_args(argv)
 
     if not args.input.exists():
@@ -131,7 +136,20 @@ def main(argv: list[str]) -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     data = convert(args.input)
-    args.output.write_text(json.dumps(data, indent=2) + "\n")
+
+    if args.output.suffix == ".ts":
+        ts = (
+            f"// Generated from {args.input}\n"
+            "// Regenerate with: python3 scripts/ipynb_to_fern_json.py "
+            f"{args.input} {args.output}\n\n"
+            'import type { NotebookData } from "../NotebookViewer";\n\n'
+            "const notebook: NotebookData = "
+            + json.dumps(data, indent=2)
+            + ";\n\nexport default notebook;\n"
+        )
+        args.output.write_text(ts)
+    else:
+        args.output.write_text(json.dumps(data, indent=2) + "\n")
 
     n_md = sum(1 for c in data["cells"] if c["type"] == "markdown")
     n_code = sum(1 for c in data["cells"] if c["type"] == "code")

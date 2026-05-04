@@ -1,4 +1,10 @@
-{
+// Generated from resources_servers/workplace_assistant/notebooks/synthetic-data-generation/multistep-toolcalling-sdg.ipynb
+// Regenerate with: python3 scripts/ipynb_to_fern_json.py <input.ipynb> <output.json>
+// Then convert to TS: see scripts/ipynb_to_fern_json.py for the wrapper logic.
+
+import type { NotebookData } from "../NotebookViewer";
+
+const notebook: NotebookData = {
   "cells": [
     {
       "type": "markdown",
@@ -221,4 +227,6 @@
       "source": "## Summary\n\nThis notebook demonstrated how to build a complete synthetic data generation pipeline for multi-step tool-calling tasks using **Data Designer**. The pipeline generates user queries, simulates agent trajectories, and applies two levels of LLM judge filtering to produce high-quality training data.\n\n## Next Steps\n\n- **Scale up generation**: Increase `num_seeds` and `num_records` to produce larger training sets (1,000+ examples)\n- **Customize for your domain**: Replace the Workplace Assistant tools with your own tool definitions\n- **Add more multi-step patterns**: Define new patterns in `environment.json` to increase task diversity\n- **Tune judge thresholds**: Inspect rejected examples with `show_rejection_reasons()` and adjust filtering thresholds\n- **Train with NeMo Gym and NeMo RL**: Use the exported JSONL file for GRPO training with NeMo RL, using a NeMo Gym environment."
     }
   ]
-}
+};
+
+export default notebook;
