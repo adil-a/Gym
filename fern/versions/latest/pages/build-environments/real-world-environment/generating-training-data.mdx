@@ -7,6 +7,8 @@ journey_stage: build
 position: 1
 ---
 import { NavButton } from "../../../../../components/NavButton";
+import { NotebookViewer } from "../../../../../components/NotebookViewer";
+import notebook from "../../../../../components/notebooks/workplace-assistant-sdg.json";
 
 Generate synthetic multi-step user queries for the [Workplace Assistant](/latest/build-environments/real-world-environment) environment using [NeMo Data Designer](https://github.com/NVIDIA-NeMo/DataDesigner) — 27 tools across 6 databases, dual-level LLM judge filtering for quality, output in NeMo Gym JSONL format.
 
@@ -28,9 +30,12 @@ The pipeline produces task queries; rollout collection produces the actual model
 
 ## Notebook
 
-The walkthrough lives in a Jupyter notebook. For prerequisites and setup, see the [notebook README](https://github.com/NVIDIA-NeMo/Gym/blob/main/resources_servers/workplace_assistant/notebooks/synthetic-data-generation/).
+The full walkthrough is embedded below. For prerequisites and setup, see the [notebook README](https://github.com/NVIDIA-NeMo/Gym/blob/main/resources_servers/workplace_assistant/notebooks/synthetic-data-generation/). Source notebook: [`multistep-toolcalling-sdg.ipynb`](https://github.com/NVIDIA-NeMo/Gym/blob/main/resources_servers/workplace_assistant/notebooks/synthetic-data-generation/multistep-toolcalling-sdg.ipynb).
 
-[View Notebook on GitHub](https://github.com/NVIDIA-NeMo/Gym/blob/main/resources_servers/workplace_assistant/notebooks/synthetic-data-generation/multistep-toolcalling-sdg.ipynb)
+<NotebookViewer
+  notebook={notebook}
+  colabUrl="https://colab.research.google.com/github/NVIDIA-NeMo/Gym/blob/main/resources_servers/workplace_assistant/notebooks/synthetic-data-generation/multistep-toolcalling-sdg.ipynb"
+/>
 
 ---
 
