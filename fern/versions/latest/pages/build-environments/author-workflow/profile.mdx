@@ -4,7 +4,7 @@ description: "Use profiling_enabled to measure verifier performance under high c
 content_type: how-to
 audience_level: advanced
 journey_stage: build
-position: 13
+position: 2
 ---
 
 Profile your resources server to find slow `verify()` calls before training. Required reading for environments that handle 16k+ concurrent rollouts — a slow verifier becomes the rollout bottleneck.
@@ -74,4 +74,4 @@ Sort by `ttot` to find the bottleneck. Sort by `tavg` to find slow per-call path
 - If a third-party library dominates `ttot`, push it onto a Ray actor pool. See [Ray and distributed execution](/latest/reference/ray-and-distributed).
 - If subprocess work dominates, bound it with `asyncio.Semaphore` so concurrent calls don't oversubscribe CPUs.
 
-Re-run the profile after each change. Cross-reference your numbers against the [Environment Quality Checklist](/latest/build-environments/quality-checklist) before submitting.
+Re-run the profile after each change. Cross-reference your numbers against the [Environment Quality Checklist](/latest/build-environments/author-workflow/quality-checklist) before submitting.

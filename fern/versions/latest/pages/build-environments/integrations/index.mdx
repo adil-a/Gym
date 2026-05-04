@@ -1,0 +1,17 @@
+---
+title: "Integrations"
+description: "Wrap external benchmark libraries (Aviary, Reasoning Gym, Verifiers, BrowserGym) and add existing benchmarks to NeMo Gym as resources servers."
+content_type: index
+audience_level: intermediate
+journey_stage: build
+position: 8
+---
+
+Two paths for bringing external content into NeMo Gym instead of building from scratch:
+
+| Pattern | When to use |
+| --- | --- |
+| [External libraries](/latest/build-environments/integrations/external-libraries) | A whole upstream library (Aviary, Reasoning Gym, Verifiers, BrowserGym) — wrap it once, get every environment it ships. Replace the library's HTTP transport with the aiohttp adapter pattern to avoid the httpx O(n²) connection-pool issue. |
+| [Add a benchmark](/latest/build-environments/integrations/add-a-benchmark) | A specific named benchmark from a paper or repo (SWE-Bench, Tau Bench, GPQA, etc.) — author one resources server that loads the benchmark dataset, implements `verify()`, and ships with example data. |
+
+Both end in a working resources server you can run with `ng_run` and rollout-collect with `ng_collect_rollouts`.
