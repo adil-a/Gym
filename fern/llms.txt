@@ -56,7 +56,9 @@ Patterns and end-to-end guides for authoring new training and evaluation environ
 - [Contribute](https://docs.nvidia.com/nemo/gym/latest/build-environments/author-workflow/contribute): Contribute new environments, RL framework integrations, documentation, and bug fixes.
 - [Design a Customer Evaluation](https://docs.nvidia.com/nemo/gym/latest/build-environments/designing-customer-evaluation): Guiding principles for designing an evaluation against a customer's real workflow.
 - [Data](https://docs.nvidia.com/nemo/gym/latest/build-environments/data): How NeMo Gym datasets use JSONL format and connect agent servers to resources servers.
-- [Prepare and Validate](https://docs.nvidia.com/nemo/gym/latest/build-environments/data/prepare-validate): Format and validate JSONL datasets for NeMo Gym training using ng_prepare_data.
+- [JSONL Schema](https://docs.nvidia.com/nemo/gym/latest/build-environments/data/jsonl-schema): Reference for the per-row JSONL shape, verifier_metadata pass-through, dataset config object, and license enum.
+- [Validate Example Data](https://docs.nvidia.com/nemo/gym/latest/build-environments/data/validate-example-data): Validate the 5-entry data/example.jsonl using ng_prepare_data +mode=example_validation. The PR-submission gate.
+- [Prepare Training Data](https://docs.nvidia.com/nemo/gym/latest/build-environments/data/prepare-train-data): Prepare train/validation JSONL splits for RL training using ng_prepare_data +mode=train_preparation, with auto-download and custom preprocessing.
 - [Download from Hugging Face](https://docs.nvidia.com/nemo/gym/latest/build-environments/data/download-huggingface): Download JSONL datasets from Hugging Face Hub for NeMo Gym training.
 - [Prompt Config](https://docs.nvidia.com/nemo/gym/latest/build-environments/data/prompt-config): Apply YAML-based prompt templates at rollout time to enable prompt sweeps without re-preparing JSONL data.
 

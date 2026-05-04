@@ -4,7 +4,7 @@ description: "Move JSONL datasets between local disk, Hugging Face Hub, and the 
 content_type: how-to
 audience_level: intermediate
 journey_stage: build
-position: 3
+position: 5
 ---
 
 Move JSONL datasets between local disk, Hugging Face Hub, and the NVIDIA-internal GitLab dataset registry.
@@ -397,14 +397,14 @@ GitLab model names are case-sensitive. `My_Model` and `my_model` can coexist. Ma
 
 <Cards>
 
-<Card title="Prepare and Validate" href="/latest/build-environments/data/prepare-validate">
+<Card title="Prepare Training Data" href="/latest/build-environments/data/prepare-train-data">
 
-Preprocess raw data, run `ng_prepare_data`, and add `agent_ref` routing.
+Run `ng_prepare_data +mode=train_preparation` to validate, collate, and produce training-ready JSONL splits.
 </Card>
 
-<Card title="Run Evaluation" href="/latest/get-started/quickstart">
+<Card title="Run a Benchmark" href="/latest/evaluate/run/run-a-benchmark">
 
-Generate training examples by running your agent on prepared data.
+Score a model against a prepared dataset end-to-end.
 </Card>
 
 <Card title="Train with NeMo RL" href="/latest/train-models/nemo-rl-grpo">

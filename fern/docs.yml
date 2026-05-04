@@ -102,6 +102,8 @@ redirects:
     destination: "/latest/get-started/create-first-environment"
   - source: "/latest/about/why-nemo-gym"
     destination: "/latest/about/ecosystem"
+  - source: "/latest/build-environments/data/prepare-validate"
+    destination: "/latest/build-environments/data/prepare-train-data"
   - source: "/latest/about/concepts/key-terminology"
     destination: "/latest/resources/glossary"
   - source: "/latest/environment-tutorials/:path*"

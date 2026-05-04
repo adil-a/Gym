@@ -20,7 +20,7 @@ Prepare and validate training data, generating metrics and statistics for datase
 | `output_dirpath` | str | Directory path where processed datasets and metrics will be saved. |
 | `mode` | Literal["train_preparation", "example_validation"] | Processing mode. Use `train_preparation` to prepare train and validation datasets for training, or `example_validation` to validate example data for PR submission. |
 | `should_download` | bool | Whether to automatically download missing datasets from remote registries. Default: `False`. |
-| `data_source` | Literal["gitlab", "huggingface"] | Which registry to download from when `should_download=true`. Default: `gitlab`. |
+| `data_source` | Literal["gitlab", "huggingface"] | Which registry to download from when `should_download=true`. Default: `huggingface`. |
 | `overwrite_metrics_conflicts` | bool | Whether or not to overwrite metrics conflicts. Default: `False`. |
 
 **Example**
