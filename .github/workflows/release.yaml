@@ -84,6 +84,7 @@ jobs:
       create-gh-release: ${{ inputs.create-gh-release || true }}
       packaging: uv
       skip-test-wheel: true
+      wheel-content-ignore: "W002,W004,W009"
       app-id: ${{ vars.BOT_ID }}
       gh-release-use-changelog-builder: ${{ inputs.generate-changelog || false }}
       publish-docs: ${{ inputs.publish-docs || true }}
