@@ -2,7 +2,7 @@
 title: "Configuration System"
 description: ""
 ---
-NeMo Gym uses YAML configuration files to define [Model, Resources, and Agent servers](/latest/about/concepts/core-components). Each server gets its own configuration block, providing modular control over the entire training environment.
+NeMo Gym uses YAML configuration files to define [Model, Resources, and Agent servers](/main/about/concepts/core-components). Each server gets its own configuration block, providing modular control over the entire training environment.
 
 ## How Servers Connect
 
@@ -40,7 +40,7 @@ server_id:                    # Your unique name for this server
       # ... additional fields vary by server type
 ```
 
-Different server types have additional required fields (e.g., `domain` for resources servers, `resources_server` and `model_server` for agents). See [Configuration](/latest/reference/configuration) for complete field specifications.
+Different server types have additional required fields (e.g., `domain` for resources servers, `resources_server` and `model_server` for agents). See [Configuration](/main/reference/configuration) for complete field specifications.
 
 Config files in NeMo Gym often use the same name for both server ID and implementation:
 
@@ -61,7 +61,7 @@ Examples often use matching names for simplicity, but the two values are indepen
 ---
 
 <Note>
-- [Configuration](/latest/reference/configuration) for complete syntax and field specifications
-- [Configuration](/latest/troubleshooting/configuration) for troubleshooting configuration related errors
+- [Configuration](/main/reference/configuration) for complete syntax and field specifications
+- [Configuration](/main/troubleshooting/configuration) for troubleshooting configuration related errors
 
 </Note>

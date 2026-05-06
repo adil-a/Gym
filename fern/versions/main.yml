@@ -12,44 +12,44 @@ navigation:
       - section: "Documentation"
         contents:
           - page: "Home"
-            path: ./latest/pages/index.mdx
-      - folder: ./latest/pages/about
+            path: ./main/pages/index.mdx
+      - folder: ./main/pages/about
         title: "About"
         title-source: frontmatter
-      - folder: ./latest/pages/get-started
+      - folder: ./main/pages/get-started
         title: "Get Started"
         title-source: frontmatter
-      - folder: ./latest/pages/agent-server
+      - folder: ./main/pages/agent-server
         title: "Agent Server"
         title-source: frontmatter
-      - folder: ./latest/pages/model-server
+      - folder: ./main/pages/model-server
         title: "Model Server"
         title-source: frontmatter
-      - folder: ./latest/pages/resources-server
+      - folder: ./main/pages/resources-server
         title: "Resources Server"
         title-source: frontmatter
-      - folder: ./latest/pages/data
+      - folder: ./main/pages/data
         title: "Data"
         title-source: frontmatter
-      - folder: ./latest/pages/environment-tutorials
+      - folder: ./main/pages/environment-tutorials
         title: "Environment Tutorials"
         title-source: frontmatter
-      - folder: ./latest/pages/training-tutorials
+      - folder: ./main/pages/training-tutorials
         title: "Training Tutorials"
         title-source: frontmatter
-      - folder: ./latest/pages/model-recipes
+      - folder: ./main/pages/model-recipes
         title: "Model Recipes"
         title-source: frontmatter
-      - folder: ./latest/pages/infrastructure
+      - folder: ./main/pages/infrastructure
         title: "Infrastructure"
         title-source: frontmatter
-      - folder: ./latest/pages/reference
+      - folder: ./main/pages/reference
         title: "Reference"
         title-source: frontmatter
-      - folder: ./latest/pages/troubleshooting
+      - folder: ./main/pages/troubleshooting
         title: "Troubleshooting"
         title-source: frontmatter
-      - folder: ./latest/pages/contribute
+      - folder: ./main/pages/contribute
         title: "Contribute"
         title-source: frontmatter
   - tab: api
@@ -58,6 +58,6 @@ navigation:
         slug: reference/api-reference
         contents:
           - page: Overview
-            path: ./latest/pages/api-reference/index.mdx
+            path: ./main/pages/api-reference/index.mdx
             slug: ""
           - folder: ../product-docs/nemo-gym/Full-Library-Reference

@@ -21,16 +21,16 @@ Build a complete environment end-to-end, from scaffolding to RL-ready rollouts.
 
 </Info>
 
-[< Back to Building Environments](/v0.2/environment-tutorials)
+[< Back to Building Environments](/v0.2.1/environment-tutorials)
 
 ---
 
 ## Prerequisites
 
-Complete **[Detailed Setup](/v0.2/get-started/detailed-setup)** before starting — clone the repository, install dependencies, configure your API key, and verify servers start correctly.
+Complete **[Detailed Setup](/v0.2.1/get-started/detailed-setup)** before starting — clone the repository, install dependencies, configure your API key, and verify servers start correctly.
 
 <Tip>
-If you followed the [Quickstart](/v0.2/get-started), you're ready to proceed.
+If you followed the [Quickstart](/v0.2.1/get-started), you're ready to proceed.
 
 </Tip>
 
@@ -43,7 +43,7 @@ Run all commands from the **repository root** directory (where `pyproject.toml` 
 
 ## How It Works
 
-NeMo Gym uses a decoupled three-component architecture: the **Agent Server** orchestrates the loop, the **Model Server** runs inference, and the **Resources Server** provides tools and verification. All three are async FastAPI servers communicating over HTTP, which allows many rollouts to run concurrently across episodes. See [core-components](/v0.2/about/concepts/core-components) for the full architecture and diagram.
+NeMo Gym uses a decoupled three-component architecture: the **Agent Server** orchestrates the loop, the **Model Server** runs inference, and the **Resources Server** provides tools and verification. All three are async FastAPI servers communicating over HTTP, which allows many rollouts to run concurrently across episodes. See [core-components](/v0.2.1/about/concepts/core-components) for the full architecture and diagram.
 
 In most cases, the **Resources Server** is where your changes go: define your tool endpoints and a `verify()` method that returns a reward. NeMo Gym ships several pre-built agent servers (`simple_agent`, `swe_agents`, etc.) and model servers (`openai_model`, `vllm_model`) that you can use as-is, or you can bring your own.
 
@@ -264,7 +264,7 @@ async def verify(self, body: BaseVerifyRequest) -> BaseVerifyResponse:
     return BaseVerifyResponse(**body.model_dump(), reward=reward)
 ```
 
-This example checks tool *usage*, not argument correctness. See [task-verification](/v0.2/about/concepts/task-verification) for the full verification patterns and best practices, or jump to [Advanced: Verification Patterns](#advanced-verification-patterns) at the end of this tutorial for quick examples.
+This example checks tool *usage*, not argument correctness. See [task-verification](/v0.2.1/about/concepts/task-verification) for the full verification patterns and best practices, or jump to [Advanced: Verification Patterns](#advanced-verification-patterns) at the end of this tutorial for quick examples.
 
 #### Configure - Wiring the pieces together
 
@@ -449,7 +449,7 @@ Never commit API keys directly in YAML files.
 </Tip>
 
 <Tip>
-If you don't want to use the OpenAI API, you can try using a local vLLM server (requires GPU access) instead! See [model-server-vllm](/v0.2/model-server/vllm).
+If you don't want to use the OpenAI API, you can try using a local vLLM server (requires GPU access) instead! See [model-server-vllm](/v0.2.1/model-server/vllm).
 
 </Tip>
 
@@ -497,11 +497,11 @@ Once you've collected rollouts and validated your environment, run training with
 
 <Cards>
 
-<Card title="NeMo RL (GRPO)" href="/v0.2/training-tutorials/nemo-rl-grpo">
+<Card title="NeMo RL (GRPO)" href="/v0.2.1/training-tutorials/nemo-rl-grpo">
 Train models using GRPO with NeMo RL.
 </Card>
 
-<Card title="Unsloth" href="/v0.2/training-tutorials/unsloth">
+<Card title="Unsloth" href="/v0.2.1/training-tutorials/unsloth">
 Train with Unsloth for fast fine-tuning.
 </Card>
 
@@ -556,7 +556,7 @@ You've learned how to:
 
 ---
 
-[Next: Multi-Step Environment >](/v0.2/environment-tutorials/multi-step-environment)
+[Next: Multi-Step Environment >](/v0.2.1/environment-tutorials/multi-step-environment)
 
 ---
 

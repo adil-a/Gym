@@ -14,7 +14,7 @@ The walkthrough uses [`over_refusal_detection`](https://github.com/NVIDIA-NeMo/G
 - Call the judge from `verify()` and parse strict verdict labels.
 - Handle failures without crashing verification.
 
-[< Back to Building Environments](/v0.2/environment-tutorials)
+[< Back to Building Environments](/v0.2.1/environment-tutorials)
 
 ---
 
@@ -31,9 +31,9 @@ The judge is a verifier dependency — it is **not** the policy.
 
 ## Prerequisites
 
-- [task-verification](/v0.2/about/concepts/task-verification) — especially *What is LLM-as-a-judge?*
-- [core-components](/v0.2/about/concepts/core-components) — resources server vs. model server roles
-- [configuration-concepts](/v0.2/about/concepts/configuration) — Hydra composition and server references
+- [task-verification](/v0.2.1/about/concepts/task-verification) — especially *What is LLM-as-a-judge?*
+- [core-components](/v0.2.1/about/concepts/core-components) — resources server vs. model server roles
+- [configuration-concepts](/v0.2.1/about/concepts/configuration) — Hydra composition and server references
 
 ---
 
@@ -57,7 +57,7 @@ flowchart LR
 
 **Alternative pattern (external):** some servers call an **OpenAI-compatible** `chat.completions` client pointed at URLs you supply (e.g. HPC or a separate cluster). [`proof_verification`](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/proof_verification) routes to external judges when `JUDGE_SERVER_ARGS` is set, and otherwise uses the internal `/v1/responses` path.
 
-For how NeMo Gym sits next to GPUs and training frameworks, see [Deployment Topology](/v0.2/infrastructure/deployment-topology).
+For how NeMo Gym sits next to GPUs and training frameworks, see [Deployment Topology](/v0.2.1/infrastructure/deployment-topology).
 
 ---
 
@@ -358,7 +358,7 @@ Done looks like:
 
 ## See also
 
-- [task-verification](/v0.2/about/concepts/task-verification) — verification patterns and reward design
-- [Index](/v0.2/resources-server) — role of `verify()`
-- [Deployment Topology](/v0.2/infrastructure/deployment-topology) — cluster layout and GPUs
-- [New Environment](/v0.2/contribute/environments/new-environment) — scaffolding a new resources server
+- [task-verification](/v0.2.1/about/concepts/task-verification) — verification patterns and reward design
+- [Index](/v0.2.1/resources-server) — role of `verify()`
+- [Deployment Topology](/v0.2.1/infrastructure/deployment-topology) — cluster layout and GPUs
+- [New Environment](/v0.2.1/contribute/environments/new-environment) — scaffolding a new resources server
