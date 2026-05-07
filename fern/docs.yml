@@ -137,6 +137,8 @@ redirects:
     destination: "/training-tutorials/offline-training-w-rollouts"
   - source: "/latest/environment-tutorials/designing-customer-evaluation"
     destination: "/latest/environment-tutorials"
+  - source: "/v0.2/:path*"
+    destination: "/v0.2.1/:path*"
   - source: "nemo/gym/latest/:path*/index.html"
     destination: "/nemo/gym/latest/:path*"
   - source: "nemo/gym/v0.2.1/:path*/index.html"

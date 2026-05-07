@@ -1,7 +1,8 @@
 # GA alias: keep this file in sync with the current GA version's yaml
 # (currently versions/v0.2.1.yml). On release, copy the new GA yaml here
 # and bump the version entries in fern/docs.yml. Folder paths point at
-# the GA content directory; there is no separate ./latest/ tree.
+# the GA content directory; there is no separate ./latest/ tree mounted
+# under the `latest` slug.
 tabs:
   docs:
     display-name: Documentation
