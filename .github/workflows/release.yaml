@@ -42,11 +42,6 @@ on:
         required: false
         default: true
         type: boolean
-      publish-docs:
-        description: Publish docs
-        required: false
-        default: true
-        type: boolean
       version-bump-branch:
         description: Branch for version bump
         required: true
@@ -95,11 +90,8 @@ jobs:
       wheel-content-ignore: "W002,W004,W009"
       app-id: ${{ vars.BOT_ID }}
       gh-release-use-changelog-builder: ${{ inputs.generate-changelog || false }}
-      publish-docs: ${{ inputs.publish-docs || true }}
-      docs-target-path: nemo/gym
-      publish-as-latest: true
+      publish-docs: false
       run-on-version-tag-only: ${{ github.ref_name != 'main' }}
-      docs-skip-linkcheck: true
       gh-release-from-tag: ${{ inputs.gh-release-from-tag || '' }}
       restrict-to-admins: true
     secrets: inherit  # pragma: allowlist secret
