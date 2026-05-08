@@ -523,6 +523,7 @@ def get_openclaw_trajectory_from_session(
         return [], []
 
     messages: List[Dict[str, Any]] = []
+    malformed_lines = 0
     try:
         with open(traj_file, "r") as f:
             for line in f:
@@ -532,6 +533,7 @@ def get_openclaw_trajectory_from_session(
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
+                    malformed_lines += 1
                     continue
                 if event.get("type") != "message":
                     continue
@@ -581,8 +583,19 @@ def get_openclaw_trajectory_from_session(
                         tool_msg["is_error"] = True
                     messages.append(tool_msg)
 
+        # A single trailing partial line (agent killed mid-write on timeout)
+        # is expected; more than that suggests corruption or a buggy emitter
+        # and should not be silent for downstream RL-training data quality.
+        if malformed_lines > 1:
+            print(
+                f"WARN: {malformed_lines} malformed JSON lines in {traj_file}",
+                flush=True,
+            )
         print(f"Loaded openclaw trajectory ({len(messages)} messages)", flush=True)
         return messages, []
-    except Exception as e:
-        print(f"Failed to read openclaw trajectory: {e}", flush=True)
+    except (IOError, OSError) as e:
+        # Filesystem-level failures only. KeyError / AttributeError / TypeError
+        # from openclaw schema drift propagate as stack traces by design — we
+        # want to know loudly if the event shape changed under us.
+        print(f"Failed to read openclaw trajectory ({traj_file}): {e}", flush=True)
         return [], []
