@@ -38,7 +38,7 @@ def _make_server(**overrides):
         host="0.0.0.0",
         port=8081,
         base_url="https://api.example.com/v1",
-        api_key="test-key",
+        api_key="test-key",  # pragma: allowlist secret
         model="test-model",
         entrypoint="",
         name="",
