@@ -1,5 +1,5 @@
 instances:
-  - url: gym.docs.buildwithfern.com/nemo/gym
+  - url: nvidia-gym.docs.buildwithfern.com/nemo/gym
     custom-domain: docs.nvidia.com/nemo/gym
 
 # missing-redirects requires FDR auth to compare against the published
