@@ -158,20 +158,19 @@ class TestApp:
 
     def test_semaphore_disabled_by_default(self) -> None:
         server = self._setup_server()
-        assert server._semaphore is None
-        assert isinstance(server._bound(), type(nullcontext()))
+        assert isinstance(server._semaphore, type(nullcontext()))
 
     @pytest.mark.asyncio
     async def test_semaphore_caps_concurrency(self) -> None:
         server = self._setup_server(max_concurrent_requests=2)
-        assert server._semaphore is not None
+        assert isinstance(server._semaphore, asyncio.Semaphore)
 
         in_flight = 0
         peak = 0
 
         async def worker() -> None:
             nonlocal in_flight, peak
-            async with server._bound():
+            async with server._semaphore:
                 in_flight += 1
                 peak = max(peak, in_flight)
                 await asyncio.sleep(0.01)
