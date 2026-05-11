@@ -48,7 +48,7 @@ enable offline operation after the first fetch.
 | Directory | Contents |
 |-----------|----------|
 | `filings_metadata/{CIK}.json` | Filing metadata (accession numbers, dates, forms) per company |
-| `filings/{hash}.txt` | Parsed filing content (HTML to text) |
+| `filings/{CIK}/{accession}.txt` | Parsed filing content (HTML to text) |
 | `tickers.json` | SEC ticker-to-CIK mapping |
 
 ### Cache location
