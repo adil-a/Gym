@@ -8,7 +8,7 @@ instances:
 # then flip back to `error` to enforce.
 check:
   rules:
-    missing-redirects: warn
+    # missing-redirects: warn
 
 title: NeMo Gym
 
