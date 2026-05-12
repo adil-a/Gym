@@ -53,6 +53,21 @@ GRPO training on instruction following and reasoning environments.
 
 ::::
 
+### Step-Level RL
+
+::::{grid} 1 1 2 2
+:gutter: 1 1 1 2
+
+:::{grid-item-card} {octicon}`list-ordered;1.5em;sd-mr-1` Step-Level RL with NeMo RL Primitives
+:link: step-level-rl
+:link-type: doc
+Compose NeMo RL primitives (no `grpo_train` fork) to implement step-level REINFORCE on the `step_arithmetic` environment. Demonstrates per-step credit assignment without GRPO groups.
++++
+{bdg-secondary}`nemo rl` {bdg-secondary}`step-level` {bdg-secondary}`reinforce`
+:::
+
+::::
+
 ### Multi-Environment Training
 
 ::::{grid} 1 1 2 2

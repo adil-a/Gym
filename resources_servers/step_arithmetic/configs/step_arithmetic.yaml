@@ -1,0 +1,21 @@
+step_arithmetic_resources_server:
+  resources_servers:
+    step_arithmetic:
+      entrypoint: app.py
+      domain: math
+      verified: false
+      description: "Step-level RL: arithmetic expression evaluated as an ordered sequence of binary ops (add/mul/sub) followed by submit. Verify returns per-step rewards aligned with model outputs in addition to a final-answer reward."
+step_arithmetic_simple_agent:
+  responses_api_agents:
+    simple_agent:
+      entrypoint: app.py
+      resources_server:
+        type: resources_servers
+        name: step_arithmetic_resources_server
+      model_server:
+        type: responses_api_models
+        name: policy_model
+      datasets:
+      - name: example
+        type: example
+        jsonl_fpath: resources_servers/step_arithmetic/data/example.jsonl
