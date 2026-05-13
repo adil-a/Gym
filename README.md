@@ -104,7 +104,7 @@ Rollouts: results/mcqa_rollouts.jsonl
 Aggregate metrics: results/mcqa_rollouts_aggregate_metrics.json
 ```
 
-These rollouts can also be used as training data with verification scores. For per-task pass rates, see the [`ng_reward_profile`](https://docs.nvidia.com/nemo/gym/latest/reference/cli-commands) command.
+For per-task pass rates, see the [`ng_reward_profile`](https://docs.nvidia.com/nemo/gym/latest/reference/cli-commands) command.
 
 ### Next Steps
 
