@@ -134,6 +134,10 @@ dependencies = [
     # License: MIT https://github.com/Textualize/rich/blob/27701029082052c6541031b6f139097230253900/LICENSE
     "rich",
 
+    # typer: CLI framework for the `ng` command
+    # License: MIT https://github.com/fastapi/typer/blob/master/LICENSE
+    "typer",
+
     # mlflow-skinny: used for interacting with the Gitlab model registry. We use the "skinny" version that does not have unnecessary dependencies.
     # mlflow dependency is necessary for importing. However, all of mlflow's dependencies that don't overlap with mlflow-skinny are excluded below.
     # Updated Tue Feb 17, 2026 with mlflow-skinny==3.9.0
@@ -306,6 +310,9 @@ Download = "https://github.com/NVIDIA-NeMo/Gym/releases"
 Homepage = "https://github.com/NVIDIA-NeMo/Gym"
 
 [project.scripts]
+# Main CLI
+ng = "nemo_gym.ng:app"
+
 # Run/test scripts for servers.
 nemo_gym_run = "nemo_gym.cli:run"
 ng_run = "nemo_gym.cli:run"
