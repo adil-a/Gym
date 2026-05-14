@@ -168,6 +168,10 @@ class TestExtractPredictedValueAnswerFormat:
         text = "First attempt: Final Answer = 1\nCorrection: Final Answer = 3"
         assert extract_predicted_value(text, "count", answer_format="fmt_28") == 3.0
 
+    def test_label_only_answer_format_stops_at_line_boundary(self):
+        text = "Answer Value: not numeric\nUnrelated later number: 42"
+        assert extract_predicted_value(text, "count", answer_format="fmt_27") is None
+
     def test_answer_format_uses_numeric_token_inside_capture(self):
         assert extract_predicted_value("Final value is: about 12.5 g/mol", "float", answer_format="fmt_25") == 12.5
 
