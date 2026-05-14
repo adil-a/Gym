@@ -47,7 +47,7 @@ Each JSONL row:
 - `responses_create_params.input[0].content`: user prompt (question + SMILES + format instruction)
 - `responses_create_params.tools`: `[]` for `direct`, `[stateful_python_code_exec]` for `mcp-python`
 - `expected_answer`: ground-truth numeric value (string or int)
-- `property_type`: one of `count`, `bool`, `presence`, `fragment`
+- `property_type`: one of `count`, `bool`, `presence`, `fragment`, `float`
 - `property`: RDKit property name, e.g. `NumValenceElectrons`
 - `chembl_id`: ChEMBL molecule identifier
 - `smiles`: canonical SMILES string
@@ -75,6 +75,23 @@ ng_collect_rollouts \
     +input_jsonl_fpath=resources_servers/rdkit_chemistry/data/example.jsonl \
     +output_jsonl_fpath=resources_servers/rdkit_chemistry/data/example_rollouts.jsonl
 ```
+
+## Repairing Legacy Rollout Scoring
+
+If rollouts were scored before `answer_format` replaced legacy
+`use_box_format`, repair a chunked rollout directory from a repo checkout:
+
+```bash
+uv run python resources_servers/rdkit_chemistry/scripts/repair_rollout_scoring.py \
+    --questions-jsonl /path/to/train.jsonl \
+    --rollout-dir /path/to/results/direct \
+    --output-dir /path/to/results/direct_repaired
+```
+
+The script writes repaired `rollouts_chunk_NNN.jsonl`, matching healed
+`rollouts_chunk_NNN_materialized_inputs.jsonl`, refreshed
+`rollouts_chunk_NNN_aggregate_metrics.json`, and `repair_summary.json` to the
+output directory.
 
 ## Licensing
 
