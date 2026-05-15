@@ -11,7 +11,5 @@ RUN apt-get update \
 # Verify installation during build
 RUN qemu-system-x86_64 --version && \
     qemu-aarch64 --version
-RUN update-binfmts --display
-RUN update-binfmts --display | grep qemu
 
 CMD ["/bin/bash"]
