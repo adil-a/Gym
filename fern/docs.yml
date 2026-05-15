@@ -182,11 +182,6 @@ redirects:
     destination: "/nemo/gym/v0.2.1"
   - source: "/nemo/gym/v0.2/:path*"
     destination: "/nemo/gym/v0.2.1/:path*"
-  # Version alias: latest → main (the `Latest` slug was retired; trunk lives at `main`)
-  - source: "/nemo/gym/latest"
-    destination: "/nemo/gym/main"
-  - source: "/nemo/gym/latest/:path*"
-    destination: "/nemo/gym/main/:path*"
   # README/blog links that pointed to Sphinx pages whose canonical was renamed in Fern
   - source: "/nemo/gym/latest/training-tutorials/unsloth-training"
     destination: "/nemo/gym/main/training-tutorials/unsloth"
@@ -209,5 +204,14 @@ redirects:
   - source: "/nemo/gym/:path*/index.html"
     destination: "/nemo/gym/:path*"
   # Catch-all: Sphinx `foo.html` → Fern canonical `foo`
+  # Must precede the /latest/:path* wildcard so that /latest/...html strips
+  # extension first, allowing the specific /latest/... page-reorg rules above
+  # to fire on the no-extension form before the slug-only catch-all takes over.
   - source: "/nemo/gym/:path*.html"
     destination: "/nemo/gym/:path*"
+  # Version alias: latest → main (the `Latest` slug was retired; trunk lives at `main`)
+  # Intentionally last so .html stripping and specific reorg rules win first.
+  - source: "/nemo/gym/latest"
+    destination: "/nemo/gym/main"
+  - source: "/nemo/gym/latest/:path*"
+    destination: "/nemo/gym/main/:path*"
