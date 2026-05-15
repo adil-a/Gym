@@ -65,7 +65,6 @@ versions:
   - display-name: Main
     path: versions/main.yml
     slug: main
-    availability: beta
   - display-name: "0.2.1"
     path: versions/v0.2.1.yml
     slug: v0.2.1
