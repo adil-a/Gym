@@ -1,0 +1,19 @@
+FROM ubuntu:24.04
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install qemu
+RUN apt-get update && \
+    apt-get install -y \
+      qemu-system \
+      qemu-user \
+      qemu-user-static && \
+    rm -rf /var/lib/apt/lists/*
+
+# Verify installation during build
+RUN qemu-system-x86_64 --version && \
+    qemu-aarch64 --version
+RUN update-binfmts --display | grep qemu
+
+CMD ["/bin/bash"]
