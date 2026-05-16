@@ -24,11 +24,16 @@ Allow linux/arm64 run on x86
 docker run --privileged --rm tonistiigi/binfmt --install all
 ```
 
-Run
+Run container interactively
 ```bash
 docker run \
     --platform linux/arm64 \
+    -v $(pwd):/workdir \
+    -it \
     gitlab-master.nvidia.com:5005/nexus-team/nexusnest/container_with_qemu \
-    --mount type=bind,src=$(pwd),dst=/workdir \
-    apptainer run /workdir/sweb.eval.x86_64.astropy_1776_astropy-12907_latest.sif uname -m
+    /bin/bash
+```
+
+```bash
+apptainer run /workdir/sweb.eval.x86_64.astropy_1776_astropy-12907_latest.sif uname -m
 ```
