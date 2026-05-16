@@ -28,6 +28,5 @@ EOF
 # Verify installation during build
 RUN qemu-system-x86_64 --version && \
     qemu-aarch64 --version
-RUN apt-get update && apt-get install -y sudo && sudo update-binfmts --enable qemu-aarch64 && sudo update-binfmts --enable qemu-x86_64
 
 CMD ["/bin/bash"]
