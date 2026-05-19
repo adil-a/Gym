@@ -28,7 +28,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional, Tuple
 
 from openai import APITimeoutError
 
@@ -494,6 +494,66 @@ def calculate_elo(win_rate: float, ref_elo: float) -> tuple[float, float]:
     elo = ref_elo - 400.0 * (math.log10(1.0 - win_rate) - math.log10(win_rate))
     normalized_elo = (elo - 500.0) / 2000.0
     return elo, normalized_elo
+
+
+def calculate_elo_mle(
+    battles: List[Tuple[float, float, float]],
+    bracket: Tuple[float, float] = (-2000.0, 5000.0),
+    tol: float = 1e-3,
+    max_iter: int = 200,
+) -> Tuple[Optional[float], Optional[float], bool]:
+    """Joint Bradley-Terry MLE for the eval's ELO over multiple references.
+
+    Each entry of ``battles`` is ``(ref_elo, wins_plus_half_ties, n)``. Ties
+    count as half-wins to match the existing ``win_rate = (wins + 0.5*ties)/n``
+    convention. With one battle this reduces (to within ``tol``) to
+    ``calculate_elo`` — the closed form is the k=1 special case.
+
+    Returns ``(eval_elo, eval_elo_se, degenerate)``:
+      - ``degenerate=True`` when the score equation has no root in ``bracket``
+        (the eval is too strong or too weak to fit anywhere in the search
+        window). Both ``eval_elo`` and ``eval_elo_se`` are ``None`` in that
+        case — callers should skip the metric or fall back to a clipped
+        single-ref value.
+      - Otherwise ``eval_elo`` is the MLE point estimate and ``eval_elo_se``
+        is the asymptotic standard error from the Fisher information.
+
+    The score ``f(E) = Σ_i (n_i · p_i(E) − w_i)`` is monotone in E (each
+    ``p_i`` is strictly increasing in E), so plain bisection finds the root —
+    no scipy dependency.
+    """
+    if not battles:
+        return None, None, True
+
+    def _p(R: float, E: float) -> float:
+        return 1.0 / (1.0 + 10.0 ** ((R - E) / 400.0))
+
+    def _score(E: float) -> float:
+        return sum(n * _p(R, E) - w for R, w, n in battles)
+
+    lo, hi = bracket
+    f_lo, f_hi = _score(lo), _score(hi)
+    # f is monotone increasing in E. f(lo)>0 → eval too weak for bracket;
+    # f(hi)<0 → eval too strong. Either way, no root in [lo, hi].
+    if f_lo > 0 or f_hi < 0:
+        return None, None, True
+
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        if _score(mid) > 0:
+            hi = mid
+        else:
+            lo = mid
+        if hi - lo < tol:
+            break
+    eval_elo = 0.5 * (lo + hi)
+
+    # Fisher information at the MLE: I(E) = Σ n_i · p_i · (1−p_i) · (ln10/400)²
+    c2 = (math.log(10.0) / 400.0) ** 2
+    fisher = sum(n * _p(R, eval_elo) * (1.0 - _p(R, eval_elo)) * c2 for R, _w, n in battles)
+    eval_elo_se = fisher**-0.5 if fisher > 0 else None
+
+    return eval_elo, eval_elo_se, False
 
 
 def compute_comparison_reward(winner: str) -> float:

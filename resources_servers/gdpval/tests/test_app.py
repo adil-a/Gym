@@ -486,6 +486,426 @@ class TestApp:
         assert abs(result.agent_metrics["comparison/win_rate"] - (13.0 / 24.0)) < 1e-6
 
 
+class TestCommitteeOfReferences:
+    """Multi-reference (committee) comparison mode: BT-MLE aggregation across
+    refs, asyncio.gather fan-out per task, legacy-field promotion."""
+
+    def test_legacy_reference_fields_promoted_to_committee(self) -> None:
+        from resources_servers.gdpval.app import GDPValResourcesServerConfig
+
+        cfg = GDPValResourcesServerConfig(
+            host="0.0.0.0",
+            port=8080,
+            entrypoint="",
+            name="",
+            reward_mode="comparison",
+            reference_deliverables_dir="/tmp/legacy-refs",
+            reference_elo=1234.0,
+            judge_model_server={"type": "responses_api_models", "name": "judge"},
+            preconvert_office_to_pdf=False,
+        )
+        assert len(cfg.committee_references) == 1
+        assert cfg.committee_references[0].name == "default"
+        assert cfg.committee_references[0].deliverables_dir == "/tmp/legacy-refs"
+        assert cfg.committee_references[0].elo == 1234.0
+
+    def test_explicit_committee_takes_precedence_over_legacy(self) -> None:
+        from resources_servers.gdpval.app import GDPValResourcesServerConfig
+
+        cfg = GDPValResourcesServerConfig(
+            host="0.0.0.0",
+            port=8080,
+            entrypoint="",
+            name="",
+            reward_mode="comparison",
+            reference_deliverables_dir="/tmp/legacy-refs",
+            reference_elo=1234.0,
+            committee_references=[
+                {"name": "a", "deliverables_dir": "/r/a", "elo": 1500.0},
+                {"name": "b", "deliverables_dir": "/r/b", "elo": 1200.0},
+            ],
+            judge_model_server={"type": "responses_api_models", "name": "judge"},
+            preconvert_office_to_pdf=False,
+        )
+        assert [r.name for r in cfg.committee_references] == ["a", "b"]
+
+    def test_comparison_requires_committee_or_legacy(self) -> None:
+        from resources_servers.gdpval.app import (
+            GDPValResourcesServer,
+            GDPValResourcesServerConfig,
+        )
+
+        with pytest.raises(ValueError, match="committee_references"):
+            cfg = GDPValResourcesServerConfig(
+                host="0.0.0.0",
+                port=8080,
+                entrypoint="",
+                name="",
+                reward_mode="comparison",
+                judge_model_server={"type": "responses_api_models", "name": "judge"},
+                preconvert_office_to_pdf=False,
+            )
+            GDPValResourcesServer(config=cfg, server_client=MagicMock(spec=ServerClient))
+
+    def test_mle_reduces_to_closed_form_at_k1(self) -> None:
+        from resources_servers.gdpval.comparison import calculate_elo, calculate_elo_mle
+
+        for ref_elo, win_rate in [(1000.0, 0.75), (1535.0, 0.2249), (1290.0, 0.6573)]:
+            n = 100
+            wins_plus_half_ties = win_rate * n
+            closed_elo, _ = calculate_elo(win_rate, ref_elo)
+            mle_elo, mle_se, degenerate = calculate_elo_mle([(ref_elo, wins_plus_half_ties, n)])
+            assert degenerate is False
+            assert mle_se is not None and mle_se > 0
+            # Bisection tol is 1e-3, closed form is exact — allow ~0.01 ELO.
+            assert abs(closed_elo - mle_elo) < 0.05, (closed_elo, mle_elo, ref_elo, win_rate)
+
+    def test_mle_matches_user_snippet(self) -> None:
+        """Hard-coded against the brentq snippet from the design discussion:
+        battles=[(1535,22.49,100),(1287,65.73,100),(1192,77.62,100)] → ~1377.27."""
+        from resources_servers.gdpval.comparison import calculate_elo_mle
+
+        battles = [(1535.0, 22.49, 100.0), (1287.0, 65.73, 100.0), (1192.0, 77.62, 100.0)]
+        mle_elo, mle_se, degenerate = calculate_elo_mle(battles)
+        assert degenerate is False
+        assert abs(mle_elo - 1377.267) < 0.01
+        # SE under joint MLE is materially tighter than any single-ref ELO
+        # because n_effective = 300, not 100. Sanity-check upper bound.
+        assert mle_se is not None and mle_se < 30.0
+
+    def test_mle_degenerate_when_all_wins_or_all_losses(self) -> None:
+        from resources_servers.gdpval.comparison import calculate_elo_mle
+
+        # All wins across all refs → MLE diverges to +inf, falls back to degenerate.
+        mle_elo, mle_se, degenerate = calculate_elo_mle([(1500.0, 100.0, 100.0), (1200.0, 50.0, 50.0)])
+        assert (mle_elo, mle_se, degenerate) == (None, None, True)
+        # All losses → MLE diverges to -inf.
+        mle_elo, mle_se, degenerate = calculate_elo_mle([(1500.0, 0.0, 100.0), (1200.0, 0.0, 50.0)])
+        assert (mle_elo, mle_se, degenerate) == (None, None, True)
+
+    def test_mle_se_shrinks_with_n(self) -> None:
+        from resources_servers.gdpval.comparison import calculate_elo_mle
+
+        _, se_small, _ = calculate_elo_mle([(1500.0, 30.0, 100.0)])
+        _, se_large, _ = calculate_elo_mle([(1500.0, 300.0, 1000.0)])
+        # With 10× more battles at the same win rate, SE drops by ~√10 ≈ 3.16.
+        assert se_small is not None and se_large is not None
+        assert 2.8 < (se_small / se_large) < 3.5, (se_small, se_large)
+
+    @pytest.mark.asyncio
+    async def test_verify_comparison_fans_out_across_committee(self, tmp_path) -> None:
+        """Two committee refs, each with 1 repeat → ``run_trials`` is called
+        twice (once per (ref, repeat) pair). Per-reference verdicts are
+        reassembled by ref.name; back-compat total_wins/losses/ties is summed
+        across both refs."""
+        ref_a_root = tmp_path / "ref_a" / "task_task-1"
+        ref_b_root = tmp_path / "ref_b" / "task_task-1"
+        for r in (ref_a_root / "repeat_0", ref_b_root / "repeat_0"):
+            r.mkdir(parents=True)
+            (r / "finish_params.json").write_text("{}")
+        eval_dir = tmp_path / "eval" / "task_task-1" / "repeat_0"
+        eval_dir.mkdir(parents=True)
+        (eval_dir / "finish_params.json").write_text("{}")
+
+        server = _server(
+            reward_mode="comparison",
+            committee_references=[
+                {"name": "ref_a", "deliverables_dir": str(tmp_path / "ref_a"), "elo": 1500.0},
+                {"name": "ref_b", "deliverables_dir": str(tmp_path / "ref_b"), "elo": 1200.0},
+            ],
+            preconvert_office_to_pdf=False,
+            num_comparison_trials=4,
+        )
+
+        # Distinct win patterns per ref so we can verify reassembly is by ref
+        # name, not by call order. ref_a: eval wins 3/4. ref_b: eval wins 1/4.
+        call_counter = {"n": 0}
+
+        def fake_run_trials(*, submission_a, submission_b, **_kwargs):
+            call_counter["n"] += 1
+            # Use the order of calls to dispatch — flat list iterates refs in
+            # config order, so first call is ref_a, second is ref_b.
+            if call_counter["n"] == 1:
+                return {
+                    "winner": "BOXED[B]",
+                    "win_count_a": 1,
+                    "win_count_b": 3,
+                    "tie_count": 0,
+                    "task_count": 4,
+                }
+            return {
+                "winner": "BOXED[A]",
+                "win_count_a": 3,
+                "win_count_b": 1,
+                "tie_count": 0,
+                "task_count": 4,
+            }
+
+        body = _verify_request(deliverables_dir=str(eval_dir))
+
+        with (
+            patch("resources_servers.gdpval.comparison.run_trials", side_effect=fake_run_trials),
+            patch("resources_servers.gdpval.app.get_server_url", return_value="http://localhost:9999"),
+            patch("resources_servers.gdpval.comparison.build_file_section", return_value=[]),
+            patch("openai.OpenAI", return_value=MagicMock()),
+        ):
+            resp = await server.verify(body)
+
+        assert call_counter["n"] == 2  # one (ref, repeat) pair per committee member.
+        assert resp.verify_mode == "comparison"
+        assert resp.fully_unjudged is False
+
+        # Per-reference reassembly.
+        by_name = {v.name: v for v in resp.per_reference_results}
+        assert set(by_name) == {"ref_a", "ref_b"}
+        assert (by_name["ref_a"].wins, by_name["ref_a"].losses, by_name["ref_a"].ties) == (3, 1, 0)
+        assert (by_name["ref_b"].wins, by_name["ref_b"].losses, by_name["ref_b"].ties) == (1, 3, 0)
+        assert by_name["ref_a"].reference_elo == 1500.0
+        assert by_name["ref_b"].reference_elo == 1200.0
+        assert by_name["ref_a"].success and by_name["ref_b"].success
+        assert by_name["ref_a"].judged == by_name["ref_b"].judged == 4
+
+        # Per-rollout reward: mean of per-ref majority-vote rewards = (1.0 + 0.0) / 2 = 0.5.
+        assert resp.reward == 0.5
+        assert resp.tie is True
+
+        # Back-compat totals across refs.
+        assert resp.total_wins == 4
+        assert resp.total_losses == 4
+        assert resp.total_ties == 0
+        assert resp.judge_response["committee_size"] == 2
+        assert resp.judge_response["ref_repeat_count"] == 2
+        assert {e["ref_name"] for e in resp.judge_response["per_ref_repeat"]} == {"ref_a", "ref_b"}
+
+    @pytest.mark.asyncio
+    async def test_verify_comparison_one_ref_missing_per_task(self, tmp_path) -> None:
+        """ref_A has the task, ref_B doesn't. ref_B verdict: success=False /
+        error_message='ref_missing'. Aggregation uses only ref_A."""
+        ref_a_root = tmp_path / "ref_a" / "task_task-1"
+        (ref_a_root / "repeat_0").mkdir(parents=True)
+        (ref_a_root / "repeat_0" / "finish_params.json").write_text("{}")
+        # ref_b dir exists but has no task_task-1 subtree.
+        (tmp_path / "ref_b").mkdir()
+        eval_dir = tmp_path / "eval" / "task_task-1" / "repeat_0"
+        eval_dir.mkdir(parents=True)
+        (eval_dir / "finish_params.json").write_text("{}")
+
+        server = _server(
+            reward_mode="comparison",
+            committee_references=[
+                {"name": "ref_a", "deliverables_dir": str(tmp_path / "ref_a"), "elo": 1500.0},
+                {"name": "ref_b", "deliverables_dir": str(tmp_path / "ref_b"), "elo": 1200.0},
+            ],
+            preconvert_office_to_pdf=False,
+            num_comparison_trials=4,
+        )
+
+        def fake_run_trials(**_kwargs):
+            return {
+                "winner": "BOXED[B]",
+                "win_count_a": 1,
+                "win_count_b": 3,
+                "tie_count": 0,
+                "task_count": 4,
+            }
+
+        body = _verify_request(deliverables_dir=str(eval_dir))
+
+        with (
+            patch("resources_servers.gdpval.comparison.run_trials", side_effect=fake_run_trials),
+            patch("resources_servers.gdpval.app.get_server_url", return_value="http://localhost:9999"),
+            patch("resources_servers.gdpval.comparison.build_file_section", return_value=[]),
+            patch("openai.OpenAI", return_value=MagicMock()),
+        ):
+            resp = await server.verify(body)
+
+        by_name = {v.name: v for v in resp.per_reference_results}
+        assert by_name["ref_a"].success is True
+        assert by_name["ref_a"].wins == 3
+        assert by_name["ref_b"].success is False
+        assert by_name["ref_b"].error_message == "ref_missing"
+        assert by_name["ref_b"].judged == 0
+        # Reward is mean over successful refs only — single ref_a wins → 1.0.
+        assert resp.reward == 1.0
+        assert resp.fully_unjudged is False
+
+    @pytest.mark.asyncio
+    async def test_verify_comparison_all_refs_missing(self, tmp_path) -> None:
+        """Every committee ref is missing the task → judge_response carries the
+        legacy ``reference_missing`` error string AND per_reference_results
+        records each ref as success=False / ref_missing."""
+        # ref roots exist but no task-1 subtrees.
+        (tmp_path / "ref_a").mkdir()
+        (tmp_path / "ref_b").mkdir()
+        eval_dir = tmp_path / "eval" / "task_task-1" / "repeat_0"
+        eval_dir.mkdir(parents=True)
+        (eval_dir / "finish_params.json").write_text("{}")
+
+        server = _server(
+            reward_mode="comparison",
+            committee_references=[
+                {"name": "ref_a", "deliverables_dir": str(tmp_path / "ref_a"), "elo": 1500.0},
+                {"name": "ref_b", "deliverables_dir": str(tmp_path / "ref_b"), "elo": 1200.0},
+            ],
+            preconvert_office_to_pdf=False,
+        )
+
+        body = _verify_request(deliverables_dir=str(eval_dir))
+        resp = await server.verify(body)
+        assert resp.reward == 0.0
+        assert resp.fully_unjudged is True
+        assert resp.judge_response == {"error": "reference_missing"}
+        assert {v.name for v in resp.per_reference_results} == {"ref_a", "ref_b"}
+        assert all(not v.success and v.error_message == "ref_missing" for v in resp.per_reference_results)
+
+    def test_aggregate_metrics_committee_emits_mle_and_per_ref(self) -> None:
+        """Aggregate metrics over new-shape verify rows: BT MLE jointly fits
+        one eval_elo across all refs; per-ref diagnostics are emitted; the
+        per-ref counts in agent_metrics match the input."""
+        import asyncio as _asyncio
+
+        from nemo_gym.config_types import AggregateMetricsRequest
+
+        server = _server(
+            reward_mode="comparison",
+            committee_references=[
+                {"name": "ref_a", "deliverables_dir": "/r/a", "elo": 1535.0},
+                {"name": "ref_b", "deliverables_dir": "/r/b", "elo": 1287.0},
+                {"name": "ref_c", "deliverables_dir": "/r/c", "elo": 1192.0},
+            ],
+        )
+
+        # One verify row per task — fabricate ten rows so total = 100 battles
+        # per ref. Each row is "10 trials at the same outcome" so totals
+        # roughly match the user's snippet inputs:
+        #   ref_a: 22.49% win  → wins=22, losses=77, ties=1
+        #   ref_b: 65.73% win  → wins=66, losses=34, ties=0
+        #   ref_c: 77.62% win  → wins=78, losses=22, ties=0
+        # Spread across 10 rows of 10 trials each per ref.
+        rows = []
+        for i in range(10):
+            rows.append(
+                {
+                    "_ng_task_index": i,
+                    "_ng_rollout_index": 0,
+                    "reward": 0.5,
+                    "fully_unjudged": False,
+                    "per_reference_results": [
+                        {
+                            "name": "ref_a",
+                            "reference_elo": 1535.0,
+                            "wins": 3 if i == 0 else 2,  # totals: 3 + 9*2 = 21 → bump 1 to ~22
+                            "losses": 7 if i == 0 else 8,
+                            "ties": 0,
+                            "judged": 10,
+                            "win_rate": 0.3 if i == 0 else 0.2,
+                            "per_repeat": [],
+                            "success": True,
+                            "error_message": None,
+                        },
+                        {
+                            "name": "ref_b",
+                            "reference_elo": 1287.0,
+                            "wins": 7 if i < 6 else 6,
+                            "losses": 3 if i < 6 else 4,
+                            "ties": 0,
+                            "judged": 10,
+                            "win_rate": 0.7 if i < 6 else 0.6,
+                            "per_repeat": [],
+                            "success": True,
+                            "error_message": None,
+                        },
+                        {
+                            "name": "ref_c",
+                            "reference_elo": 1192.0,
+                            "wins": 8 if i < 8 else 7,
+                            "losses": 2 if i < 8 else 3,
+                            "ties": 0,
+                            "judged": 10,
+                            "win_rate": 0.8 if i < 8 else 0.7,
+                            "per_repeat": [],
+                            "success": True,
+                            "error_message": None,
+                        },
+                    ],
+                    "response": {},
+                }
+            )
+
+        body = AggregateMetricsRequest(verify_responses=rows)
+        result = _asyncio.run(server.aggregate_metrics(body))
+
+        # Per-ref counts surface in agent_metrics.
+        assert result.agent_metrics["comparison/ref_a/n"] == 100
+        assert result.agent_metrics["comparison/ref_b/n"] == 100
+        assert result.agent_metrics["comparison/ref_c/n"] == 100
+        assert result.agent_metrics["comparison/committee_size"] == 3
+        # win rates close to the design-doc targets.
+        assert 0.15 < result.agent_metrics["comparison/ref_a/win_rate"] < 0.30
+        assert 0.60 < result.agent_metrics["comparison/ref_b/win_rate"] < 0.75
+        assert 0.70 < result.agent_metrics["comparison/ref_c/win_rate"] < 0.85
+        # eval_elo (MLE) lands in the 1300-1450 band given these inputs.
+        assert 1300.0 < result.agent_metrics["comparison/eval_elo"] < 1450.0
+        # SE is published and finite.
+        assert result.agent_metrics["comparison/eval_elo_se"] > 0
+        assert result.agent_metrics["comparison/eval_elo_degenerate"] is False
+
+    def test_aggregate_metrics_mixes_new_and_legacy_rows(self) -> None:
+        """A legacy single-ref row (no ``per_reference_results``, only
+        ``total_wins/losses/ties``) gets attributed to the first committee
+        member; a new-shape row contributes per-ref."""
+        import asyncio as _asyncio
+
+        from nemo_gym.config_types import AggregateMetricsRequest
+
+        server = _server(
+            reward_mode="comparison",
+            committee_references=[
+                {"name": "default", "deliverables_dir": "/r/default", "elo": 1000.0},
+            ],
+        )
+
+        legacy_row = {
+            "_ng_task_index": 0,
+            "_ng_rollout_index": 0,
+            "reward": 1.0,
+            "total_wins": 9,
+            "total_losses": 2,
+            "total_ties": 1,
+            "response": {},
+        }
+        new_row = {
+            "_ng_task_index": 1,
+            "_ng_rollout_index": 0,
+            "reward": 0.0,
+            "fully_unjudged": False,
+            "per_reference_results": [
+                {
+                    "name": "default",
+                    "reference_elo": 1000.0,
+                    "wins": 1,
+                    "losses": 10,
+                    "ties": 1,
+                    "judged": 12,
+                    "win_rate": (1 + 0.5) / 12,
+                    "per_repeat": [],
+                    "success": True,
+                    "error_message": None,
+                }
+            ],
+            "response": {},
+        }
+
+        body = AggregateMetricsRequest(verify_responses=[legacy_row, new_row])
+        result = _asyncio.run(server.aggregate_metrics(body))
+
+        # Legacy attributed to "default" + new row also under "default".
+        assert result.agent_metrics["comparison/default/wins"] == 9 + 1
+        assert result.agent_metrics["comparison/default/losses"] == 2 + 10
+        assert result.agent_metrics["comparison/default/ties"] == 1 + 1
+        assert result.agent_metrics["comparison/default/n"] == 24
+
+
 class TestComparisonPayloadHardening:
     """Three protections against multi-hour /verify stalls observed on the
     multimodal-heavy long-tail tasks (task_a941b6d8 video, task_4b894ae3
