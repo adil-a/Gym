@@ -22,6 +22,7 @@ construction, scoring, response building) is delegated to a
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import sys
 import tempfile
@@ -49,6 +50,54 @@ from nemo_gym.openai_utils import (
 )
 from nemo_gym.server_utils import get_response_json, raise_for_status
 from responses_api_agents.stirrup_agent.task_strategy import TaskSampleSkipError, TaskStrategy
+
+
+# ---------------------------------------------------------------------------
+# Per-task timeout (caps a single Ray rollout attempt's wallclock).
+# Without a per-attempt budget, a single pathological task that exceeds Slurm
+# walltime can permanently consume every chain-hop's compute and never
+# complete.
+# ---------------------------------------------------------------------------
+
+STIRRUP_PER_TASK_TIMEOUT_DEFAULT = 3 * 3600 + 30 * 60  # 3h30m = 12600s
+
+_TIMEOUT_LOGGED = False
+
+
+class TaskPerAttemptTimeoutError(Exception):
+    """Raised when a single Ray rollout attempt exceeds the per-task timeout."""
+
+
+def _get_per_task_timeout() -> float:
+    """Read STIRRUP_PER_TASK_TIMEOUT (seconds, float) or fall back to default."""
+    raw = os.environ.get("STIRRUP_PER_TASK_TIMEOUT")
+    if raw is None or raw == "":
+        return float(STIRRUP_PER_TASK_TIMEOUT_DEFAULT)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        print(
+            f"[gdpval_stirrup_agent] WARNING: could not parse STIRRUP_PER_TASK_TIMEOUT={raw!r} "
+            f"as float, falling back to default {STIRRUP_PER_TASK_TIMEOUT_DEFAULT} s.",
+            flush=True,
+        )
+        return float(STIRRUP_PER_TASK_TIMEOUT_DEFAULT)
+
+
+def _log_timeout_once(timeout_s: float) -> None:
+    """Emit a single INFO line on the first per-task await of this process."""
+    global _TIMEOUT_LOGGED
+    if _TIMEOUT_LOGGED:
+        return
+    _TIMEOUT_LOGGED = True
+    total = int(timeout_s)
+    hours, rem = divmod(total, 3600)
+    minutes, seconds = divmod(rem, 60)
+    print(
+        f"[gdpval_stirrup_agent] per-task timeout set to {hours}h{minutes}m{seconds}s "
+        f"({timeout_s:g} s). Override with env var STIRRUP_PER_TASK_TIMEOUT.",
+        flush=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -687,7 +736,21 @@ class StirrupAgentWrapper(SimpleResponsesAPIAgent):
             }
 
             future = run_stirrup_agent_remote.remote(params)
-            result = await future
+            per_task_timeout = _get_per_task_timeout()
+            _log_timeout_once(per_task_timeout)
+            try:
+                result = await asyncio.wait_for(future, timeout=per_task_timeout)
+            except asyncio.TimeoutError:
+                try:
+                    ray.cancel(future, force=True)
+                except Exception as _cancel_exc:
+                    print(
+                        f"[gdpval_stirrup_agent] WARNING: ray.cancel failed after timeout: {_cancel_exc!r}",
+                        flush=True,
+                    )
+                raise TaskPerAttemptTimeoutError(
+                    f"per-task timeout exceeded ({per_task_timeout:g} s)"
+                ) from None
         finally:
             if input_files_dir:
                 shutil.rmtree(input_files_dir, ignore_errors=True)
@@ -784,7 +847,15 @@ class StirrupAgentWrapper(SimpleResponsesAPIAgent):
                 response = await self.responses(fixed_params)
             except Exception as exc:
                 task_info = self.task_strategy.extract_task_info(existing_metadata)
-                label = "skipped" if isinstance(exc, TaskSampleSkipError) else "failed"
+                if isinstance(exc, TaskSampleSkipError):
+                    label = "skipped"
+                    error_class = None
+                elif isinstance(exc, TaskPerAttemptTimeoutError):
+                    label = "timeout"
+                    error_class = "timeout_exceeded"
+                else:
+                    label = "failed"
+                    error_class = None
                 instance_hint = task_info.get("instance_id", task_info.get("task_id", "unknown"))
                 print(
                     f"[stirrup-{label}] {instance_hint}: {type(exc).__name__}: {exc}",
@@ -796,6 +867,7 @@ class StirrupAgentWrapper(SimpleResponsesAPIAgent):
                     task_info=task_info,
                     reason=f"{type(exc).__name__}: {exc}",
                     skipped=label == "skipped",
+                    error_class=error_class,
                 )
 
             response_clean = response.model_copy(update={"metadata": None})
@@ -852,10 +924,20 @@ class StirrupAgentWrapper(SimpleResponsesAPIAgent):
         task_info: Dict[str, Any],
         reason: str,
         skipped: bool,
+        error_class: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return a verify-response-shaped dict for runs that never produced a deliverable."""
+        if error_class == "timeout_exceeded":
+            suffix = "timeout"
+            status_word = "Timed out"
+        elif skipped:
+            suffix = "skipped"
+            status_word = "Skipped"
+        else:
+            suffix = "failed"
+            status_word = "Failed"
         placeholder = NeMoGymResponse(
-            id=f"{self.task_strategy.response_id(task_info)}-{'skipped' if skipped else 'failed'}",
+            id=f"{self.task_strategy.response_id(task_info)}-{suffix}",
             created_at=int(time.time()),
             model=fixed_params.model or "unknown",
             object="response",
@@ -865,7 +947,7 @@ class StirrupAgentWrapper(SimpleResponsesAPIAgent):
                     content=[
                         NeMoGymResponseOutputText(
                             type="output_text",
-                            text=f"{'Skipped' if skipped else 'Failed'}: {reason}",
+                            text=f"{status_word}: {reason}",
                             annotations=[],
                         )
                     ],
@@ -883,6 +965,8 @@ class StirrupAgentWrapper(SimpleResponsesAPIAgent):
         payload["reward"] = 0.0
         payload["skipped"] = skipped
         payload["error_message"] = reason
+        if error_class is not None:
+            payload["error_class"] = error_class
         return payload
 
     async def aggregate_metrics(self, body: AggregateMetricsRequest = Body()) -> AggregateMetrics:
