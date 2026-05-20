@@ -1880,6 +1880,11 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             mount_args.append(f"--mount type=bind,src={params.swebench_setup_dir},dst=/swebench_setup")
             mount_args.append(f"--mount type=bind,src={params.swebench_setup_dir},dst={params.swebench_setup_dir}")
 
+        # TODO @bxyu-nvidia: Temporary fix to mount the correct directory
+        mount_args.append(f"--mount type=bind,src={params.swebench_setup_dir},dst=/swebench_setup")
+        mount_args.append(f"--mount type=bind,src={params.swebench_setup_dir},dst={params.swebench_setup_dir}")
+        print(f"DEBUG mounting swe bench setup dir: {mount_args[-2:]}")
+
         if command.mode == "eval" and "SWE-bench_Multilingual" in data_point["dataset_name"]:
             mount_args.append(
                 f"--mount type=bind,src={params.swebench_multilingual_setup_dir},dst=/swebench_multilingual_setup"
