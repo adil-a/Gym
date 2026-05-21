@@ -741,6 +741,20 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         chat_completion_create_params = converter.responses_to_chat_completion_create_params(body)
         chat_completion_create_params = chat_completion_create_params.model_dump()
 
+        # Mirror the vllm_model proxy: when the reasoning parser is active, <think>...</think>
+        # is stripped from assistant `content` (moved to `reasoning_content`) before vLLM
+        # tokenizes. Without this, /tokenize over-counts by the size of accumulated reasoning.
+        for message_dict in chat_completion_create_params.get("messages", []):
+            if message_dict.get("role") != "assistant" or "content" not in message_dict:
+                continue
+            content = message_dict["content"]
+            if isinstance(content, str):
+                _, message_dict["content"] = converter._extract_reasoning_from_content(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and "text" in item:
+                        _, item["text"] = converter._extract_reasoning_from_content(item["text"])
+
         # Same projection as vllm_model/app.py:384.
         tokenize_body_dict = {}
         for key in ("model", "messages", "tools", "chat_template_kwargs"):
