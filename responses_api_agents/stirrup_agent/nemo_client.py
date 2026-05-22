@@ -299,6 +299,10 @@ class DynamicMaxTokensChatCompletionsClient(ChatCompletionsClient):
         reasoning: Optional[Reasoning] = None
         if hasattr(msg, "reasoning_content") and msg.reasoning_content:
             reasoning = Reasoning(content=msg.reasoning_content)
+        elif hasattr(msg, "reasoning") and msg.reasoning:
+            # vLLM >= 0.16.0 emits `reasoning` (Responses-API convention) instead of
+            # `reasoning_content`; e.g. DeepSeek-V4's `--reasoning-parser deepseek_v4`.
+            reasoning = Reasoning(content=msg.reasoning)
 
         tool_calls = [
             ToolCall(
