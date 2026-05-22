@@ -15,9 +15,16 @@
 name: Unit tests
 
 on:
+  push:
+    branches:
+      - "pull-request/[0-9]+"
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -30,7 +37,7 @@ jobs:
           submodules: 'recursive'
 
       - name: Fail on draft PRs
-        if: github.event.pull_request.draft == true
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
         run: |
           echo "Failing on draft PR to enforce this check to run"
           exit 1
