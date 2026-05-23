@@ -107,18 +107,11 @@ def apply_anthropic_tau2_prompt_overrides():
         "ALREADY been transferred",
     ]
 
-    airline_override = PROMPT_OVERRIDE_DIR / "airline_policy.md"
     telecom_addendum = PROMPT_OVERRIDE_DIR / "telecom_policy_addendum.md"
     tools_user_override = PROMPT_OVERRIDE_DIR / "simulation_guidelines_tools.md"
 
-    airline_policy = DATA_DIR / "tau2/domains/airline/policy.md"
     telecom_manual = DATA_DIR / "tau2/domains/telecom/tech_support_manual.md"
     tools_user_prompt = DATA_DIR / "tau2/user_simulator/simulation_guidelines_tools.md"
-
-    if airline_override.exists():
-        airline_policy.write_text(airline_override.read_text())
-        verify_markers(airline_policy, ["LAST resort", "No circumvention"])
-        logger.info("Applied Anthropic tau2 airline policy override")
 
     if telecom_addendum.exists():
         current_telecom_manual = telecom_manual.read_text()
