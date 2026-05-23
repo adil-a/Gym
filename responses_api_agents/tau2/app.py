@@ -14,7 +14,7 @@
 # limitations under the License.
 
 from collections import defaultdict
-from os import environ
+from os import environ, getpid
 from pathlib import Path
 from subprocess import run
 from time import time
@@ -107,7 +107,10 @@ def _copy_override(src: Path, dst: Path, markers: list[str]):
         raise RuntimeError(f"AGI-Eval tau2 override file not found: {src}")
 
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_bytes(src.read_bytes())
+    contents = src.read_bytes()
+    tmp = dst.with_name(f".{dst.name}.{getpid()}.tmp")
+    tmp.write_bytes(contents)
+    tmp.replace(dst)
     _verify_markers(dst, markers)
 
 
