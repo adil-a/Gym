@@ -1,7 +1,8 @@
+import "./NavButton.css";
+
 /**
  * Wayfinding navigation button for tutorials.
  * Renders a styled pill button for prev/next/back navigation.
- * Requires the `.nav-button` CSS rules from main.css.
  *
  * Usage:
  *   <NavButton href="/latest/environment-tutorials" label="Back to Environment Tutorials" direction="back" />
