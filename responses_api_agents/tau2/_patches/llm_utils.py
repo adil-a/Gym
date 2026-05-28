@@ -42,6 +42,22 @@ from tau2.environment.tool import Tool
 
 from nemo_gym.openai_utils import NeMoGymAsyncOpenAI
 
+# Fail loudly at module load if the installed tau2-bench predates
+# `reasoning_content` on AssistantMessage. Otherwise the patch's direct
+# attribute access raises AttributeError mid-rollout, which is silent and slow
+# to diagnose. Symptom of a stale install: container's pre-baked tau2-bench
+# kept because Gym's cli_setup_command.py:117 took the skip-venv branch.
+if "reasoning_content" not in AssistantMessage.model_fields:
+    raise ImportError(
+        "FATAL: tau2-bench AssistantMessage has no 'reasoning_content' field. "
+        "The pinned tau2-bench in responses_api_agents/tau2/requirements.txt was "
+        "NOT installed in /opt/Gym/responses_api_agents/tau2/.venv. Fix: ensure your "
+        "tau2 config has BOTH (a) `rm -rf /opt/Gym/responses_api_agents/tau2/.venv` "
+        "in pre_cmd, AND (b) `++skip_venv_if_present=false` in collect_rollout_params. "
+        "Without both, Gym skips `uv pip install -r requirements.txt` when the "
+        "pre-baked venv exists and the container's stale tau2-bench is used."
+    )
+
 # Suppress Pydantic serialization warnings from LiteLLM
 # These occur due to type mismatches between streaming and non-streaming response types
 warnings.filterwarnings(
