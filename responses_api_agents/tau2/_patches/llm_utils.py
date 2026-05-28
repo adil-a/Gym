@@ -42,29 +42,9 @@ from tau2.environment.tool import Tool
 
 from nemo_gym.openai_utils import NeMoGymAsyncOpenAI
 
-# Inject arajfer's `reasoning_content` field onto ParticipantMessageBase at
-# import time so this patch is self-contained — no dependency on the installed
-# tau2-bench actually being at commit e6e23241. Mirrors the field arajfer added
-# to tau2-bench in commit e6e2324 (DeepSeek-V3.2/V4 multi-turn reasoning replay).
-# After mutating __annotations__, model_rebuild(force=True) picks up the field
-# in model_fields and makes it accepted as a constructor kwarg.
-from typing import Optional as _Optional  # noqa: E402
-
-if "reasoning_content" not in ParticipantMessageBase.model_fields:
-    ParticipantMessageBase.__annotations__["reasoning_content"] = _Optional[str]
-    ParticipantMessageBase.reasoning_content = None
-    ParticipantMessageBase.model_rebuild(force=True)
-    AssistantMessage.model_rebuild(force=True)
-    UserMessage.model_rebuild(force=True)
-
-# Safety net: if the field-injection above somehow didn't land (e.g. an
-# unexpected pydantic version), fail loudly here rather than mid-rollout.
-if "reasoning_content" not in AssistantMessage.model_fields:
-    raise ImportError(
-        "FATAL: failed to inject reasoning_content onto AssistantMessage. "
-        "Field-injection at module load did not register; check pydantic version "
-        "compat or installed tau2-bench layout."
-    )
+# Field injection for `reasoning_content` lives in
+# responses_api_agents/tau2/__init__.py — it runs BEFORE this module loads so
+# AssistantMessage already has the field by the time the code below uses it.
 
 # Suppress Pydantic serialization warnings from LiteLLM
 # These occur due to type mismatches between streaming and non-streaming response types

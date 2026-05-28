@@ -17,6 +17,28 @@ import importlib.util
 import sys
 from pathlib import Path
 
+# Inject arajfer's `reasoning_content` field onto ParticipantMessageBase + its
+# subclasses BEFORE anything else in tau2 imports them. Mirrors the field
+# arajfer added in tau2-bench commit e6e2324. Uses Pydantic v2's FieldInfo +
+# direct model_fields mutation (annotations + model_rebuild alone does NOT
+# register new fields). This makes the runtime tau2 model behave as if
+# tau2-bench had been upgraded to e6e23241, without requiring reinstall.
+from typing import Optional as _Optional
+from pydantic.fields import FieldInfo as _FieldInfo
+from tau2.data_model.message import (
+    AssistantMessage as _AssistantMessage,
+    ParticipantMessageBase as _ParticipantMessageBase,
+    UserMessage as _UserMessage,
+)
+
+for _cls in (_ParticipantMessageBase, _AssistantMessage, _UserMessage):
+    if "reasoning_content" not in _cls.model_fields:
+        _cls.model_fields["reasoning_content"] = _FieldInfo(
+            annotation=_Optional[str],
+            default=None,
+        )
+        _cls.model_rebuild(force=True)
+
 _PATCH_PATH = Path(__file__).parent / "_patches" / "llm_utils.py"
 if _PATCH_PATH.exists():
     # Trigger normal loading of tau2.utils.llm_utils (and its transitive
