@@ -1,2 +1,2 @@
 -e nemo-gym[dev] @ ../../
-git+https://github.com/bxyu-nvidia/tau2-bench@8ea800851ede3988b3f351ec124fb880d0a68675
+git+https://github.com/bxyu-nvidia/tau2-bench@awarno/reasoning-propagation-verbose
