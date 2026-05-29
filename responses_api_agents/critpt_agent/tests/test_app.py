@@ -199,10 +199,10 @@ class TestApp:
 
         # Should be: [system, user, assistant (Turn1), user (Turn2)]
         assert len(messages) == 4
-        assert messages[2]["role"] == "assistant"
-        assert messages[2]["content"] == "The answer is 1.23"
-        assert messages[3]["role"] == "user"
-        assert "def solve():" in messages[3]["content"]
+        assert messages[2].role == "assistant"
+        assert messages[2].content == "The answer is 1.23"
+        assert messages[3].role == "user"
+        assert "def solve():" in messages[3].content
 
     @pytest.mark.asyncio
     async def test_run_strips_thinking_from_turn1_before_turn2(self):
@@ -238,7 +238,7 @@ class TestApp:
 
         turn2_call = server.server_client.post.call_args_list[2]
         messages = list(turn2_call.kwargs["json"].input)
-        assert messages[2]["content"] == "Final Answer: 1.23"  # think block stripped
+        assert messages[2].content == "Final Answer: 1.23"  # think block stripped
 
     @pytest.mark.asyncio
     async def test_run_verify_called_with_problem_id(self):

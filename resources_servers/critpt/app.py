@@ -12,8 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import logging
 import re
+from typing import Any, Optional
 
 from nemo_gym.base_resources_server import (
     BaseResourcesServerConfig,
@@ -31,6 +33,10 @@ LOG = logging.getLogger(__name__)
 class CritPtResourcesServerConfig(BaseResourcesServerConfig):
     api_url: str = "https://artificialanalysis.ai/api/v2/critpt/evaluate"
     api_key: str
+    # AA API requires submissions for every hosted problem in PUBLIC mode (currently 70).
+    # The server buffers verify() calls until batch_size unique problem_ids accumulate,
+    # then fires one API call and distributes the aggregate accuracy to all waiters.
+    batch_size: int = 70
 
 
 class CritPtRunRequest(BaseRunRequest):
@@ -50,28 +56,56 @@ class CritPtVerifyResponse(BaseVerifyResponse):
 class CritPtResourcesServer(SimpleResourcesServer):
     config: CritPtResourcesServerConfig
 
+    def model_post_init(self, context: Any) -> None:
+        super().model_post_init(context)
+        self._lock = asyncio.Lock()
+        # Active batch: {"future": asyncio.Future, "submissions": dict[problem_id, submission]}.
+        # Reset to None once batch_size is reached; new calls start a fresh batch.
+        self._current_batch: Optional[dict] = None
+
     async def verify(self, body: CritPtVerifyRequest) -> CritPtVerifyResponse:
-        output_text = _extract_output_text(body)
-        code = _extract_code(output_text)
-
-        if not code:
-            return CritPtVerifyResponse(**body.model_dump(), reward=0.0, accuracy=0.0, timeout_rate=0.0)
-
+        code = _extract_code(_extract_output_text(body))
         submission = {
             "problem_id": body.problem_id,
-            "generated_code": f"```python\n{code}\n```",
+            "generated_code": f"```python\n{code}\n```" if code else "```python\n```",
             "model": "unknown",
             "generation_config": {},
         }
 
-        result = await _call_api(self.config.api_url, self.config.api_key, [submission])
+        async with self._lock:
+            if self._current_batch is None:
+                self._current_batch = {
+                    "future": asyncio.get_running_loop().create_future(),
+                    "submissions": {},
+                }
+            batch = self._current_batch
+            batch["submissions"][body.problem_id] = submission
+            future = batch["future"]
+
+            ready_to_fire = len(batch["submissions"]) >= self.config.batch_size
+            if ready_to_fire:
+                submissions_snapshot = list(batch["submissions"].values())
+                self._current_batch = None  # next caller starts a fresh batch
+            else:
+                submissions_snapshot = None
+
+        if ready_to_fire:
+            LOG.info("CritPt batch full (%d submissions); firing AA API.", len(submissions_snapshot))
+            try:
+                result = await _call_api(self.config.api_url, self.config.api_key, submissions_snapshot)
+                future.set_result(result)
+            except Exception as e:
+                future.set_exception(e)
+
+        result = await future
         accuracy = result["accuracy"]
         timeout_rate = result.get("timeout_rate", 0.0)
-        reward = 1.0 if accuracy >= 1.0 else 0.0
-
+        # AA API returns only an aggregate accuracy. Following nemo-skills, every rollout in the
+        # batch receives the same aggregate as its reward; pass@1 across the dataset then equals
+        # the aggregate accuracy.
         return CritPtVerifyResponse(
             **body.model_dump(),
-            reward=reward,
+            reward=accuracy,
             accuracy=accuracy,
             timeout_rate=timeout_rate,
         )

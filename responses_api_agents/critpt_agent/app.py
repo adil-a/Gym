@@ -24,7 +24,7 @@ from pydantic import ConfigDict
 from nemo_gym.base_resources_server import BaseRunRequest, BaseVerifyResponse
 from nemo_gym.base_responses_api_agent import BaseResponsesAPIAgentConfig, Body, SimpleResponsesAPIAgent
 from nemo_gym.config_types import ModelServerRef, ResourcesServerRef
-from nemo_gym.openai_utils import NeMoGymResponse, NeMoGymResponseCreateParamsNonStreaming
+from nemo_gym.openai_utils import NeMoGymEasyInputMessage, NeMoGymResponse, NeMoGymResponseCreateParamsNonStreaming
 from nemo_gym.server_utils import get_response_json, raise_for_status
 
 
@@ -108,8 +108,8 @@ class CritPtAgent(SimpleResponsesAPIAgent):
         # Turn 2: populate code template using Turn 1 reasoning as context
         turn2_user_msg = self._turn2_user_template.format(code_template=body.code_template)
         turn2_input = list(body.responses_create_params.input) + [
-            {"role": "assistant", "content": turn1_text},
-            {"role": "user", "content": turn2_user_msg},
+            NeMoGymEasyInputMessage(role="assistant", content=turn1_text),
+            NeMoGymEasyInputMessage(role="user", content=turn2_user_msg),
         ]
         turn2_params = body.responses_create_params.model_copy(update={"input": turn2_input})
 

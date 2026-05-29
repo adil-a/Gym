@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -31,13 +32,14 @@ from resources_servers.critpt.app import (
 )
 
 
-def _make_config(**kwargs) -> CritPtResourcesServerConfig:
+def _make_config(batch_size: int = 70, **kwargs) -> CritPtResourcesServerConfig:
     return CritPtResourcesServerConfig(
         host="0.0.0.0",
         port=8080,
         entrypoint="",
         name="",
         api_key="test-key",
+        batch_size=batch_size,
         **kwargs,
     )
 
@@ -75,6 +77,23 @@ def _make_verify_request(output_text: str, problem_id: str = "1") -> CritPtVerif
     )
 
 
+def _mock_api(api_result: dict):
+    """Patch the module-level request + raise_for_status. Returns the mock_request handle."""
+    request_patch = patch("resources_servers.critpt.app.request")
+    rfs_patch = patch("resources_servers.critpt.app.raise_for_status", new_callable=AsyncMock)
+    mock_request = request_patch.start()
+    rfs_patch.start()
+    mock_response = AsyncMock()
+    mock_response.json = AsyncMock(return_value=api_result)
+    mock_request.return_value = mock_response
+    return mock_request, [request_patch, rfs_patch]
+
+
+def _stop_patches(patches):
+    for p in patches:
+        p.stop()
+
+
 class TestExtractCode:
     def test_fenced_python_block(self):
         text = "Here is the answer:\n```python\ndef solve():\n    return 42\n```"
@@ -101,62 +120,76 @@ class TestApp:
         _make_server()
 
     @pytest.mark.asyncio
-    async def test_verify_correct(self):
-        server = _make_server()
-        body = _make_verify_request("```python\ndef solve():\n    return 1.23\n```", problem_id="5")
+    async def test_partial_batch_waits(self):
+        """With batch_size=3, a single verify() call should hang (batch not full)."""
+        server = _make_server(_make_config(batch_size=3))
 
-        api_result = {"accuracy": 1.0, "timeout_rate": 0.0, "server_timeout_count": 0, "judge_error_count": 0}
-
-        with (
-            patch("resources_servers.critpt.app.request") as mock_request,
-            patch("resources_servers.critpt.app.raise_for_status", new_callable=AsyncMock),
-        ):
-            mock_response = AsyncMock()
-            mock_response.json = AsyncMock(return_value=api_result)
-            mock_request.return_value = mock_response
-
-            result = await server.verify(body)
-
-        assert result.reward == 1.0
-        assert result.accuracy == 1.0
-        assert result.timeout_rate == 0.0
-        assert result.problem_id == "5"
-
-        call_kwargs = mock_request.call_args
-        payload = call_kwargs.kwargs["json"]
-        assert payload["submissions"][0]["problem_id"] == "5"
-        assert payload["submissions"][0]["generated_code"].startswith("```python\n")
-        assert payload["submissions"][0]["model"] == "unknown"
-        assert call_kwargs.kwargs["headers"]["x-api-key"] == "test-key"
+        mock_request, patches = _mock_api({"accuracy": 0.5, "timeout_rate": 0.0})
+        try:
+            task = asyncio.create_task(server.verify(_make_verify_request("```python\nx=1\n```", problem_id="p1")))
+            # Give the task a chance to run; it should be blocked awaiting batch fill.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
+            mock_request.assert_not_called()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            _stop_patches(patches)
 
     @pytest.mark.asyncio
-    async def test_verify_incorrect(self):
-        server = _make_server()
-        body = _make_verify_request("```python\ndef solve():\n    return 9.99\n```")
+    async def test_full_batch_fires_once_and_distributes(self):
+        """batch_size=3: three concurrent verify() calls → one API call, all share the aggregate."""
+        server = _make_server(_make_config(batch_size=3))
 
-        api_result = {"accuracy": 0.0, "timeout_rate": 0.0, "server_timeout_count": 0, "judge_error_count": 0}
+        mock_request, patches = _mock_api({"accuracy": 0.667, "timeout_rate": 0.0})
+        try:
+            results = await asyncio.gather(
+                server.verify(_make_verify_request("```python\na=1\n```", problem_id="p1")),
+                server.verify(_make_verify_request("```python\nb=2\n```", problem_id="p2")),
+                server.verify(_make_verify_request("```python\nc=3\n```", problem_id="p3")),
+            )
 
-        with (
-            patch("resources_servers.critpt.app.request") as mock_request,
-            patch("resources_servers.critpt.app.raise_for_status", new_callable=AsyncMock),
-        ):
-            mock_response = AsyncMock()
-            mock_response.json = AsyncMock(return_value=api_result)
-            mock_request.return_value = mock_response
+            assert mock_request.call_count == 1
+            payload = mock_request.call_args.kwargs["json"]
+            problem_ids = {s["problem_id"] for s in payload["submissions"]}
+            assert problem_ids == {"p1", "p2", "p3"}
 
-            result = await server.verify(body)
-
-        assert result.reward == 0.0
-        assert result.accuracy == 0.0
+            for r in results:
+                assert r.reward == 0.667
+                assert r.accuracy == 0.667
+        finally:
+            _stop_patches(patches)
 
     @pytest.mark.asyncio
-    async def test_verify_no_code_in_response(self):
-        server = _make_server()
-        body = _make_verify_request("")
+    async def test_two_full_batches_fire_twice(self):
+        """Six concurrent verify() calls with batch_size=3 → two API calls."""
+        server = _make_server(_make_config(batch_size=3))
 
-        with patch("resources_servers.critpt.app.request") as mock_request:
-            result = await server.verify(body)
+        mock_request, patches = _mock_api({"accuracy": 0.5, "timeout_rate": 0.0})
+        try:
+            await asyncio.gather(
+                *(server.verify(_make_verify_request(f"```python\nx={i}\n```", problem_id=f"p{i}")) for i in range(6))
+            )
+            assert mock_request.call_count == 2
+        finally:
+            _stop_patches(patches)
 
-        mock_request.assert_not_called()
-        assert result.reward == 0.0
-        assert result.accuracy == 0.0
+    @pytest.mark.asyncio
+    async def test_empty_code_still_included_in_batch(self):
+        """A verify() with no extractable code still contributes to the batch (slot must be filled)."""
+        server = _make_server(_make_config(batch_size=2))
+
+        mock_request, patches = _mock_api({"accuracy": 0.5, "timeout_rate": 0.0})
+        try:
+            await asyncio.gather(
+                server.verify(_make_verify_request("", problem_id="p1")),
+                server.verify(_make_verify_request("```python\nok=1\n```", problem_id="p2")),
+            )
+            assert mock_request.call_count == 1
+            payload = mock_request.call_args.kwargs["json"]
+            submitted = {s["problem_id"]: s["generated_code"] for s in payload["submissions"]}
+            assert submitted["p1"] == "```python\n```"  # empty code, still submitted
+            assert "ok=1" in submitted["p2"]
+        finally:
+            _stop_patches(patches)
