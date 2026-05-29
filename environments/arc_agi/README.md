@@ -32,13 +32,13 @@ cd Gym/
 
 # ARC-AGI-1
 git clone https://github.com/fchollet/ARC-AGI
-cd environments/arc_agi/scripts
-python3 create_dataset.py
+cd environments/arc_agi
+python prepare.py
 
 # ARC-AGI-2
 git clone https://github.com/arcprize/ARC-AGI-2
-cd environments/arc_agi/scripts
-python3 create_dataset.py --version 2
+cd environments/arc_agi
+python prepare.py --version 2
 ```
 
 ### Install Gym:
