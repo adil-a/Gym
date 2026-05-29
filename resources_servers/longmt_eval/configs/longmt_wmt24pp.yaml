@@ -4,7 +4,7 @@ longmt_eval:
       entrypoint: app.py
       domain: other
       verified: false
-      description: Document-level MT verifier for wmt24pp short docs using the SEGALE pipeline (ersatz segment → LASER2 embed → vecalign align → COMETKiwi score). wmt24pp docs are short (< 300 sentences), so each verify() call takes ~5–15 seconds. comet_num_shards=4 actors_per_gpu=4 packs 4 actors onto each of 4 H100 GPUs (16 actors total), allowing up to 16 docs to be scored concurrently while keeping ~16GB VRAM per GPU.
+      description: Document-level MT verifier for wmt24pp short docs using the SEGALE pipeline (ersatz segment → LASER2 embed → vecalign align → COMETKiwi score).
       value: Rewards document-level translation quality across 55 language pairs using reference-free COMETKiwi scores as the RL reward signal.
       compute_segale: true
       comet_model: Unbabel/wmt22-cometkiwi-da

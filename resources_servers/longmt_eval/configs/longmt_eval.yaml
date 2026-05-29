@@ -4,7 +4,7 @@ longmt_eval:
       entrypoint: app.py
       domain: other
       verified: false
-      description: Document-level MT verifier using the SEGALE pipeline (ersatz segment → LASER2 embed → vecalign align → COMETKiwi score) via a persistent Ray GPU actor pool. comet_num_shards actors run concurrently (one per GPU on the extra_gpu node), each scoring one document at a time with comet_batch_size spans per COMETKiwi forward pass and embed_batch_size overlaps per LASER2 call.
+      description: Document-level MT verifier using the SEGALE pipeline (ersatz segment → LASER2 embed → vecalign align → COMETKiwi score)
       value: Rewards long-form translation quality at the document level using reference-free COMETKiwi scores as the RL reward signal.
       compute_segale: true
       comet_model: Unbabel/wmt22-cometkiwi-da
