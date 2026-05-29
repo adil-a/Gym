@@ -2,12 +2,8 @@
 name: nemo-gym-pivot-datasets
 license: Apache-2.0
 description: >-
-  Create, validate, or document Nemo Gym pivot datasets from rollout, trajectory,
-  chat-completion, Responses API, or tool-call artifacts: Gym Responses-style row
-  conversion, pivot selection, single-step tool-use configs, agent_ref alignment,
-  verifier knobs, expected-action row contracts, and train/eval usage. Not for
-  general reward profiling (use nemo-gym-reward-profiling) or debugging runs (use
-  nemo-gym-debugging).
+  Create and validate Nemo Gym single-step pivot datasets from trajectory or
+  rollout artifacts. Not for reward profiling or debugging runs.
 metadata:
   author: NVIDIA <nemo-gym@nvidia.com>
   tags:
@@ -25,6 +21,13 @@ metadata:
 Convert agent trajectories and rollout artifacts into single-step Nemo Gym pivot
 datasets for local RL or evaluation, and validate that a pivot JSONL and its Gym
 config can be used together.
+
+## Prerequisites
+
+- Source artifacts to convert: rollout, trajectory, chat-completion, Responses API, or tool-call data.
+- Python to run `scripts/validate_pivot_dataset.py` and the reference converters.
+- The target Gym config (agent and resource-server names) the pivot rows must align with.
+- Optionally a Gym checkout (`--gym-repo`) to validate against resource-server Pydantic models.
 
 ## Paper Reference
 
@@ -148,3 +151,17 @@ running it unchanged.
 Validating a finished dataset: run `scripts/validate_pivot_dataset.py` with the
 expected `--agent-ref`, and add `--gym-repo` when the Gym checkout is available
 to also validate against the resource-server Pydantic models.
+
+## Limitations
+
+- `expected_action` is singular; source turns with more than one tool call are filtered out, not split.
+- Reference converters under `scripts/reference/` are dataset-specific examples, not commands to run unchanged.
+- A valid JSONL file can still be unusable if the agent and resource-server names do not line up.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Resolution |
+|---|---|---|
+| Validator rejects rows | `agent_ref.name` does not match the config's agent block | Align `agent_ref.name` with the agent used by the generated config |
+| Tool-argument matches fail | String-argument threshold too strict | Tune `word_count_similarity_threshold` for the single-step tool-use verifier |
+| Structured-decoding path taken unexpectedly | `tool_choice: "required"` routes some engines there | Use `tool_choice: "auto"` for these rows |
