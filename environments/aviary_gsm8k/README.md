@@ -1,12 +1,10 @@
 # GSM8k (Aviary)
 
-> Keywords: Tool Use, Multi-step Reasoning, Environment Interaction
-
-Adapts the GSM8K [Aviary environment](https://github.com/Future-House/aviary) into the NeMo Gym resources-server interface. Implements [GSM8k](https://arxiv.org/abs/2110.14168) as a set of environments equipped with a calculator tool.
+Adapts the GSM8K [Aviary environment](https://github.com/Future-House/aviary) into NeMo Gym. Implements [GSM8k](https://arxiv.org/abs/2110.14168) as an environment equipped with a calculator tool.
 
 # Example usage
 
-Run the GSM8K Aviary resources server together with a model config:
+Run the GSM8K Aviary resources server and aviary agent together with a model config:
 
 ```bash
 config_paths="environments/aviary_gsm8k/config.yaml,\

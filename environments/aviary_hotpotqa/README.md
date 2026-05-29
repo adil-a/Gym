@@ -1,8 +1,6 @@
 # HotPotQA (Aviary)
 
-> Keywords: Tool Use, Multi-step Reasoning, Environment Interaction
-
-Adapts the HotPotQA [Aviary environment](https://github.com/Future-House/aviary) into the NeMo Gym resources-server interface. The HotPotQA environment asks agents to perform multi-hop question answering on the [HotPotQA dataset](https://aclanthology.org/D18-1259/).
+Adapts the HotPotQA [Aviary environment](https://github.com/Future-House/aviary) into NeMo Gym. The HotPotQA environment asks agents to perform multi-hop question answering on the [HotPotQA dataset](https://aclanthology.org/D18-1259/) with a wikipedia search tool.
 
 # Example usage
 

@@ -1,8 +1,6 @@
 # BixBench (Aviary)
 
-> Keywords: Tool Use, Scientific Tasks, Notebook Execution
-
-Adapts the BixBench [Aviary environment](https://github.com/Future-House/aviary) into the NeMo Gym resources-server interface. Implements the [BixBench dataset](https://arxiv.org/abs/2503.00096) as a set of environments that allow execution of a Jupyter notebook. Also serves as an example for how to implement notebook-backed environments for other scientific computational tasks.
+Adapts the BixBench [Aviary environment](https://github.com/Future-House/aviary) into NeMo Gym. Implements the [BixBench dataset](https://arxiv.org/abs/2503.00096) an environment with execution of a Jupyter notebook. Also serves as an example for how to implement notebook-backed environments for other scientific computational tasks.
 
 # Example usage
 
