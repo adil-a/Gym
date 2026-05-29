@@ -18,6 +18,7 @@ Tests skip automatically when the corresponding API key env var is not set.
 Set env vars to enable: OPENROUTER_API_KEY, FRIENDLIAI_API_KEY, HUGGINGFACE_API_KEY.
 """
 
+import json
 import os
 
 import pytest
@@ -156,3 +157,172 @@ class TestChatCompletionsIntegration:
         )
         assert len(response.choices) > 0
         assert response.choices[0].finish_reason in ("stop", "length")
+
+
+WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a location.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "City name"},
+            },
+            "required": ["location"],
+        },
+    },
+}
+
+CALCULATOR_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "calculate",
+        "description": "Evaluate a math expression.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string", "description": "The math expression to evaluate"},
+            },
+            "required": ["expression"],
+        },
+    },
+}
+
+
+@pytest.mark.integration
+class TestToolCallingIntegration:
+    @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
+    def test_single_tool_call(self, provider, base_url, api_key, model):
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "What's the weather in San Francisco?"}],
+            tools=[WEATHER_TOOL],
+            max_tokens=128,
+            temperature=0,
+        )
+        assert len(response.choices) > 0
+        choice = response.choices[0]
+        assert choice.finish_reason in ("tool_calls", "stop")
+        assert choice.message.tool_calls is not None
+        assert len(choice.message.tool_calls) > 0
+
+        tool_call = choice.message.tool_calls[0]
+        assert tool_call.function.name == "get_weather"
+        args = json.loads(tool_call.function.arguments)
+        assert "location" in args
+
+    @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
+    def test_tool_call_with_tool_choice_auto(self, provider, base_url, api_key, model):
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "What's the weather in Tokyo?"}],
+            tools=[WEATHER_TOOL],
+            tool_choice="auto",
+            max_tokens=128,
+            temperature=0,
+        )
+        assert len(response.choices) > 0
+        choice = response.choices[0]
+        assert choice.message.tool_calls is not None
+        tool_call = choice.message.tool_calls[0]
+        assert tool_call.function.name == "get_weather"
+
+    @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
+    def test_tool_call_with_tool_choice_forced(self, provider, base_url, api_key, model):
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Tell me a joke."}],
+            tools=[WEATHER_TOOL],
+            tool_choice={"type": "function", "function": {"name": "get_weather"}},
+            max_tokens=128,
+            temperature=0,
+        )
+        assert len(response.choices) > 0
+        choice = response.choices[0]
+        assert choice.message.tool_calls is not None
+        assert choice.message.tool_calls[0].function.name == "get_weather"
+
+    @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
+    def test_tool_call_arguments_are_valid_json(self, provider, base_url, api_key, model):
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "What is 123 * 456?"}],
+            tools=[CALCULATOR_TOOL],
+            max_tokens=128,
+            temperature=0,
+        )
+        choice = response.choices[0]
+        assert choice.message.tool_calls is not None
+        for tool_call in choice.message.tool_calls:
+            args = json.loads(tool_call.function.arguments)
+            assert isinstance(args, dict)
+
+    @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
+    def test_multi_turn_with_tool_result(self, provider, base_url, api_key, model):
+        client = _make_client(base_url, api_key)
+
+        # Turn 1: user asks, model calls tool
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "What's the weather in Paris?"}],
+            tools=[WEATHER_TOOL],
+            max_tokens=128,
+            temperature=0,
+        )
+        choice = response.choices[0]
+        assert choice.message.tool_calls is not None
+        tool_call = choice.message.tool_calls[0]
+
+        # Turn 2: provide tool result, model responds with natural language
+        response2 = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "user", "content": "What's the weather in Paris?"},
+                choice.message.model_dump(),
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": '{"temperature": 18, "condition": "sunny"}',
+                },
+            ],
+            tools=[WEATHER_TOOL],
+            max_tokens=128,
+            temperature=0,
+        )
+        choice2 = response2.choices[0]
+        assert choice2.message.content
+        assert choice2.message.role == "assistant"
+
+    @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
+    def test_multiple_tools_available(self, provider, base_url, api_key, model):
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "What's the weather in London?"}],
+            tools=[WEATHER_TOOL, CALCULATOR_TOOL],
+            max_tokens=128,
+            temperature=0,
+        )
+        choice = response.choices[0]
+        assert choice.message.tool_calls is not None
+        assert choice.message.tool_calls[0].function.name == "get_weather"
+
+    @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
+    def test_no_tool_call_when_not_needed(self, provider, base_url, api_key, model):
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Say 'hello' and nothing else."}],
+            tools=[WEATHER_TOOL],
+            tool_choice="auto",
+            max_tokens=16,
+            temperature=0,
+        )
+        choice = response.choices[0]
+        assert choice.message.content
+        assert choice.finish_reason == "stop"
