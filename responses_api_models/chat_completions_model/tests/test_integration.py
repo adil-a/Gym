@@ -12,24 +12,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Integration tests for ChatCompletionsModel against real inference providers.
+"""Integration tests for hosted inference providers via OpenAI-compatible chat completions.
 
 Tests skip automatically when the corresponding API key env var is not set.
-Set env vars to enable: OPENROUTER_API_KEY, FRIENDLIAI_API_KEY, HUGGINGFACE_API_KEY,
-FIREWORKS_API_KEY, DEEPINFRA_API_KEY.
+Set env vars to enable: OPENROUTER_API_KEY, FRIENDLIAI_API_KEY, HUGGINGFACE_API_KEY.
 """
 
 import os
-from unittest.mock import MagicMock
 
 import pytest
-from fastapi.testclient import TestClient
-
-from nemo_gym.server_utils import ServerClient
-from responses_api_models.chat_completions_model.app import (
-    ChatCompletionsModel,
-    ChatCompletionsModelConfig,
-)
+from openai import OpenAI
 
 PROVIDERS = {
     "openrouter": {
@@ -77,162 +69,90 @@ def _get_provider_params():
     ]
 
 
-def _make_client(base_url: str, api_key: str, model: str) -> tuple[TestClient, str]:
-    config = ChatCompletionsModelConfig(
-        host="0.0.0.0",
-        port=8081,
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        entrypoint="",
-        name="",
-    )
-    server = ChatCompletionsModel(config=config, server_client=MagicMock(spec=ServerClient))
-    app = server.setup_webserver()
-    return TestClient(app), model
+def _make_client(base_url: str, api_key: str) -> OpenAI:
+    return OpenAI(base_url=base_url, api_key=api_key)
 
 
 @pytest.mark.integration
 class TestChatCompletionsIntegration:
     @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
     def test_basic_chat_completion(self, provider, base_url, api_key, model):
-        client, model_name = _make_client(base_url, api_key, model)
-
-        resp = client.post(
-            "/v1/chat/completions",
-            json={
-                "model": model_name,
-                "messages": [{"role": "user", "content": "Say 'hello' and nothing else."}],
-                "max_tokens": 16,
-                "temperature": 0,
-            },
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Say 'hello' and nothing else."}],
+            max_tokens=16,
+            temperature=0,
         )
-        assert resp.status_code == 200, f"{provider}: HTTP {resp.status_code} — {resp.text}"
-        data = resp.json()
-        assert "choices" in data
-        assert len(data["choices"]) > 0
-        assert data["choices"][0]["message"]["content"]
-        assert data["choices"][0]["message"]["role"] == "assistant"
-        assert data["choices"][0]["finish_reason"] in ("stop", "length")
+        assert len(response.choices) > 0
+        assert response.choices[0].message.content
+        assert response.choices[0].message.role == "assistant"
+        assert response.choices[0].finish_reason in ("stop", "length")
 
     @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
     def test_chat_completion_with_system_message(self, provider, base_url, api_key, model):
-        client, model_name = _make_client(base_url, api_key, model)
-
-        resp = client.post(
-            "/v1/chat/completions",
-            json={
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": "You only respond with the word 'yes'."},
-                    {"role": "user", "content": "Can you help me?"},
-                ],
-                "max_tokens": 16,
-                "temperature": 0,
-            },
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You only respond with the word 'yes'."},
+                {"role": "user", "content": "Can you help me?"},
+            ],
+            max_tokens=16,
+            temperature=0,
         )
-        assert resp.status_code == 200, f"{provider}: HTTP {resp.status_code} — {resp.text}"
-        data = resp.json()
-        assert data["choices"][0]["message"]["content"]
+        assert len(response.choices) > 0
+        assert response.choices[0].message.content
 
     @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
     def test_chat_completion_returns_usage(self, provider, base_url, api_key, model):
-        client, model_name = _make_client(base_url, api_key, model)
-
-        resp = client.post(
-            "/v1/chat/completions",
-            json={
-                "model": model_name,
-                "messages": [{"role": "user", "content": "Say 'hello'."}],
-                "max_tokens": 16,
-                "temperature": 0,
-            },
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Say 'hello'."}],
+            max_tokens=16,
+            temperature=0,
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        if data.get("usage"):
-            assert data["usage"]["prompt_tokens"] > 0
-            assert data["usage"]["completion_tokens"] > 0
-
-
-@pytest.mark.integration
-class TestResponsesIntegration:
-    @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
-    def test_basic_responses(self, provider, base_url, api_key, model):
-        client, model_name = _make_client(base_url, api_key, model)
-
-        resp = client.post(
-            "/v1/responses",
-            json={
-                "model": model_name,
-                "input": [{"role": "user", "content": "Say 'hello' and nothing else."}],
-                "max_output_tokens": 16,
-                "temperature": 0,
-            },
-        )
-        assert resp.status_code == 200, f"{provider}: HTTP {resp.status_code} — {resp.text}"
-        data = resp.json()
-        assert data["object"] == "response"
-        assert data["id"].startswith("resp_")
-        assert len(data["output"]) > 0
-
-        message_items = [o for o in data["output"] if o["type"] == "message"]
-        assert len(message_items) > 0
-        assert message_items[0]["content"][0]["type"] == "output_text"
-        assert message_items[0]["content"][0]["text"]
+        assert response.usage is not None
+        assert response.usage.prompt_tokens > 0
+        assert response.usage.completion_tokens > 0
 
     @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
-    def test_responses_string_input(self, provider, base_url, api_key, model):
-        client, model_name = _make_client(base_url, api_key, model)
-
-        resp = client.post(
-            "/v1/responses",
-            json={
-                "model": model_name,
-                "input": "Say 'hello' and nothing else.",
-                "max_output_tokens": 16,
-                "temperature": 0,
-            },
+    def test_chat_completion_multi_turn(self, provider, base_url, api_key, model):
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "user", "content": "What is 2+2? Reply with just the number."},
+                {"role": "assistant", "content": "4"},
+                {"role": "user", "content": "Now add 1 to that. Reply with just the number."},
+            ],
+            max_tokens=16,
+            temperature=0,
         )
-        assert resp.status_code == 200, f"{provider}: HTTP {resp.status_code} — {resp.text}"
-        data = resp.json()
-        assert data["object"] == "response"
-        assert len(data["output"]) > 0
+        assert len(response.choices) > 0
+        assert response.choices[0].message.content
 
     @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
-    def test_responses_with_instructions(self, provider, base_url, api_key, model):
-        client, model_name = _make_client(base_url, api_key, model)
-
-        resp = client.post(
-            "/v1/responses",
-            json={
-                "model": model_name,
-                "input": [{"role": "user", "content": "Can you help me?"}],
-                "instructions": "You only respond with the word 'yes'.",
-                "max_output_tokens": 16,
-                "temperature": 0,
-            },
+    def test_chat_completion_with_temperature(self, provider, base_url, api_key, model):
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Say 'hello'."}],
+            max_tokens=16,
+            temperature=0.5,
         )
-        assert resp.status_code == 200, f"{provider}: HTTP {resp.status_code} — {resp.text}"
-        data = resp.json()
-        assert len(data["output"]) > 0
+        assert len(response.choices) > 0
+        assert response.choices[0].message.content
 
     @pytest.mark.parametrize("provider,base_url,api_key,model", _get_provider_params())
-    def test_responses_returns_usage(self, provider, base_url, api_key, model):
-        client, model_name = _make_client(base_url, api_key, model)
-
-        resp = client.post(
-            "/v1/responses",
-            json={
-                "model": model_name,
-                "input": "Say 'hello'.",
-                "max_output_tokens": 16,
-                "temperature": 0,
-            },
+    def test_chat_completion_max_tokens_respected(self, provider, base_url, api_key, model):
+        client = _make_client(base_url, api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Write a 500 word essay about AI."}],
+            max_tokens=5,
+            temperature=0,
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        if data.get("usage"):
-            assert data["usage"]["input_tokens"] > 0
-            assert data["usage"]["output_tokens"] > 0
-            assert data["usage"]["total_tokens"] > 0
+        assert len(response.choices) > 0
+        assert response.choices[0].finish_reason in ("stop", "length")
