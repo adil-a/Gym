@@ -2,12 +2,8 @@
 name: nemo-gym-debugging
 license: Apache-2.0
 description: >-
-  Debug a Nemo Gym run or reward-profiling job: rollout collection failures,
-  empty or partial JSONL outputs, stale materialized inputs, verifier and schema
-  errors, Ray or Slurm issues, vLLM readiness, judge failures, tool and sandbox
-  failures, cache problems, and throughput bottlenecks. Not for adding new
-  benchmarks (use add-benchmark) or routine profiling setup (use
-  nemo-gym-reward-profiling).
+  Debug a Nemo Gym run or reward-profiling job by classifying the failing layer.
+  Not for adding benchmarks or routine profiling setup.
 metadata:
   author: NVIDIA <nemo-gym@nvidia.com>
   tags:
@@ -25,6 +21,13 @@ metadata:
 Diagnose and resolve failures in a Nemo Gym run or reward-profiling job by
 classifying the failing layer (infra, model serving, config, data/schema,
 verifier/runtime, cache/resume, or throughput) before changing code or data.
+
+## Prerequisites
+
+- Access to the failing run's Slurm or Ray logs, config bundle, and output directory.
+- The same Nemo Gym checkout and config used for the run.
+- Read access to materialized inputs, rollout JSONL, and profiling output.
+- Reachable vLLM or model-server endpoints for readiness checks.
 
 ## Invocation Check
 
@@ -81,6 +84,20 @@ Tool-call rows failing before generation: run the static tool-schema check in
 `references/vllm-tool-call-schema-checks.md` before modifying Gym wrappers, since
 vLLM and Outlines reject malformed tool schemas during grammar compilation, ahead
 of any meaningful generation.
+
+## Limitations
+
+- Diagnostic only; it localizes failures but does not add or modify benchmarks, configs, or datasets.
+- Assumes the run's logs and artifacts are still available; discarded state cannot be reconstructed.
+- Tool and sandbox guidance applies only when the environment actually configures them.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Resolution |
+|---|---|---|
+| Job exits immediately with no rollouts | Scheduler or container startup failure | Inspect Slurm/Ray job state and the earliest startup logs first |
+| Model server never becomes ready | Model load or port binding failure | Verify the `/models` endpoint and the configured port before suspecting Gym |
+| Profiling output has fewer rows than tasks | Partial rollouts or strict-mode dropping | Confirm completed-rollout counts; allow partial rollouts only when intended |
 
 ## Communication Pattern
 
