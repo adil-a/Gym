@@ -47,16 +47,16 @@ PROVIDERS = {
         "env_var": "HUGGINGFACE_API_KEY",
         "model": "meta-llama/Llama-3.1-8B-Instruct",
     },
-    "fireworks": {
-        "base_url": "https://api.fireworks.ai/inference/v1",
-        "env_var": "FIREWORKS_API_KEY",
-        "model": "accounts/fireworks/models/llama4-scout-instruct-basic",
-    },
-    "deepinfra": {
-        "base_url": "https://api.deepinfra.com/v1/openai",
-        "env_var": "DEEPINFRA_API_KEY",
-        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-    },
+    # "fireworks": {
+    #     "base_url": "https://api.fireworks.ai/inference/v1",
+    #     "env_var": "FIREWORKS_API_KEY",
+    #     "model": "accounts/fireworks/models/llama4-scout-instruct-basic",
+    # },
+    # "deepinfra": {
+    #     "base_url": "https://api.deepinfra.com/v1/openai",
+    #     "env_var": "DEEPINFRA_API_KEY",
+    #     "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    # },
 }
 
 

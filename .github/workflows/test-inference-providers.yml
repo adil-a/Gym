@@ -33,8 +33,6 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER }}
       FRIENDLIAI_API_KEY: ${{ secrets.FRIENDLIAI }}
       HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE }}
-      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS }}
-      DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
