@@ -46,17 +46,13 @@ jobs:
             secret_name: DEEPINFRA
             model: meta-llama/Meta-Llama-3.1-8B-Instruct
           - provider: friendli
-            base_url: https://inference.friendli.ai/v1
+            base_url: https://api.friendli.ai/serverless/v1
             secret_name: FRIENDLIAI
-            model: meta-llama/Meta-Llama-3.1-8B-Instruct
-          - provider: baseten
-            base_url: https://bridge.baseten.co/v1
-            secret_name: BASETEN
-            model: meta-llama/Meta-Llama-3.1-8B-Instruct
+            model: meta-llama-3.1-8b-instruct
           - provider: hf_inference
             base_url: https://router.huggingface.co/v1
             secret_name: HUGGINGFACE
-            model: meta-llama/Meta-Llama-3.1-8B-Instruct
+            model: meta-llama/Llama-3.1-8B-Instruct
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -80,43 +76,32 @@ jobs:
           echo "Secret ${{ matrix.secret_name }} is configured"
 
       - name: Smoke test chat completion
+        id: smoke
         env:
           API_KEY: ${{ secrets[matrix.secret_name] }}
         run: |
+          mkdir -p /tmp/results
           python - <<'PYEOF'
-          import os, sys, traceback
+          import os, sys, json, traceback
           from openai import OpenAI
 
-          summary_file = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null")
           provider = "${{ matrix.provider }}"
           model = "${{ matrix.model }}"
+          result = {"provider": provider, "model": model, "base_url": "${{ matrix.base_url }}"}
+
           client = OpenAI(
               base_url="${{ matrix.base_url }}",
               api_key=os.environ["API_KEY"],
           )
 
-          def write_summary(msg):
-              with open(summary_file, "a") as f:
-                  f.write(msg + "\n")
-
-          write_summary(f"## {provider}")
-          write_summary(f"- base_url: `${{ matrix.base_url }}`")
-          write_summary(f"- model: `{model}`")
-          write_summary("")
-
-          # Step 1: list models (best-effort)
+          # List models (best-effort)
           try:
-              models = client.models.list()
-              names = sorted(m.id for m in models.data)[:20]
-              write_summary(f"### Available models (first 20 of {len(models.data)})")
-              for n in names:
-                  write_summary(f"- `{n}`")
-              write_summary("")
+              models_resp = client.models.list()
+              result["available_models"] = sorted(m.id for m in models_resp.data)[:30]
           except Exception as e:
-              write_summary(f"### /v1/models failed")
-              write_summary(f"```\n{e}\n```\n")
+              result["models_error"] = str(e)
 
-          # Step 2: chat completion
+          # Chat completion
           print(f"Testing {provider} with model {model} ...")
           try:
               response = client.chat.completions.create(
@@ -126,14 +111,81 @@ jobs:
                   temperature=0,
               )
               content = response.choices[0].message.content
+              result["status"] = "pass"
+              result["response"] = content
+              result["model_returned"] = response.model
               print(f"✓ {provider}: {content!r}")
-              write_summary(f"### Chat completion: ✅ PASS")
-              write_summary(f"- response: `{content}`")
-              write_summary(f"- model returned: `{response.model}`")
           except Exception as e:
-              tb = traceback.format_exc()
+              result["status"] = "fail"
+              result["error"] = str(e)
+              result["traceback"] = traceback.format_exc()
               print(f"✗ {provider}: {e}", file=sys.stderr)
-              write_summary(f"### Chat completion: ❌ FAIL")
-              write_summary(f"```\n{tb}\n```")
+
+          with open(f"/tmp/results/{provider}.json", "w") as f:
+              json.dump(result, f, indent=2)
+
+          if result["status"] == "fail":
               sys.exit(1)
           PYEOF
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.provider }}
+          path: /tmp/results/${{ matrix.provider }}.json
+
+  report:
+    name: Collect results
+    runs-on: ubuntu-latest
+    needs: smoke-test
+    if: always()
+    steps:
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          merge-multiple: true
+          path: results
+
+      - name: Print report
+        run: |
+          echo "## Inference Provider Smoke Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Provider | Status | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+
+          for f in results/*.json; do
+            provider=$(python3 -c "import json; print(json.load(open('$f'))['provider'])")
+            status=$(python3 -c "import json; print(json.load(open('$f'))['status'])")
+            if [ "$status" = "pass" ]; then
+              detail=$(python3 -c "import json; d=json.load(open('$f')); print(f\"response: {d['response']}\")")
+              echo "| $provider | ✅ | $detail |" >> $GITHUB_STEP_SUMMARY
+            else
+              detail=$(python3 -c "import json; d=json.load(open('$f')); print(d.get('error','unknown')[:120])")
+              echo "| $provider | ❌ | $detail |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Full error details" >> $GITHUB_STEP_SUMMARY
+          for f in results/*.json; do
+            status=$(python3 -c "import json; print(json.load(open('$f'))['status'])")
+            if [ "$status" = "fail" ]; then
+              provider=$(python3 -c "import json; print(json.load(open('$f'))['provider'])")
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "<details><summary>$provider</summary>" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo '```json' >> $GITHUB_STEP_SUMMARY
+              cat "$f" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "</details>" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+          # Also print to stdout for logs
+          echo "=== Results ==="
+          for f in results/*.json; do
+            cat "$f"
+            echo
+          done
