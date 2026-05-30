@@ -36,6 +36,11 @@ Use this skill when the user wants to run, understand, or lightly modify Nemo Gy
 
 If the user is primarily debugging a failed job or stack trace, use the `nemo-gym-debugging` skill first.
 
+Do not activate this skill for these adjacent tasks:
+
+- Debugging a failed or crashed run (Ray/vLLM stack traces, empty output). Use `nemo-gym-debugging`.
+- Adding or scaffolding a new benchmark, evaluation, or training environment. Use `add-benchmark`.
+
 ## Instructions
 
 1. Identify the environment config paths and input JSONL.
