@@ -1,10 +1,10 @@
 # Description
 
-This environment runs τ²-bench with custom synthetic domains via Prime Intellect [verifiers](https://github.com/PrimeIntellect-ai/verifiers) environments. See [tau2-synth on Prime Intellect](https://app.primeintellect.ai/dashboard/environments/prime/tau2-synth) for the full description.
+This environment is for training on τ²-bench style tasks with custom synthetic data via [tau2-synth](https://app.primeintellect.ai/dashboard/environments/prime/tau2-synth) on Prime Intellect Environments hub through verifiers integration. See tau2-synth for the full description and configuration details.
 
 Domains: `library`, `fitness_gym`, `tech_support`, `telecom`, `cloud_incident_response`, `daily_planner`, `ev_charging_support`.
 
-For installing additional prime environments from the Environments Hub and generating datasets, see [responses_api_agents/verifiers_agent/README.md](../../responses_api_agents/verifiers_agent/README.md).
+For additional details on the prime verifiers integration in NeMo Gym, see [responses_api_agents/verifiers_agent/README.md](../../responses_api_agents/verifiers_agent/README.md).
 
 ## Install Gym
 
@@ -37,12 +37,6 @@ ng_collect_rollouts \
 # view the rollout
 tail -n 1 environments/prime_tau2_synth/data/example-rollouts.jsonl | jq | less
 ```
-
-## Integration notes
-
-The patch to include prompt and generation token ids for preventing retokenization error when training with NeMo RL has been upstreamed into verifiers' `NeMoRLChatCompletionsClient`. We currently track verifiers `main` (`git+https://github.com/PrimeIntellect-ai/verifiers.git@main`) for this support; once verifiers `0.1.13` is released, the requirements pin will move to that tagged version.
-
-For installing new prime environments and generating datasets, use a separate venv (outside of Gym) to avoid dependency conflicts with the `exclude-dependencies` section of Gym `pyproject.toml` and the server's pinned verifiers version. After generating your dataset, deactivate the separate venv and return to the Gym venv for running servers. Make sure to restart NeMo Gym servers with `ng_run` after any environment changes to ensure the pinned version of verifiers is used.
 
 # Licensing information
 Code: Apache 2.0

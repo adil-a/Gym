@@ -3,8 +3,8 @@ prime_tau2_synth_agent:
     prime_tau2_synth_agent:
       entrypoint: app.py
       domain: agent
-      description: tau2-bench with custom synthetic domains via the verifiers harness.
-      value: Improve multi-domain customer service and tool use capabilities.
+      description: tau2-bench style training with custom synthetic domains via Prime Intellect verifiers.
+      value: Improve multi-domain agentic customer service and tool use capabilities.
       model_server:
         type: responses_api_models
         name: policy_model
