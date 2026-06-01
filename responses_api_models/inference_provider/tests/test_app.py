@@ -19,9 +19,9 @@ from pytest import MonkeyPatch
 
 from nemo_gym.openai_utils import NeMoGymAsyncOpenAI
 from nemo_gym.server_utils import ServerClient
-from responses_api_models.chat_completions_model.app import (
-    ChatCompletionsModel,
-    ChatCompletionsModelConfig,
+from responses_api_models.inference_provider.app import (
+    InferenceProvider,
+    InferenceProviderConfig,
 )
 
 
@@ -44,8 +44,8 @@ def _make_server(**overrides):
         name="",
     )
     defaults.update(overrides)
-    config = ChatCompletionsModelConfig(**defaults)
-    return ChatCompletionsModel(config=config, server_client=MagicMock(spec=ServerClient))
+    config = InferenceProviderConfig(**defaults)
+    return InferenceProvider(config=config, server_client=MagicMock(spec=ServerClient))
 
 
 def _mock_chat_response(content="Hello!", finish_reason="stop", tool_calls=None, usage=None):
@@ -91,7 +91,7 @@ class TestSanity:
         assert server.config.extra_body == {"frequency_penalty": 0.5}
 
 
-class TestChatCompletions:
+class TestInferenceProvider:
     async def test_basic_chat_completion(self, monkeypatch: MonkeyPatch) -> None:
         server = _make_server()
         app = server.setup_webserver()
@@ -263,8 +263,8 @@ class TestResponses:
         app = server.setup_webserver()
         client = TestClient(app)
 
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.time", lambda: FIXED_TIME)
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.uuid4", lambda: FakeUUID())
+        monkeypatch.setattr("responses_api_models.inference_provider.app.time", lambda: FIXED_TIME)
+        monkeypatch.setattr("responses_api_models.inference_provider.app.uuid4", lambda: FakeUUID())
         monkeypatch.setattr("nemo_gym.responses_converter.uuid4", lambda: FakeUUID())
 
         mock_data = _mock_chat_response(content="Hello from the model!")
@@ -294,8 +294,8 @@ class TestResponses:
         app = server.setup_webserver()
         client = TestClient(app)
 
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.time", lambda: FIXED_TIME)
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.uuid4", lambda: FakeUUID())
+        monkeypatch.setattr("responses_api_models.inference_provider.app.time", lambda: FIXED_TIME)
+        monkeypatch.setattr("responses_api_models.inference_provider.app.uuid4", lambda: FakeUUID())
         monkeypatch.setattr("nemo_gym.responses_converter.uuid4", lambda: FakeUUID())
 
         mock_data = _mock_chat_response(
@@ -354,8 +354,8 @@ class TestResponses:
         app = server.setup_webserver()
         client = TestClient(app)
 
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.time", lambda: FIXED_TIME)
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.uuid4", lambda: FakeUUID())
+        monkeypatch.setattr("responses_api_models.inference_provider.app.time", lambda: FIXED_TIME)
+        monkeypatch.setattr("responses_api_models.inference_provider.app.uuid4", lambda: FakeUUID())
         monkeypatch.setattr("nemo_gym.responses_converter.uuid4", lambda: FakeUUID())
 
         mock_data = _mock_chat_response(content="<think>Let me reason about this...</think>The answer is 42.")
@@ -383,8 +383,8 @@ class TestResponses:
         app = server.setup_webserver()
         client = TestClient(app)
 
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.time", lambda: FIXED_TIME)
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.uuid4", lambda: FakeUUID())
+        monkeypatch.setattr("responses_api_models.inference_provider.app.time", lambda: FIXED_TIME)
+        monkeypatch.setattr("responses_api_models.inference_provider.app.uuid4", lambda: FakeUUID())
         monkeypatch.setattr("nemo_gym.responses_converter.uuid4", lambda: FakeUUID())
 
         mock_data = _mock_chat_response(content="Hi!")
@@ -412,8 +412,8 @@ class TestResponses:
         app = server.setup_webserver()
         client = TestClient(app)
 
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.time", lambda: FIXED_TIME)
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.uuid4", lambda: FakeUUID())
+        monkeypatch.setattr("responses_api_models.inference_provider.app.time", lambda: FIXED_TIME)
+        monkeypatch.setattr("responses_api_models.inference_provider.app.uuid4", lambda: FakeUUID())
         monkeypatch.setattr("nemo_gym.responses_converter.uuid4", lambda: FakeUUID())
 
         mock_data = _mock_chat_response(content="Truncated output...", finish_reason="length")
@@ -434,8 +434,8 @@ class TestResponses:
         app = server.setup_webserver()
         client = TestClient(app)
 
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.time", lambda: FIXED_TIME)
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.uuid4", lambda: FakeUUID())
+        monkeypatch.setattr("responses_api_models.inference_provider.app.time", lambda: FIXED_TIME)
+        monkeypatch.setattr("responses_api_models.inference_provider.app.uuid4", lambda: FakeUUID())
         monkeypatch.setattr("nemo_gym.responses_converter.uuid4", lambda: FakeUUID())
 
         mock_data = _mock_chat_response(content="", finish_reason="content_filter")
@@ -466,8 +466,8 @@ class TestResponses:
         server._client = MagicMock(spec=NeMoGymAsyncOpenAI)
         server._client.create_chat_completion = AsyncMock(side_effect=mock_create_chat)
 
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.time", lambda: FIXED_TIME)
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.uuid4", lambda: FakeUUID())
+        monkeypatch.setattr("responses_api_models.inference_provider.app.time", lambda: FIXED_TIME)
+        monkeypatch.setattr("responses_api_models.inference_provider.app.uuid4", lambda: FakeUUID())
         monkeypatch.setattr("nemo_gym.responses_converter.uuid4", lambda: FakeUUID())
 
         client.post("/v1/responses", json={"input": "hello world"})
@@ -480,8 +480,8 @@ class TestResponses:
         app = server.setup_webserver()
         client = TestClient(app)
 
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.time", lambda: FIXED_TIME)
-        monkeypatch.setattr("responses_api_models.chat_completions_model.app.uuid4", lambda: FakeUUID())
+        monkeypatch.setattr("responses_api_models.inference_provider.app.time", lambda: FIXED_TIME)
+        monkeypatch.setattr("responses_api_models.inference_provider.app.uuid4", lambda: FakeUUID())
         monkeypatch.setattr("nemo_gym.responses_converter.uuid4", lambda: FakeUUID())
 
         called_kwargs = {}

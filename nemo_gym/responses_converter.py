@@ -16,7 +16,7 @@
 
 This module contains the translation logic between OpenAI's Responses API format
 and the Chat Completions API format. It is used by model servers that need to
-convert between the two formats (e.g. vllm_model, chat_completions_model).
+convert between the two formats (e.g. vllm_model, inference_provider).
 """
 
 import re

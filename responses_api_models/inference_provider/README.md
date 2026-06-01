@@ -1,4 +1,4 @@
-# Chat Completions Model
+# Inference Provider
 
 A model server for any inference provider that exposes an OpenAI-compatible `/v1/chat/completions` endpoint.
 
@@ -15,7 +15,7 @@ A model server for any inference provider that exposes an OpenAI-compatible `/v1
 | Baseten | `configs/baseten.yaml` |
 | HF Inference | `configs/hf_inference.yaml` |
 | Gemini | `configs/gemini.yaml` |
-| Any OpenAI-compatible | `configs/chat_completions_model.yaml` |
+| Any OpenAI-compatible | `configs/inference_provider.yaml` |
 
 ## Usage
 
@@ -30,13 +30,13 @@ policy_model_name: meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo
 Then reference the provider config:
 
 ```bash
-ng_run "+config_paths=[resources_servers/my_benchmark/configs/my_benchmark.yaml,responses_api_models/chat_completions_model/configs/together.yaml]"
+ng_run "+config_paths=[resources_servers/my_benchmark/configs/my_benchmark.yaml,responses_api_models/inference_provider/configs/together.yaml]"
 ```
 
 Or use the generic config and set the base URL in `env.yaml`:
 
 ```bash
-ng_run "+config_paths=[resources_servers/my_benchmark/configs/my_benchmark.yaml,responses_api_models/chat_completions_model/configs/chat_completions_model.yaml]"
+ng_run "+config_paths=[resources_servers/my_benchmark/configs/my_benchmark.yaml,responses_api_models/inference_provider/configs/inference_provider.yaml]"
 ```
 
 ## Configuration
@@ -52,6 +52,6 @@ ng_run "+config_paths=[resources_servers/my_benchmark/configs/my_benchmark.yaml,
 
 ## When to Use This vs Other Model Servers
 
-- **`chat_completions_model`** — Any hosted inference provider (eval workloads)
+- **`inference_provider`** — Any hosted inference provider (eval workloads)
 - **`openai_model`** — Direct OpenAI with native Responses API support
 - **`vllm_model`** — Self-hosted vLLM (training + eval, supports token IDs)

@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Model server for any provider that exposes an OpenAI-compatible /v1/chat/completions endpoint.
+"""Server for any hosted inference provider that exposes an OpenAI-compatible /v1/chat/completions endpoint.
 
 Supports: Fireworks, Together.ai, Baseten, DeepInfra, Nebius, Friendli,
 OpenRouter, HF Inference, Gemini and any other OpenAI-compatible provider.
@@ -47,7 +47,7 @@ from nemo_gym.responses_converter import ResponsesConverter
 from nemo_gym.server_utils import is_nemo_gym_fastapi_entrypoint
 
 
-class ChatCompletionsModelConfig(BaseResponsesAPIModelConfig):
+class InferenceProviderConfig(BaseResponsesAPIModelConfig):
     base_url: str
     api_key: str
     model: str
@@ -57,8 +57,8 @@ class ChatCompletionsModelConfig(BaseResponsesAPIModelConfig):
     extra_body: Dict[str, Any] = Field(default_factory=dict)
 
 
-class ChatCompletionsModel(SimpleResponsesAPIModel):
-    config: ChatCompletionsModelConfig
+class InferenceProvider(SimpleResponsesAPIModel):
+    config: InferenceProviderConfig
 
     def model_post_init(self, context):
         self._client = NeMoGymAsyncOpenAI(
@@ -162,6 +162,6 @@ class ChatCompletionsModel(SimpleResponsesAPIModel):
 
 
 if __name__ == "__main__":
-    ChatCompletionsModel.run_webserver()
+    InferenceProvider.run_webserver()
 elif is_nemo_gym_fastapi_entrypoint(__file__):
-    app = ChatCompletionsModel.run_webserver()  # noqa: F401
+    app = InferenceProvider.run_webserver()  # noqa: F401

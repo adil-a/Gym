@@ -1,6 +1,6 @@
 policy_model:
   responses_api_models:
-    chat_completions_model:
+    inference_provider:
       entrypoint: app.py
       base_url: https://generativelanguage.googleapis.com/v1beta/openai
       api_key: ${policy_api_key}
