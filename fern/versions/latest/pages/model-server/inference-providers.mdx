@@ -29,29 +29,12 @@ All provider configs live in [`responses_api_models/inference_provider/configs/`
 
 ## Set Your Credentials
 
-You need an API key and a model name from your provider.
-
-<Tabs>
-<Tab title="env.yaml">
-Set these in `env.yaml` at the project root:
+You need an API key and a model name from your provider; store values in `env.yaml` in the project root (gitignored):
 
 ```yaml
 policy_api_key: your-api-key
 policy_model_name: nvidia/Nemotron-3-Nano-30B-A3B
 ```
-
-</Tab>
-<Tab title="CLI overrides">
-Pass them directly on the command line:
-
-```bash
-ng_run "+config_paths=[$config_paths]" \
-    ++policy_api_key=your-api-key \
-    ++policy_model_name=nvidia/Nemotron-3-Nano-30B-A3B
-```
-
-</Tab>
-</Tabs>
 
 If your provider isn't in the table above, also set the base URL:
 
@@ -59,6 +42,17 @@ If your provider isn't in the table above, also set the base URL:
 # env.yaml
 policy_base_url: https://your-provider.com/v1
 ```
+
+## Configuration Reference
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `base_url` | `str` | — | **Required.** Provider's OpenAI-compatible API base URL. |
+| `api_key` | `str` | — | **Required.** Provider API key. |
+| `model` | `str` | — | **Required.** Model identifier (provider-specific format). |
+| `uses_reasoning_parser` | `bool` | `false` | Parse `<think>` tags and `reasoning_content` fields from thinking models. |
+| `num_concurrent_requests` | `int` | `1000` | Maximum concurrent requests to the provider. Reduce if your provider has a lower rate limit. |
+| `extra_body` | `dict` | `{}` | Additional parameters merged into every request body. |
 
 ## Usage Example
 
@@ -86,27 +80,3 @@ ng_collect_rollouts +agent_name=mcqa_simple_agent \
     +input_jsonl_fpath=resources_servers/mcqa/data/example.jsonl \
     +output_jsonl_fpath=results/mcqa_rollouts.jsonl
 ```
-
-## Configuration Reference
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `base_url` | `str` | — | **Required.** Provider's OpenAI-compatible API base URL. |
-| `api_key` | `str` | — | **Required.** Provider API key. |
-| `model` | `str` | — | **Required.** Model identifier (provider-specific format). |
-| `uses_reasoning_parser` | `bool` | `false` | Parse `<think>` tags and `reasoning_content` fields from thinking models. |
-| `num_concurrent_requests` | `int` | `1000` | Maximum concurrent requests to the provider. Reduce if your provider has a lower rate limit. |
-| `extra_body` | `dict` | `{}` | Additional parameters merged into every request body. |
-
-## Reasoning Models
-
-When using thinking/reasoning models (e.g., DeepSeek-R1), set `uses_reasoning_parser: true`:
-
-```bash
-ng_run "+config_paths=[$config_paths]" \
-    ++policy_model.uses_reasoning_parser=true
-```
-
-This enables:
-- Stripping `<think>...</think>` tags from assistant messages in multi-turn input
-- Converting `reasoning_content` fields in model responses into NeMo Gym's reasoning output items
