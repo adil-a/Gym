@@ -92,12 +92,23 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
         new_outputs = []
         usage = None
         step = 0
+        # Trajectory-level counters surfaced in the logged rollout. total_tool_calls
+        # counts every tool call we execute, including ones later discarded by a
+        # context reset (so it can exceed the function_call count in the final output).
+        total_tool_calls = 0
+        num_context_resets = 0
         model_server_cookies = None  # update the cookies on every model response
         resources_server_cookies = request.cookies  # update the cookies on every resources server response
 
         reset_threshold = 0
         if self.config.max_context_tokens and self.config.context_reset_pct:
             reset_threshold = int(self.config.max_context_tokens * self.config.context_reset_pct)
+        print(
+            f"[browsecomp_agent] context_reset_pct={self.config.context_reset_pct} "
+            f"max_context_tokens={self.config.max_context_tokens} "
+            f"reset_threshold={reset_threshold}",
+            flush=True,
+        )
 
         while True:
             step += 1
@@ -127,6 +138,7 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
             # --- Check context reset threshold ---
             prompt_tokens = model_response.usage.input_tokens if model_response.usage else 0
             if reset_threshold and prompt_tokens > reset_threshold:
+                num_context_resets += 1
                 if self.config.context_reset_keep_rounds > 0:
                     new_outputs = self._extract_last_rounds(new_outputs)
                 else:
@@ -161,6 +173,9 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
                 break
 
             # --- Execute tool calls ---
+            # Count here (before execution / any later context reset) so dropped
+            # calls are still tallied in the trajectory total.
+            total_tool_calls += len(all_fn_calls)
             for output_function_call in all_fn_calls:
                 api_response = await self.server_client.post(
                     server_name=self.config.resources_server.name,
@@ -237,6 +252,24 @@ class BrowsecompAgent(SimpleResponsesAPIAgent):
 
         model_response.output = new_outputs
         model_response.usage = usage
+
+        # Surface trajectory-level counters in the logged rollout. These ride along
+        # in response.metadata into the verify response written to
+        # evaluator_rollouts.jsonl. OpenAI's Response.metadata is Dict[str, str],
+        # so values must be stringified.
+        trajectory_metadata = dict(model_response.metadata or {})
+        trajectory_metadata.update(
+            {
+                "total_tool_calls": str(total_tool_calls),
+                "num_context_resets": str(num_context_resets),
+            }
+        )
+        model_response.metadata = trajectory_metadata
+        print(
+            f"[browsecomp][trajectory][{qid}] steps={step} "
+            f"total_tool_calls={total_tool_calls} num_context_resets={num_context_resets}",
+            flush=True,
+        )
         return model_response
 
     async def run(self, request: Request, body: BrowsecompAgentRunRequest) -> BrowsecompAgentVerifyResponse:

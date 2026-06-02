@@ -162,7 +162,14 @@ class TavilySearchMetrics(BaseModel):
 
 
 class TavilySearchVerifyResponse(TavilySearchVerifyRequest, JudgeEvaluation):
+    # num_tool_calls counts function_calls surviving in the final response.output
+    # (after context-reset pruning). total_tool_calls is the trajectory total
+    # including calls dropped by context resets; num_context_resets is how many
+    # times the context was reset. The latter two come from response.metadata,
+    # set by the browsecomp agent loop.
     num_tool_calls: int
+    total_tool_calls: int = 0
+    num_context_resets: int = 0
     metrics: TavilySearchMetrics
 
 
@@ -408,10 +415,22 @@ class TavilySearchResourcesServer(SimpleResourcesServer):
         else:
             judge_evaluation = self._verify_answer_with_regex(ground_truth, last_assistant_response)
 
+        # Trajectory counters stashed by the agent loop in response.metadata
+        # (string-valued per the OpenAI Response.metadata schema).
+        trajectory_meta = body.response.metadata or {}
+
+        def _meta_int(key: str) -> int:
+            try:
+                return int(trajectory_meta.get(key, 0))
+            except (TypeError, ValueError):
+                return 0
+
         return TavilySearchVerifyResponse(
             **body.model_dump(),
             **judge_evaluation.model_dump(),
             num_tool_calls=sum(o.type == "function_call" for o in body.response.output),
+            total_tool_calls=_meta_int("total_tool_calls"),
+            num_context_resets=_meta_int("num_context_resets"),
             metrics=self._session_id_to_metrics[request.session[SESSION_ID_KEY]],
         )
 
