@@ -148,9 +148,11 @@ class NSToolsResourcesServer(SimpleResourcesServer):
 
         @asynccontextmanager
         async def lifespan_wrapper(app):
-            async with main_app_lifespan(app) as maybe_state:
-                yield maybe_state
-            await self.shutdown()
+            try:
+                async with main_app_lifespan(app) as maybe_state:
+                    yield maybe_state
+            finally:
+                await self.shutdown()
 
         app.router.lifespan_context = lifespan_wrapper
 
