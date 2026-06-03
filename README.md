@@ -1,5 +1,11 @@
 # NeMo Gym
 
+[![PyPI](https://img.shields.io/pypi/v/nemo-gym)](https://pypi.org/project/nemo-gym/)
+[![Python](https://img.shields.io/pypi/pyversions/nemo-gym)](https://pypi.org/project/nemo-gym/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![CI](https://github.com/NVIDIA-NeMo/Gym/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/NVIDIA-NeMo/Gym/actions/workflows/unit-tests.yml)
+[![Docs](https://img.shields.io/badge/docs-NVIDIA-brightgreen)](https://docs.nvidia.com/nemo/gym/main/about/)
+
 **[Requirements](#-requirements)** • **[Quick Start](#-quick-start)** • **[Available Environments](#-available-environments)** • **[Documentation & Resources](#-documentation--resources)** • **[Community & Support](#-community--support)** • **[Citations](#-citations)**
 
 NeMo Gym is a library for evaluating and improving models and agents using environments. NeMo Gym provides infrastructure to develop environments, scalably run evaluation and training, and a collection of popular benchmarks and training environments.
@@ -28,13 +34,13 @@ If you're scoring model outputs with a stateless check and don't need scale or t
 
 ## 🌎 Ecosystem
 
-NeMo Gym is a component of [NVIDIA NeMo](https://docs.nvidia.com/nemo/gym/latest/about/ecosystem#related-nemo-libraries), a GPU-accelerated platform for training generative AI models and optimizing AI agents. NeMo Gym is integrated with the broader agentic ecosystem - see the [Ecosystem](https://docs.nvidia.com/nemo/gym/latest/about/ecosystem) page for more details.
+NeMo Gym is a component of [NVIDIA NeMo](https://docs.nvidia.com/nemo/gym/main/about/ecosystem#related-nemo-libraries), a GPU-accelerated platform for training generative AI models and optimizing AI agents. NeMo Gym is integrated with the broader agentic ecosystem - see the [Ecosystem](https://docs.nvidia.com/nemo/gym/main/about/ecosystem) page for more details.
 
 **Environment Libraries:** Seamlessly combine environments and benchmarks from other libraries alongside NeMo Gym environments. Examples: 
 [Aviary](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/aviary) • [Harbor](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/harbor_agent) • [OpenEnv](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/openenv) • [Reasoning Gym](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/reasoning_gym) • [Verifiers](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/verifiers_agent)
 
 **Training Framework Libraries:** Use environments for SFT and RL training.
-[NeMo RL](https://docs.nvidia.com/nemo/gym/latest/training-tutorials/nemo-rl-grpo) • [Unsloth](https://docs.nvidia.com/nemo/gym/latest/training-tutorials/unsloth) • [VeRL](https://docs.nvidia.com/nemo/gym/latest/training-tutorials)
+[NeMo RL](https://docs.nvidia.com/nemo/gym/main/training-tutorials/nemo-rl-grpo) • [Unsloth](https://docs.nvidia.com/nemo/gym/main/training-tutorials/unsloth) • [VeRL](https://docs.nvidia.com/nemo/gym/main/training-tutorials)
 
 **Agent Harnesses:** Agent harnesses for evaluation and training available out of the box. Examples:
 [OpenHands](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/swe_agents) • [Mini SWE Agent](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/mini_swe_agent) • [LangGraph](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/langgraph_agent)
@@ -61,7 +67,7 @@ NeMo Gym is designed to run on standard development machines:
 
 ## 🚀 Quick Start
 
-Requires Python 3.12+ on x86_64 or ARM64 (Linux, macOS, Windows via WSL2). No GPU required. See the [Getting Started](https://docs.nvidia.com/nemo/gym/latest/get-started) docs for a more comprehensive walkthrough.
+Requires Python 3.12+ on x86_64 or ARM64 (Linux, macOS, Windows via WSL2). No GPU required. See the [Getting Started](https://docs.nvidia.com/nemo/gym/main/get-started) docs for a more comprehensive walkthrough.
 
 **Install NeMo Gym:**
 
@@ -76,7 +82,7 @@ uv sync
 
 **Configure your model:**
 
-This quickstart uses OpenAI. NeMo Gym supports local and hosted inference — see [Configure Model](https://docs.nvidia.com/nemo/gym/latest/model-server) for vLLM, Fireworks, OpenRouter, and others.
+This quickstart uses OpenAI. NeMo Gym supports local and hosted inference — see [Configure Model](https://docs.nvidia.com/nemo/gym/main/model-server) for vLLM, Fireworks, OpenRouter, and others.
 
 Create `env.yaml` in the project root:
 ```yaml
@@ -140,14 +146,14 @@ Rollouts: results/mcqa_rollouts.jsonl
 Aggregate metrics: results/mcqa_rollouts_aggregate_metrics.json
 ```
 
-For per-task pass rates, see the [`ng_reward_profile`](https://docs.nvidia.com/nemo/gym/latest/reference/cli-commands) command.
+For per-task pass rates, see the [`ng_reward_profile`](https://docs.nvidia.com/nemo/gym/main/reference/cli-commands) command.
 
 ### Next Steps
 
 - **[Browse Environments](#-available-environments)** — Browse available environments for evaluation and training.
-- **[Agents](https://docs.nvidia.com/nemo/gym/latest/agent-server)** — Explore available agent harnesses and learn how to integrate your own.
-- **[Training](https://docs.nvidia.com/nemo/gym/latest/training-tutorials)** — Improve your agent or model with RL or fine-tuning.
-- **[Build Custom Environments](https://docs.nvidia.com/nemo/gym/latest/environment-tutorials)** — Create your own evaluation or training environments.
+- **[Agents](https://docs.nvidia.com/nemo/gym/main/agent-server)** — Explore available agent harnesses and learn how to integrate your own.
+- **[Training](https://docs.nvidia.com/nemo/gym/main/training-tutorials)** — Improve your agent or model with RL or fine-tuning.
+- **[Build Custom Environments](https://docs.nvidia.com/nemo/gym/main/environment-tutorials)** — Create your own evaluation or training environments.
 
 ## 📦 Available Environments
 
@@ -288,9 +294,9 @@ The Dataset column links to publicly available datasets (e.g., on HuggingFace). 
 | Terminus Judge                                | agent                 | single-step terminal based task (simple judge prompt)                                                                                                                                                                        | Improve on terminal-style tasks                                                                                                       | ✓     | ✓          | Apache 2.0                                                | <a href='resources_servers/terminus_judge/configs/terminus_judge_simple.yaml'>terminus_judge_simple.yaml</a>                                                                                                                | -                                                                                                                                                              |
 | Terminus Judge                                | agent                 | single-step terminal based task (string similarity only)                                                                                                                                                                     | Improve on terminal-style tasks                                                                                                       | ✓     | ✓          | Apache 2.0                                                | <a href='resources_servers/terminus_judge/configs/terminus_judge_string_only.yaml'>terminus_judge_string_only.yaml</a>                                                                                                      | -                                                                                                                                                              |
 | Text To Sql                                   | coding                | Text-to-SQL generation with LLM-as-a-judge equivalence checking                                                                                                                                                              | Improve text-to-SQL capabilities across multiple dialects                                                                             | -     | -          | -                                                         | <a href='resources_servers/text_to_sql/configs/text_to_sql.yaml'>text_to_sql.yaml</a>                                                                                                                                       | -                                                                                                                                                              |
-| Turing Vif                                    | instruction_following | Turing VIF instruction following validators with rule-based and LLM judge support                                                                                                                                            | Improve instruction following capabilities with comprehensive validation                                                              | -     | -          | -                                                         | <a href='resources_servers/turing_vif/configs/turing_vif.yaml'>turing_vif.yaml</a>                                                                                                                                          | -                                                                                                                                                              |
 | Ugphysics Judge                               | knowledge             | Undergraduate physics QA verified by a TRUE/FALSE LLM judge with math-verify symbolic fallback                                                                                                                               | Score undergraduate-physics benchmarks (e.g. UGPhysics) where the judge is a TRUE/FALSE equivalence grader using a reference solution | -     | -          | -                                                         | <a href='resources_servers/ugphysics_judge/configs/ugphysics_judge.yaml'>ugphysics_judge.yaml</a>                                                                                                                           | -                                                                                                                                                              |
 | Verifiers Agent                               | math                  | Prime intellect verifiers and environments hub integration, ace-reason math environment example.                                                                                                                             | Improve math reasoning capabilities.                                                                                                  | ✓     | -          | -                                                         | <a href='responses_api_agents/verifiers_agent/configs/acereason-math.yaml'>acereason-math.yaml</a>                                                                                                                          | -                                                                                                                                                              |
+| Verifif                                       | instruction_following | VerifIF instruction following validators with rule-based and LLM judge support                                                                                                                                               | Improve instruction following capabilities with comprehensive validation                                                              | -     | -          | -                                                         | <a href='resources_servers/verifif/configs/verifif.yaml'>verifif.yaml</a>                                                                                                                                                   | -                                                                                                                                                              |
 | Vlm Eval Kit                                  | other                 | -                                                                                                                                                                                                                            | Measure VLM capabilities                                                                                                              | -     | ✓          | -                                                         | <a href='resources_servers/vlm_eval_kit/configs/MMBench_DEV_EN_V11.yaml'>MMBench_DEV_EN_V11.yaml</a>                                                                                                                        | -                                                                                                                                                              |
 | Vlm Eval Kit                                  | other                 | -                                                                                                                                                                                                                            | Measure VLM capabilities                                                                                                              | -     | ✓          | -                                                         | <a href='resources_servers/vlm_eval_kit/configs/OCRBench.yaml'>OCRBench.yaml</a>                                                                                                                                            | -                                                                                                                                                              |
 | Vlm Eval Kit                                  | other                 | Run all supported VLMEvalKit benchmarks.                                                                                                                                                                                     | Measure VLM capabilities                                                                                                              | -     | ✓          | -                                                         | <a href='resources_servers/vlm_eval_kit/configs/vlm_eval_kit.yaml'>vlm_eval_kit.yaml</a>                                                                                                                                    | -                                                                                                                                                              |
@@ -302,9 +308,9 @@ The Dataset column links to publicly available datasets (e.g., on HuggingFace). 
 
 ## 📖 Documentation & Resources
 
-- **[Documentation](https://docs.nvidia.com/nemo/gym/latest/documentation/home)** - Technical reference docs
-- **[Training Tutorials](https://docs.nvidia.com/nemo/gym/latest/training-tutorials)** - Train with NeMo Gym environments
-- **[API Reference](https://docs.nvidia.com/nemo/gym/latest/api/reference/api-reference)** - Complete class and function reference
+- **[Documentation](https://docs.nvidia.com/nemo/gym/main)** - Technical reference docs
+- **[Training Tutorials](https://docs.nvidia.com/nemo/gym/main/training-tutorials)** - Train with NeMo Gym environments
+- **[API Reference](https://docs.nvidia.com/nemo/gym/main/api/reference/api-reference)** - Complete class and function reference
  
 
 ## 🤝 Community & Support
@@ -312,7 +318,7 @@ The Dataset column links to publicly available datasets (e.g., on HuggingFace). 
 We'd love your contributions! Here's how to get involved:
 
 - **[Report Issues](https://github.com/NVIDIA-NeMo/Gym/issues)** - Bug reports and feature requests
-- **[Contributing Guide](https://docs.nvidia.com/nemo/gym/latest/contribute)** - How to contribute code, docs, new environments, or training framework integrations
+- **[Contributing Guide](https://docs.nvidia.com/nemo/gym/main/contribute)** - How to contribute code, docs, new environments, or training framework integrations
 
 ## 📚 Citations
 
