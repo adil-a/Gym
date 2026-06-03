@@ -9,31 +9,39 @@ position: 4
 
 ### Release Summary
 
-NeMo Gym v0.3.0 introduces standardized benchmark packaging via the new `benchmarks/` directory with 70+ benchmark packages, paired with 50+ new resources servers spanning coding, math, science, reasoning, agent tasks, and more. This release also adds agent harness integrations (Claude Code, Hermes, LangGraph), environment library integrations (OpenEnv, Harbor), a vLLM 0.17.0 upgrade, and significant infrastructure improvements for rollout aggregation and reward profiling.
+NeMo Gym v0.3.0 ships alongside the NVIDIA Nemotron 3 Ultra model release, open sourcing the environments and corresponding datasets used during training.
 
-### First-Time Contributors (WIP)
+Highlights:
 
-We'd like to highlight the following first-time contributors:
+- 70+ new environments, including benchmarks such as Tau2 and Nemotron RL training environments
+- Popular harness available out-of-the-box such as Claude Code and Hermes
+- Integrations with OpenEnv and Harbor - use environments from these libraries directly with NeMo Gym
+- Integration with VeRL - train with VeRL and scale rollout collection with NeMo Gym
 
-- **@GRL team** added Sokoban and Tetris Gymnasium environments for spatial reasoning RL training
-- **@proof-team** added IMO ProofBench and proof refinement environments for mathematical theorem proving
+### First-Time Contributors
 
-### New Environments & Benchmarks (WIP - maybe split benchmarks separately?)
+We welcomed 30+ new contributors to this release! Here are a few highlights:
 
-Added 70+ standardized benchmark packages and 50+ new resources servers. Notable additions include:
+- **@grace-lam** added the integration to run Harbor environments with NeMo Gym
+- **@aleksficek** — added Competitive Coding Challenges environment
+- **@jthomson04** improved rollout resilience when models emit malformed tool-call arguments or missing message content
 
-- **Coding**: BigCodeBench, Human-Eval, Human-Eval Infilling (FIM), MBPP, LiveCodeBench v5/v6, Speed-Bench, SWE-Multilingual
-- **Math**: AIME 2025, IMO ProofBench (with judge), Proof Environments, UGPhysics
-- **Science**: Ether0 Chemistry, RDKit-Chemistry RL, FrontierScience Olympiad, NewtonBench
-- **Reasoning**: GPQA Diamond, NVARC (inductive + transductive), AALCR, Ruler, Browsecomp, BBH-Train, ProtocolQA2/LabBench2
-- **Agent tasks**: Finance SEC Search, Abstention (HotpotQA), HotpotQA Closedbook, Polymath, GRL Sokoban, GRL Tetris, Multi-Turn Gymnasium, Tau2
-- **Translation**: WMT24pp, Flores200
-- **Safety**: XSTest
-- **Chat**: Arena-Hard, Arena-Hard v2, M-Arena-Hard, M-Arena-Hard v2
-- **Speech/Audio**: ASR Leaderboard, Numb3rs, MUSAN
-- **Multimodal**: VLMEvalKit, VLM Circle Click
-- **Instruction Following**: IFBench
-- **MMLU**: MMLU-Pro, MMLU-ProX
+Thank you to all the new contributors for helping make NeMo Gym better!
+
+### New Environments & Benchmarks
+
+Added 70+ new environments including novel datasets and integrations of popular benchmarks. New coverage spans:
+- **Coding** — competitive programming, code infilling, SQL generation, and software-engineering benchmarks with execution-based verification
+- **Math & proofs** — olympiad-style problems, proof grading and validation, and formal verification (including Lean)
+- **Knowledge & science** — graduate-level QA, chemistry and physics tasks, and lab-style reasoning (including multimodal figure, table, and protocol tasks)
+- **Agentic** — multi-turn tool use, search, sandboxed execution, finance workflows, and tau-bench-style conversational agents
+- **Instruction following** — format constraints, citation compliance, and IFBench-style rule verification
+- **Safety & RLHF** — jailbreak detection, abstention calibration, prompt-injection resistance, and generative reward modeling
+- **Multimodal, speech & translation** — VLM benchmarks, visual grounding, ASR evaluation, and machine-translation quality metrics
+- **Chat & broad knowledge** — arena-style preference evaluation and MMLU-family benchmarks
+- **Interactive RL** — Gymnasium-style multi-step environments for spatial and game-based training
+
+See the [Available Environments](https://github.com/NVIDIA-NeMo/Gym#-available-environments) table for the full list.
 
 ### Configure Agent Harnesses
 
@@ -45,28 +53,27 @@ Added 70+ standardized benchmark packages and 50+ new resources servers. Notable
 ### Configure Models
 
 - Optional `max_concurrent_requests` on the OpenAI model server to cap in-flight API calls — useful for rate-limited external endpoints when rollout concurrency is high
-- VLLMModel handles context-length-exceeded errors gracefully instead of crashing rollout collection on long agentic trajectories
 
 ### Rollout Collection & Profiling
 
 - New `ng_aggregate_rollouts` command to merge rollout shards collected independently across multiple nodes, enabling distributed eval without requiring a single coordinated collection job
-- `ng_reward_profile` now outputs per-rollout metrics (token usage, reward, rollout index) and supports partial rollouts via `++allow_partial_rollouts=True` so profiling works even when some tasks are missing
 
 ### Environment Library Integrations
 
 - OpenEnv — combine OpenEnv environments with NeMo Gym environments
 - Harbor — combine Harbor environments with NeMo Gym environments
 
-### Infrastructure & Developer Experience (WIP)
+### Deprecation Notices
 
-- New `environments/` composition layer for packaging benchmarks as self-contained evaluation units
-- Benchmark infrastructure refactors with `benchmarks/` directory for standardized dataset packaging
-- Root Makefile with Fern dev convenience targets (`make docs-dev`, `make docs-check`)
-- Server subprocess log tee to a configurable directory for centralized log management
-- Prompt config for templating system prompts across benchmarks
-- Structured output support with YAML and XML response formats
-- Harbor and Daytona Harbor integration for containerized environment execution
-- CVDP resource server hardened for commercial tooling support
+- Documentation has moved from Sphinx to Fern. Old Sphinx URLs redirect to the new site at docs.nvidia.com/nemo/gym. The `docs/` directory is no longer used for publishing.
+
+### Bug Fixes
+
+- Fixed aiohttp connection limit exhaustion under FastAPI/Uvicorn with multiple workers
+- Fixed session cookie propagation for Starlette >= 1.0.0
+- Fixed duplicated usage counting and errors on empty usage in subsequent model calls
+- Improved rollout resilience when models emit malformed tool-call arguments or missing message content
+- Fixed prompt-key hashing when inputs contain Pydantic BaseModel objects
 
 ### Documentation
 
@@ -75,23 +82,11 @@ Added 70+ standardized benchmark packages and 50+ new resources servers. Notable
 - Consolidated detailed setup and quickstart into a single improved quickstart with clearer descriptions
 - Expanded Ecosystem page with environment library, training framework, and agent harness integrations
 
-### Deprecations
+### Release Assets
 
-- Documentation has moved from Sphinx to Fern. Old Sphinx URLs redirect to the new site at docs.nvidia.com/nemo/gym. The `docs/` directory is no longer used for publishing.
+[GitHub Release v0.3.0](https://github.com/NVIDIA-NeMo/Gym/releases/tag/v0.3.0)
 
-### Bug Fixes (WIP)
 
-- Fixed WMT translation COMET mirror staging to avoid race conditions across writers
-- Fixed stirrup agent reasoning fallback and surfaced tool-argument validation errors
-- Fixed stirrup agent: restored tool messages for model calls, fixed libreoffice whitespace and reference_files double-nesting
-- Fixed math verify calls hanging indefinitely with graceful timeout handling
-- Fixed aiohttp connection limit exhaustion under FastAPI/Uvicorn with multiple workers
-- Fixed GenRM lock to properly handle concurrent requests
-- Fixed session cookie propagation for Starlette >= 1.0.0
-- Fixed duplicated usage counting and errors on empty usage in subsequent model calls
-- Upgraded transformers 4.x to 5.8.1 for CVE remediation
-- Upgraded multiple dependencies for security vulnerability fixes
-- Pinned verifiers to 0.1.14 for stability
 
 </Accordion>
 
