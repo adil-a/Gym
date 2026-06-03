@@ -318,3 +318,50 @@ class TestPythonToolShutdownReap:
         proc.kill.assert_not_called()
         proc.wait.assert_called_once_with(timeout=5)
         assert server._python_tool_process is None
+
+
+class TestSidecarTeardownWiredToLifespan:
+    """shutdown() must be connected to the server lifetime, not just defined.
+
+    The base runner only starts Uvicorn; nothing calls shutdown() on its own.
+    setup_webserver() must register it so a normal server stop reaps the
+    python_tool sidecar instead of leaving it bound to its fixed port.
+    """
+
+    def _make_server(self) -> NSToolsResourcesServer:
+        config = NSToolsConfig(host="0.0.0.0", port=8080, entrypoint="", name="ns_tools")
+        return NSToolsResourcesServer(config=config, server_client=MagicMock(spec=ServerClient))
+
+    async def test_lifespan_context_invokes_shutdown(self) -> None:
+        server = self._make_server()
+        app = server.setup_webserver()
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.pid = 12345
+        proc.wait.return_value = 0
+        server._python_tool_process = proc
+
+        # Exiting the app lifespan context must reap the sidecar.
+        async with app.router.lifespan_context(app):
+            pass
+
+        proc.terminate.assert_called_once()
+        assert server._python_tool_process is None
+
+    def test_lifespan_shutdown_reaps_sidecar_via_testclient(self) -> None:
+        from fastapi.testclient import TestClient
+
+        server = self._make_server()
+        app = server.setup_webserver()
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.pid = 12345
+        proc.wait.return_value = 0
+        server._python_tool_process = proc
+
+        # Entering/exiting TestClient drives the app startup/shutdown lifespan.
+        with TestClient(app):
+            pass
+
+        proc.terminate.assert_called_once()
+        assert server._python_tool_process is None
