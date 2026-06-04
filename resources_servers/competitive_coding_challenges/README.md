@@ -38,6 +38,25 @@ and optionally can set to following:
 
 One can also override via the config, ex: `++env.nemo_gym.competitive_coding_challenges_resources_server.resources_servers.competitive_coding_challenges.test_file=`.
 
+## Sandbox prerequisite (local)
+
+This server compiles and runs candidate solutions inside the NeMo Skills
+sandbox over HTTP. Bring one up locally before launching the server.
+
+There is no published image — build it from the NeMo-Skills repo:
+
+```bash
+git clone --depth 1 https://github.com/NVIDIA-NeMo/Skills.git /tmp/NeMo-Skills \
+  && docker build -t nemo-skills-sandbox \
+       -f /tmp/NeMo-Skills/dockerfiles/Dockerfile.sandbox /tmp/NeMo-Skills \
+  && docker run --rm -p 6000:6000 nemo-skills-sandbox
+```
+
+The server defaults to `http://127.0.0.1:6000/execute`; override with
+`NEMO_SKILLS_SANDBOX_HOST` / `NEMO_SKILLS_SANDBOX_PORT` if the sandbox is
+elsewhere. Cluster/SLURM users can co-launch the sandbox via Skills'
+`nemo_gym_rollouts(with_sandbox=True)` — separate path, not covered here.
+
 ## Generating Rollouts
 
 The following allows users to launch the environment followed by the request for generating and collecting rollouts.
@@ -55,5 +74,6 @@ ng_collect_rollouts +agent_name=simple_agent \
 
 ## Additional Information
 
+- The data necessary for this environment is currently not available and a future release of it is TBD.
 - Example reward profiling done with Qwen3-32B can be found at ![Reward Profile](data/pass_rate_histogram.png)
 - The default settings for `test_batch_size`, `num_parallel_requests` and `time_scale` should work well but if you notice many `"run_stderr": "Time limit exceeded` in your `ccc_verify.jsonl` file then its worth increasing this to remove false negatives. Conversely, lowering `time_scale` will speed up training.
