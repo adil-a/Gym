@@ -19,9 +19,10 @@ This creates a release branch and bumps the version on main for the next dev cyc
 ### Automated (when branch protection allows it)
 
 1. Go to **Actions → Code freeze → Run workflow**
-2. Select `release-type`: `major` or `minor`
-3. Set `freeze-commit` to the SHA you want to cut from (or leave as `main` for HEAD)
-4. Run with `dry-run: true` first, verify output, then re-run with `dry-run: false`
+2. Run from the `main` branch
+3. Select `release-type`: `major` or `minor`
+4. Set `freeze-commit` to the SHA you want to cut from (or leave as `main` for HEAD)
+5. Run with `dry-run: true` first, verify output, then re-run with `dry-run: false`
 
 ### Manual (if branch protection blocks the workflow)
 
@@ -65,10 +66,11 @@ This builds the wheel, publishes to PyPI, and creates a GitHub release.
 ### Steps
 
 1. Merge the RC-drop PR into `r<VERSION>` (so the version is clean, e.g. `0.3.0` not `0.3.0rc0`)
-2. Get the SHA: `git rev-parse origin/r<VERSION>`
+2. Get the SHA of the commit you want to release: `git rev-parse origin/r<VERSION>`
 3. Go to **Actions → Build, validate, and release NeMo-Gym → Run workflow**
-4. Run with `dry-run: true` first and verify the output
-5. Re-run with `dry-run: false` to publish
+4. Run from the `main` branch (the `release-ref` SHA determines which code gets released, not the branch you trigger from)
+5. Run with `dry-run: true` first and verify the output
+6. Re-run with `dry-run: false` to publish
 
 ### What the workflow does
 
@@ -94,15 +96,6 @@ After the freeze, bug fixes land on main first, then get backported:
 1. Merge the fix PR to main
 2. Add the `cherry-pick-r<VERSION>` label to the PR
 3. The `cherry-pick-release-commit.yml` workflow automatically creates a PR to backport the commit from `r<VERSION>` to main
-
-## Common Pitfalls
-
-| Pitfall | What goes wrong | How to avoid |
-|---|---|---|
-| Using a branch name as `release-ref` | Version-bump job mutates the branch before build-wheel reads it, publishing the wrong version | Always use a commit SHA |
-| Stale `Nemo_CICD_Test` check on `r*` branch protection | PRs to the release branch can never be merged | Replace with `Test`, `Lint check`, `DCO` in branch protection settings |
-| Forgetting to merge the RC-drop PR before releasing | Publishes `X.Y.Zrc0` instead of `X.Y.Z` | Merge the RC-drop PR first, then get the SHA |
-| Running the release from `main` instead of the release branch | `run-on-version-tag-only` may silently no-op publish steps | Always trigger from the release branch context |
 
 ## Version Format
 
