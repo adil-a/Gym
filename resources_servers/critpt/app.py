@@ -15,7 +15,7 @@
 import asyncio
 import logging
 import re
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -61,9 +61,12 @@ class CritPtResourcesServer(SimpleResourcesServer):
     def model_post_init(self, context: Any) -> None:
         super().model_post_init(context)
         self._lock = asyncio.Lock()
-        # Active batch: {"future": asyncio.Future, "submissions": dict[problem_id, submission]}.
-        # Reset to None once batch_size is reached; new calls start a fresh batch.
-        self._current_batch: Optional[dict] = None
+        # Pending batches, oldest first. Each batch is
+        # {"future": asyncio.Future, "submissions": dict[problem_id, submission]}.
+        # A verify() call joins the first batch that doesn't already contain its problem_id,
+        # or creates a new batch if all existing batches already have it. This enables
+        # num_repeats > 1: each repeat of a given problem flows into a distinct batch.
+        self._batches: list[dict] = []
 
     def setup_webserver(self) -> FastAPI:
         app = super().setup_webserver()
@@ -71,10 +74,11 @@ class CritPtResourcesServer(SimpleResourcesServer):
         return app
 
     async def status(self) -> dict:
-        """Return the current batch fill (buffered submissions vs batch_size). Read-only; no lock."""
-        batch = self._current_batch
-        buffered = len(batch["submissions"]) if batch is not None else 0
-        return {"buffered": buffered, "batch_size": self.config.batch_size}
+        """Return the live buffer fill across all pending batches. Read-only; no lock."""
+        return {
+            "pending_batches": [len(b["submissions"]) for b in self._batches],
+            "batch_size": self.config.batch_size,
+        }
 
     async def verify(self, body: CritPtVerifyRequest) -> CritPtVerifyResponse:
         code = _extract_code(_extract_output_text(body))
@@ -86,25 +90,33 @@ class CritPtResourcesServer(SimpleResourcesServer):
         }
 
         async with self._lock:
-            if self._current_batch is None:
-                self._current_batch = {
+            # Find the first pending batch that doesn't already contain this problem_id.
+            # If all pending batches have it (or none exist), open a new one.
+            target_batch = next(
+                (b for b in self._batches if body.problem_id not in b["submissions"]),
+                None,
+            )
+            if target_batch is None:
+                target_batch = {
                     "future": asyncio.get_running_loop().create_future(),
                     "submissions": {},
                 }
-            batch = self._current_batch
-            batch["submissions"][body.problem_id] = submission
-            future = batch["future"]
+                self._batches.append(target_batch)
+
+            target_batch["submissions"][body.problem_id] = submission
+            future = target_batch["future"]
             LOG.warning(
-                "CritPt verify: %d/%d submissions buffered (problem_id=%s)",
-                len(batch["submissions"]),
+                "CritPt verify: batch %d at %d/%d submissions buffered (problem_id=%s)",
+                self._batches.index(target_batch),
+                len(target_batch["submissions"]),
                 self.config.batch_size,
                 body.problem_id,
             )
 
-            ready_to_fire = len(batch["submissions"]) >= self.config.batch_size
+            ready_to_fire = len(target_batch["submissions"]) >= self.config.batch_size
             if ready_to_fire:
-                submissions_snapshot = list(batch["submissions"].values())
-                self._current_batch = None  # next caller starts a fresh batch
+                submissions_snapshot = list(target_batch["submissions"].values())
+                self._batches.remove(target_batch)
             else:
                 submissions_snapshot = None
 

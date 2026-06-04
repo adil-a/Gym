@@ -2,7 +2,7 @@
 
 Benchmark wrapper for [CritPt](https://huggingface.co/datasets/CritPt-Benchmark/CritPt), a
 70-problem research-level physics benchmark. Each problem has a description and a Python
-code template; the model must produce a precise numerical answer.
+code template. The model must produce a precise numerical answer.
 
 - **Tasks**: 70 physics problems
 - **Reward**: binary; scored by the [Artificial Analysis API](https://artificialanalysis.ai/documentation#critpt-api) — private test cases run server-side
@@ -22,8 +22,7 @@ The Artificial Analysis API key is read from `env.yaml`:
 artificial_analysis_api_key: <your-key>
 ```
 
-The resources server config interpolates this via `${artificial_analysis_api_key}` —
-no key in any committed file.
+The resources server config interpolates this via `${artificial_analysis_api_key}` — no key in any committed file.
 
 ## Prepare benchmark data
 

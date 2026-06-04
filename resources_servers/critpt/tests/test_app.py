@@ -185,9 +185,9 @@ class TestApp:
         # Empty buffer
         resp = client.get("/status")
         assert resp.status_code == 200
-        assert resp.json() == {"buffered": 0, "batch_size": 3}
+        assert resp.json() == {"pending_batches": [], "batch_size": 3}
 
-        # After one partial verify, buffer should report 1
+        # After one partial verify, one pending batch with 1 submission
         async def add_one():
             mock_request, patches = _mock_api({"accuracy": 0.5, "timeout_rate": 0.0})
             try:
@@ -202,7 +202,56 @@ class TestApp:
 
         await add_one()
         resp = client.get("/status")
-        assert resp.json() == {"buffered": 1, "batch_size": 3}
+        assert resp.json() == {"pending_batches": [1], "batch_size": 3}
+
+    @pytest.mark.asyncio
+    async def test_num_repeats_two_routes_duplicates_to_separate_batches(self):
+        """num_repeats=2 sim: 2 problems × 2 repeats → 4 verifies → 2 API calls, each with 2 unique problem_ids."""
+        server = _make_server(_make_config(batch_size=2))
+
+        mock_request, patches = _mock_api({"accuracy": 0.5, "timeout_rate": 0.0})
+        try:
+            # Two repeats of p1 and two repeats of p2 (interleaved, mimicking concurrent rollouts).
+            await asyncio.gather(
+                server.verify(_make_verify_request("```python\na=1\n```", problem_id="p1")),
+                server.verify(_make_verify_request("```python\nb=2\n```", problem_id="p2")),
+                server.verify(_make_verify_request("```python\na2=1\n```", problem_id="p1")),
+                server.verify(_make_verify_request("```python\nb2=2\n```", problem_id="p2")),
+            )
+
+            assert mock_request.call_count == 2
+            # Each fired batch must contain both unique problem_ids exactly once.
+            for call in mock_request.call_args_list:
+                payload = call.kwargs["json"]
+                problem_ids = [s["problem_id"] for s in payload["submissions"]]
+                assert sorted(problem_ids) == ["p1", "p2"]
+        finally:
+            _stop_patches(patches)
+
+    @pytest.mark.asyncio
+    async def test_repeats_open_new_batch_before_first_fills(self):
+        """If a repeat of p1 arrives while batch[0] still needs p2, it opens batch[1]; neither fires yet."""
+        server = _make_server(_make_config(batch_size=2))
+
+        mock_request, patches = _mock_api({"accuracy": 0.5, "timeout_rate": 0.0})
+        try:
+            t1 = asyncio.create_task(server.verify(_make_verify_request("```python\na=1\n```", problem_id="p1")))
+            t2 = asyncio.create_task(server.verify(_make_verify_request("```python\na2=1\n```", problem_id="p1")))
+            # Neither batch is full yet — both verifies should block.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(asyncio.gather(t1, t2)), timeout=0.1)
+            mock_request.assert_not_called()
+
+            # /status should report two pending batches each with one submission.
+            client = TestClient(server.setup_webserver())
+            assert client.get("/status").json() == {"pending_batches": [1, 1], "batch_size": 2}
+
+            for t in (t1, t2):
+                t.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await t
+        finally:
+            _stop_patches(patches)
 
     @pytest.mark.asyncio
     async def test_empty_code_still_included_in_batch(self):
