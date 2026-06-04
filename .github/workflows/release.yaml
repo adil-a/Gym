@@ -84,7 +84,6 @@ jobs:
       skip-test-wheel: true
       wheel-content-ignore: "W002,W004,W009"
       app-id: ${{ vars.BOT_ID }}
-      gh-release-use-changelog-builder: false
       publish-docs: false
       run-on-version-tag-only: ${{ github.ref_name != 'main' }}
       gh-release-from-tag: ${{ inputs.gh-release-from-tag || '' }}
