@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import base64
 import glob
 import importlib.util
 import json
@@ -1488,8 +1489,19 @@ class OpenCodeHarnessProcessor(BaseDatasetHarnessProcessor):
 
         agent_script_name = f"agent_script_{agent_run_id}.sh"
         agent_script_path = self.config.persistent_dir / agent_script_name
+        opencode_log_trap = (
+            "trap '_rc=$?; "
+            "mkdir -p /trajectories_mount/opencode_logs 2>/dev/null; "
+            "cp -r /root/.local/share/opencode /trajectories_mount/opencode_logs/xdg 2>/dev/null; "
+            'for d in /tmp/bench-*; do '
+            '[ -d "$d/data/log" ] && '
+            'cp -r "$d/data/log" "/trajectories_mount/opencode_logs/bench_$(basename "$d")" 2>/dev/null; '
+            "done; "
+            "exit $_rc' EXIT\n"
+        )
         with open(agent_script_path, "w") as f:
             f.write("#!/bin/bash\nset -e\n")
+            f.write(opencode_log_trap)
             f.write(agent_main_cmd)
             f.flush()
             os.fsync(f.fileno())
@@ -2190,6 +2202,82 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
         container_commands = []
         container_commands.append("echo '127.0.0.1 localhost' >/etc/hosts")
 
+        # Apptainer uid namespacing makes the eval-image's `chmod` against
+        # /var/run/postgresql fail with "Value too large for defined data
+        # type". Pre-create the directory and best-effort chown to a
+        # postgres user if one exists, so the dataset's later chmod is a
+        # no-op against an already-correct path. Each step is independently
+        # tolerant of failure (using `;` and trailing `|| true`) — earlier
+        # gating on `getent passwd postgres` skipped the mkdir on images
+        # that have /var/run/postgresql but no nss postgres entry.
+        container_commands.append(
+            "(mkdir -p /var/run/postgresql; "
+            "chown postgres:postgres /var/run/postgresql 2>/dev/null; "
+            "chmod 2775 /var/run/postgresql 2>/dev/null) >/dev/null 2>&1 || true"
+        )
+
+        # Redirect Maven Central lookups to the Google mirror to avoid HTTP 429
+        # throttling under heavy parallelism. Write configs inline rather than
+        # via bind mount because Apptainer's file-bind into a non-existent
+        # parent (e.g. /root/.gradle/init.d/) is unreliable, and silently
+        # losing the Gradle init script costs hundreds of failed dep fetches.
+        #
+        # Gradle home is placed under /trajectories_mount (bind-mounted from
+        # persistent_dir on Lustre) rather than /root/.gradle — the writable
+        # tmpfs overlay has a size cap that the ~150MB Gradle distribution
+        # download can blow through, leaving the wrapper unable to create
+        # /root/.gradle/wrapper/dists/* (Gradle "could not create parent
+        # directory for lock file" errors).
+        maven_mirror_dir = Path(__file__).parent / "maven_mirror"
+        mvn_settings_path = maven_mirror_dir / "settings.xml"
+        gradle_init_path = maven_mirror_dir / "init.gradle"
+        if mvn_settings_path.exists() and gradle_init_path.exists():
+            mvn_b64 = base64.b64encode(mvn_settings_path.read_bytes()).decode()
+            grad_b64 = base64.b64encode(gradle_init_path.read_bytes()).decode()
+            # Belt-and-suspenders: write init.gradle to every common
+            # $GRADLE_USER_HOME location on the in-container tmpfs. Some
+            # images set GRADLE_USER_HOME via gradle.properties or a
+            # wrapper script, ignoring our --env override.
+            container_commands.append(
+                "mkdir -p /root/.m2 /root/.gradle/init.d "
+                "/home/gradle/.gradle/init.d "
+                "/home/user/.gradle/init.d 2>/dev/null || true"
+            )
+            container_commands.append(f"echo {mvn_b64} | base64 -d > /root/.m2/settings.xml")
+            container_commands.append(
+                f"echo {grad_b64} | base64 -d > /root/.gradle/init.d/maven_central_mirror.gradle"
+            )
+            # Fan-out the init script. Use `cp` from the canonical write so
+            # we don't repeat the long base64 string.
+            container_commands.append(
+                "for d in /home/gradle/.gradle/init.d /home/user/.gradle/init.d; do "
+                "[ -d \"$d\" ] && cp /root/.gradle/init.d/maven_central_mirror.gradle "
+                "\"$d/maven_central_mirror.gradle\" 2>/dev/null; done; true"
+            )
+
+        # Chrome wrapper for Karma-based JS tests. Karma's default
+        # ChromeHeadless launcher reads CHROME_BIN; we point it at a wrapper
+        # that exec's whatever real chrome lives in the image, with the
+        # standard apptainer-container flags applied. Karma configs that
+        # use `customLaunchers` with hardcoded flag lists override
+        # CHROME_BIN and stay unfixable from outside.
+        chrome_wrapper = (
+            "#!/bin/sh\n"
+            "for b in /opt/google/chrome/google-chrome /opt/google/chrome/chrome "
+            "/usr/bin/google-chrome-stable /usr/bin/google-chrome "
+            "/usr/lib/chromium/chrome /usr/bin/chromium-browser /usr/bin/chromium; do\n"
+            "  if [ -x \"$b\" ] && [ \"$(realpath \"$b\")\" != \"$(realpath \"$0\")\" ]; then\n"
+            "    exec \"$b\" --no-sandbox --disable-dev-shm-usage \"$@\"\n"
+            "  fi\n"
+            "done\n"
+            "echo 'chrome-wrapper.sh: no real chrome binary found' >&2\n"
+            "exit 1\n"
+        )
+        chrome_b64 = base64.b64encode(chrome_wrapper.encode()).decode()
+        container_commands.append(
+            f"echo {chrome_b64} | base64 -d > /tmp/chrome-wrapper.sh && chmod +x /tmp/chrome-wrapper.sh"
+        )
+
         # Build mount arguments
         mount_args = [
             f"--mount type=bind,src={params.persistent_dir},dst=/trajectories_mount",
@@ -2349,9 +2437,45 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
 
         mount_str = " ".join(mount_args)
 
-        env_args = ""
-        if "SWE-rebench" in data_point["dataset_name"]:
-            env_args = "--env _JAVA_OPTIONS=-Djava.net.preferIPv6Addresses=false "
+        # _JAVA_OPTIONS bundles JVM-wide settings that benefit Maven, Gradle,
+        # and Robolectric-using tests:
+        #   - preferIPv6Addresses=false: dual-stack networks misroute
+        #     Maven/Gradle requests over IPv6 in some apptainer setups.
+        #   - robolectric.dependency.repo.url: Robolectric's MavenArtifactFetcher
+        #     does its own Maven Central pull bypassing project repositories,
+        #     so we redirect it to the Google mirror directly.
+        java_options = (
+            "-Djava.net.preferIPv6Addresses=false "
+            "-Drobolectric.dependency.repo.url=https://maven-central.storage-download.googleapis.com/maven2/"
+        )
+        env_args = f"--env _JAVA_OPTIONS='{java_options}' "
+
+        # Force Gradle to read init.d from /root/.gradle regardless of the
+        # container image's default user. We use the tmpfs path (not the
+        # bind-mounted /trajectories_mount) because Gradle's per-instance
+        # caches can be tens of thousands of files and quickly exhaust the
+        # operator's Lustre inode quota when run across many parallel
+        # containers. The init.gradle script is fan-written to multiple
+        # candidate home paths a few lines below.
+        env_args += "--env GRADLE_USER_HOME=/root/.gradle "
+
+        # Cap CoreCLR heap reservation to 8 GiB so .NET / PowerShell-Pester
+        # tests survive the apptainer-imposed `ulimit -v` virtual-memory
+        # limit. Without this, CoreCLR's default upfront heap reservation
+        # exceeds the v-limit and fails with HRESULT 0x8007000E
+        # ("GC heap initialization failed").
+        env_args += "--env DOTNET_GCHeapHardLimit=0x200000000 "
+
+        # Point Karma at our Chrome-flags wrapper. Real chrome is at well-known
+        # paths inside the eval images; the wrapper exec's the first one it
+        # finds with --no-sandbox --disable-dev-shm-usage. Karma reads
+        # CHROME_BIN for Chrome/ChromeHeadless launchers and CHROMIUM_BIN
+        # for Chromium/ChromiumHeadless launchers — we set both so a karma
+        # config using either name routes through the wrapper. Configs that
+        # use `customLaunchers` with hardcoded flag lists override these
+        # vars and stay unfixable from outside.
+        env_args += "--env CHROME_BIN=/tmp/chrome-wrapper.sh "
+        env_args += "--env CHROMIUM_BIN=/tmp/chrome-wrapper.sh "
 
         # Launch Apptainer container and execute the script file
         apptainer_cmd = (
