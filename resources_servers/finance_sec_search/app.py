@@ -68,10 +68,7 @@ class FinanceAgentResourcesServerConfig(BaseResourcesServerConfig):
         default=None,
         description="Path for caching ticker mappings and filing metadata. Defaults to ~/.cache/nemo_gym/finance_sec_search/ if not set. Relative paths are resolved from cwd.",
     )
-    use_cache: bool = Field(
-        default=False,
-        description="Keep False to always fetch fresh filings (used for eval)."
-    )
+    use_cache: bool = Field(default=False, description="Keep False to always fetch fresh filings (used for eval).")
     user_agent: str = Field(
         default="Gym-SEC-Search/1.0 (research@nvidia.com)", description="User-Agent header for SEC.gov requests"
     )
@@ -1083,9 +1080,7 @@ class FinanceAgentResourcesServer(SimpleResourcesServer):
                 if error_field is not None:
                     diagnostic_parts.append(f"error={error_field}")
                 diagnostic = (" (" + ", ".join(diagnostic_parts) + ")") if diagnostic_parts else ""
-                return RetrieveInformationResponse(
-                    results=f"ERROR: Retrieval LLM returned no output.{diagnostic}"
-                )
+                return RetrieveInformationResponse(results=f"ERROR: Retrieval LLM returned no output.{diagnostic}")
 
             return RetrieveInformationResponse(results=result_text)
 
