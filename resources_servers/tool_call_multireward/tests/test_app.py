@@ -72,9 +72,7 @@ def _response(output: list) -> NeMoGymResponse:
 
 def _server() -> ToolCallMultiRewardResourcesServer:
     return ToolCallMultiRewardResourcesServer(
-        config=ToolCallMultiRewardResourcesServerConfig(
-            host="0.0.0.0", port=8080, entrypoint="", name=""
-        ),
+        config=ToolCallMultiRewardResourcesServerConfig(host="0.0.0.0", port=8080, entrypoint="", name=""),
         server_client=MagicMock(spec=ServerClient),
     )
 
@@ -103,24 +101,18 @@ class TestApp:
 
     async def test_wrong_city_keeps_schema_and_format(self) -> None:
         # Correct tool, valid schema, but wrong argument value -> only correctness drops.
-        result = await _server().verify(
-            _request([_function_call("get_weather", json.dumps({"city": "New York"}))])
-        )
+        result = await _server().verify(_request([_function_call("get_weather", json.dumps({"city": "New York"}))]))
         assert result.reward_components == {"correctness": 0.0, "schema_valid": 1.0, "format": 1.0}
         assert result.reward == 2.0
 
     async def test_missing_required_param_drops_schema(self) -> None:
-        result = await _server().verify(
-            _request([_function_call("get_weather", json.dumps({}))])
-        )
+        result = await _server().verify(_request([_function_call("get_weather", json.dumps({}))]))
         assert result.correctness == 0.0
         assert result.schema_valid == 0.0
         assert result.format == 1.0
 
     async def test_invalid_json_arguments_drops_schema(self) -> None:
-        result = await _server().verify(
-            _request([_function_call("get_weather", "{not valid json")])
-        )
+        result = await _server().verify(_request([_function_call("get_weather", "{not valid json")]))
         assert result.schema_valid == 0.0
         assert result.format == 1.0
 

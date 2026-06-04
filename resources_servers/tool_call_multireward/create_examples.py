@@ -62,10 +62,7 @@ base_response_create_params = NeMoGymResponseCreateParamsNonStreaming(
 example_strs = []
 for query, city in queries:
     example = base_response_create_params.model_copy(
-        update={
-            "input": base_response_create_params.input
-            + [NeMoGymEasyInputMessage(role="user", content=query)]
-        }
+        update={"input": base_response_create_params.input + [NeMoGymEasyInputMessage(role="user", content=query)]}
     )
     row = {
         "responses_create_params": example.model_dump(exclude_unset=True),

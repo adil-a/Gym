@@ -58,6 +58,11 @@ class ToolCallMultiRewardVerifyRequest(BaseVerifyRequest):
 class ToolCallMultiRewardVerifyResponse(BaseVerifyResponse):
     # Per-component scores are also surfaced as top-level fields so the aggregate
     # metrics endpoint profiles each one in addition to the combined reward.
+    # Decoupled per-component rewards (name -> score) for GDPO. NeMo-RL's NeMo Gym
+    # bridge reads this from the verify result and exposes the components as reward1,
+    # reward2, ... ordered by name. Defined here (not on BaseVerifyResponse) so other
+    # environments' verify responses are unchanged.
+    reward_components: Dict[str, float] | None = None
     correctness: float = 0.0
     schema_valid: float = 0.0
     format: float = 0.0
@@ -105,24 +110,18 @@ class ToolCallMultiRewardResourcesServer(SimpleResourcesServer):
             return False
         if predicted.get("name") != expected.get("name"):
             return False
-        predicted_args, _ = ToolCallMultiRewardResourcesServer._parse_arguments(
-            predicted.get("arguments", {})
-        )
+        predicted_args, _ = ToolCallMultiRewardResourcesServer._parse_arguments(predicted.get("arguments", {}))
         expected_args = expected.get("arguments", {}) or {}
         for key, value in expected_args.items():
             if predicted_args.get(key) != value:
                 return False
         return True
 
-    async def verify(
-        self, body: ToolCallMultiRewardVerifyRequest
-    ) -> ToolCallMultiRewardVerifyResponse:
+    async def verify(self, body: ToolCallMultiRewardVerifyRequest) -> ToolCallMultiRewardVerifyResponse:
         predicted_calls = self._extract_function_calls(body)
 
         # format: exactly one tool call and no extra assistant prose.
-        format_score = (
-            1.0 if len(predicted_calls) == 1 and not self._has_assistant_text(body) else 0.0
-        )
+        format_score = 1.0 if len(predicted_calls) == 1 and not self._has_assistant_text(body) else 0.0
 
         # schema_valid: the first call's arguments are a valid object with all required params.
         schema_score = 0.0
@@ -133,9 +132,7 @@ class ToolCallMultiRewardResourcesServer(SimpleResourcesServer):
             schema_score = 1.0 if is_valid and all(k in parsed for k in required) else 0.0
 
         # correctness: some predicted call matches the expected name + arguments.
-        correctness_score = (
-            1.0 if any(self._call_matches(c, body.expected_call) for c in predicted_calls) else 0.0
-        )
+        correctness_score = 1.0 if any(self._call_matches(c, body.expected_call) for c in predicted_calls) else 0.0
 
         reward_components = {
             "correctness": correctness_score,
@@ -151,8 +148,7 @@ class ToolCallMultiRewardResourcesServer(SimpleResourcesServer):
             schema_valid=schema_score,
             format=format_score,
             predicted_calls=[
-                {"name": c["name"], "arguments": self._parse_arguments(c["arguments"])[0]}
-                for c in predicted_calls
+                {"name": c["name"], "arguments": self._parse_arguments(c["arguments"])[0]} for c in predicted_calls
             ],
         )
 
