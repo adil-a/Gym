@@ -15,7 +15,7 @@
 import asyncio
 import logging
 import re
-from typing import Any
+from typing import Any, Dict, List, Union
 
 from fastapi import FastAPI
 
@@ -26,6 +26,7 @@ from nemo_gym.base_resources_server import (
     BaseVerifyResponse,
     SimpleResourcesServer,
 )
+from nemo_gym.reward_profile import compute_pass_majority_metrics, highest_k_metrics
 from nemo_gym.server_utils import raise_for_status, request
 
 
@@ -140,6 +141,36 @@ class CritPtResourcesServer(SimpleResourcesServer):
             accuracy=accuracy,
             timeout_rate=timeout_rate,
         )
+
+    # ──────────────────────────────────────────────────────────
+    # Aggregate metrics overrides
+    # ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _critpt_score_fn(r: dict) -> Dict[str, Union[float, bool]]:
+        return {"accuracy": r["accuracy"]} if "accuracy" in r else {}
+
+    def compute_metrics(self, tasks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """Compute CritPt metrics: pass@k, majority@k, per-sample stats — named `accuracy`."""
+        return compute_pass_majority_metrics(
+            tasks,
+            score_fn=self._critpt_score_fn,
+            answer_key="problem_id",
+        )[0]
+
+    def get_key_metrics(self, agent_metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """Headline metrics for CritPt: pass@1/accuracy and pass@k/accuracy variants."""
+        key: Dict[str, Any] = {}
+
+        for name in ("mean/input_tokens", "mean/output_tokens"):
+            if name in agent_metrics:
+                key[name] = agent_metrics[name]
+
+        key.update(highest_k_metrics(agent_metrics, "pass@1[avg-of-{k}]"))
+        key.update(highest_k_metrics(agent_metrics, "pass@{k}"))
+        key.update(highest_k_metrics(agent_metrics, "majority@{k}"))
+
+        return key
 
 
 def _extract_output_text(body: CritPtVerifyRequest) -> str:
