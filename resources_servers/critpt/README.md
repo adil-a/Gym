@@ -43,11 +43,6 @@ already has it. With `num_repeats=N` and 70 problems, this produces N independen
 70 unique `problem_id`s — N AA API calls total, each scored as a separate run. Assumes
 uniform `num_repeats` across problems (which `ng_collect_rollouts` enforces).
 
-**Known limitations**:
-
-- No timeout/flush. If any of the 70 `verify()` calls never arrives (model error, agent
-  crash), the other 69 hang forever. Manual recovery: Ctrl-C and re-run.
-
 ## Dataset Format
 
 Flat-field JSONL (prompt templating happens at runtime via
@@ -72,7 +67,7 @@ Both signals surface in the run log (prefixed `(critpt_resources_server)`):
 ```bash
 PORT=$(grep "critpt_resources_server.*Uvicorn running" <run.log> | grep -oE '127\.0\.0\.1:[0-9]+' | cut -d: -f2)
 curl -s http://127.0.0.1:$PORT/status
-# → {"pending_batches": [47], "batch_size": 70}
+# {"pending_batches": [47], "batch_size": 70}
 # (with num_repeats=N, the list grows up to N entries — one per concurrently-filling batch)
 ```
 
