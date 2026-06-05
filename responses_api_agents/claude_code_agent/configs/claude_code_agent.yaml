@@ -1,16 +1,30 @@
+cvdp:
+  resources_servers:
+    cvdp:
+      entrypoint: app.py
+      domain: coding
+      verified: false
+      oss_sim_image: ghcr.io/hdl/sim/osvb
+      eda_sim_image: ""
+      container_timeout: 600
+      num_processes: 1
+      primary_service: direct
+      description: CVDP benchmark dataset for code generation
+      value: Evaluate RTL code generation capabilities
+
 claude_code_agent:
   responses_api_agents:
     claude_code_agent:
       entrypoint: app.py
       resources_server:
         type: resources_servers
-        name: ???
+        name: cvdp
       concurrency: 32
-      model: claude-sonnet-4-6
+      model: ${anthropic_model_name}
       anthropic_api_key: ${anthropic_api_key}
-      anthropic_base_url: null
+      anthropic_base_url: ${anthropic_base_url}
       max_turns: 30
-      timeout: 300
+      timeout: 800
       system_prompt: null
       allowed_tools: null
       disallowed_tools: null
