@@ -134,7 +134,7 @@ class TestInferenceProvider:
         )
         assert called_kwargs["model"] == "my-configured-model"
 
-    async def test_model_override_in_request(self, monkeypatch: MonkeyPatch) -> None:
+    async def test_request_model_is_overridden_by_config(self, monkeypatch: MonkeyPatch) -> None:
         server = _make_server(model="default-model")
         app = server.setup_webserver()
         client = TestClient(app)
@@ -156,7 +156,7 @@ class TestInferenceProvider:
                 "model": "override-model",
             },
         )
-        assert called_kwargs["model"] == "override-model"
+        assert called_kwargs["model"] == "default-model"
 
     async def test_extra_body_merged(self, monkeypatch: MonkeyPatch) -> None:
         server = _make_server(extra_body={"frequency_penalty": 0.5, "presence_penalty": 0.3})

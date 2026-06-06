@@ -132,7 +132,7 @@ class InferenceProvider(SimpleResponsesAPIModel):
         self, request: Request, body: NeMoGymChatCompletionCreateParamsNonStreaming = Body()
     ) -> NeMoGymChatCompletion:
         body_dict = body.model_dump(exclude_unset=True)
-        body_dict.setdefault("model", self.config.model)
+        body_dict["model"] = self.config.model
 
         if self.config.extra_body:
             body_dict = self.config.extra_body | body_dict
