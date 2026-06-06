@@ -167,7 +167,7 @@ class ResponsesConverter(BaseModel):
             responses_create_params["max_tokens"] = max_output_tokens
 
         tools = responses_create_params.pop("tools", None)
-        if tools is not None:
+        if tools:
             responses_create_params["tools"] = []
             for tool_dict in tools:
                 tool_dict = tool_dict.copy()
