@@ -27,7 +27,7 @@ from nemo_gym.base_resources_server import (
     SimpleResourcesServer,
 )
 from nemo_gym.reward_profile import compute_pass_majority_metrics, highest_k_metrics
-from nemo_gym.server_utils import raise_for_status, request
+from nemo_gym.server_utils import request
 
 
 LOG = logging.getLogger(__name__)
@@ -43,6 +43,11 @@ class CritPtResourcesServerConfig(BaseResourcesServerConfig):
     # Per-batch AA API call timeout. AA can take ~minutes to evaluate 70 submissions
     # server-side; default generously, override if needed.
     api_timeout_seconds: float = 1800.0
+    # Retries for the AA API call on 5xx server errors (transient). 4xx (bad payload)
+    # fails immediately — retrying won't help.
+    api_max_retries: int = 4
+    # Base seconds for exponential backoff between AA retries (2nd try waits this, then 2x, ...).
+    api_retry_backoff_seconds: float = 5.0
 
 
 class CritPtRunRequest(BaseRunRequest):
@@ -65,6 +70,10 @@ class CritPtResourcesServer(SimpleResourcesServer):
     def model_post_init(self, context: Any) -> None:
         super().model_post_init(context)
         self._lock = asyncio.Lock()
+        # Serializes AA API calls: the endpoint 500s when two full-batch submissions are
+        # in flight at once (e.g. num_repeats>1, where multiple batches fill ~simultaneously).
+        # Holding this lock around _call_api fires them one at a time.
+        self._api_lock = asyncio.Lock()
         # Pending batches, oldest first. Each batch is
         # {"future": asyncio.Future, "submissions": dict[problem_id, submission]}.
         # A verify() call joins the first batch that doesn't already contain its problem_id,
@@ -133,10 +142,18 @@ class CritPtResourcesServer(SimpleResourcesServer):
         if ready_to_fire:
             LOG.warning("CritPt batch full (%d submissions); firing AA API.", len(submissions_snapshot))
             try:
-                result = await asyncio.wait_for(
-                    _call_api(self.config.api_url, self.config.api_key, submissions_snapshot),
-                    timeout=self.config.api_timeout_seconds,
-                )
+                # Serialize: only one AA submission in flight at a time (concurrent ones 500).
+                async with self._api_lock:
+                    result = await asyncio.wait_for(
+                        _call_api(
+                            self.config.api_url,
+                            self.config.api_key,
+                            submissions_snapshot,
+                            max_retries=self.config.api_max_retries,
+                            backoff_seconds=self.config.api_retry_backoff_seconds,
+                        ),
+                        timeout=self.config.api_timeout_seconds,
+                    )
                 future.set_result(result)
             except Exception as e:
                 LOG.exception("CritPt AA API call failed; failing all %d waiters: %s", len(submissions_snapshot), e)
@@ -206,19 +223,47 @@ def _extract_code(text: str) -> str:
     return text.strip()
 
 
-async def _call_api(api_url: str, api_key: str, submissions: list[dict]) -> dict:
+async def _call_api(
+    api_url: str,
+    api_key: str,
+    submissions: list[dict],
+    max_retries: int = 4,
+    backoff_seconds: float = 5.0,
+) -> dict:
     payload = {
         "submissions": submissions,
         "batch_metadata": {},
     }
-    response = await request(
-        method="POST",
-        url=api_url,
-        json=payload,
-        headers={"x-api-key": api_key},
-    )
-    await raise_for_status(response)
-    return await response.json()
+    for attempt in range(1, max_retries + 1):
+        response = await request(
+            method="POST",
+            url=api_url,
+            json=payload,
+            headers={"x-api-key": api_key},
+        )
+        if response.ok:
+            return await response.json()
+
+        body = (await response.text())[:2000]
+        # Retry only on 5xx (transient AA server errors). 4xx means a bad request/payload
+        # that won't succeed on retry, so fail fast with the response body for debugging.
+        if response.status >= 500 and attempt < max_retries:
+            wait = backoff_seconds * (2 ** (attempt - 1))
+            LOG.warning(
+                "CritPt AA API returned %d (attempt %d/%d); retrying in %.0fs: %s",
+                response.status,
+                attempt,
+                max_retries,
+                wait,
+                body,
+            )
+            await asyncio.sleep(wait)
+            continue
+        raise RuntimeError(
+            f"CritPt AA API returned {response.status} for {len(submissions)} submissions "
+            f"({len(set(s['problem_id'] for s in submissions))} unique problem_ids): {body}"
+        )
+    raise RuntimeError("CritPt AA API: exhausted retries without a response")  # unreachable
 
 
 if __name__ == "__main__":
