@@ -51,18 +51,18 @@ The NeMo RL container is hosted on NVIDIA GPU Cloud (NGC), which requires authen
 
 1. Go to [NGC API Keys](https://org.ngc.nvidia.com/setup/api-keys)
 2. Click **Generate API Key**
-3. Copy the generated key (you won't be able to see it again)
+3. Copy the generated key now—you cannot view it again.
 
 :::{important}
-Store your API key securely. You'll need it for container authentication.
+Store your API key securely. You will need it for container authentication.
 :::
 
 ### Authenticate with Docker
 
-If you're using Docker as your container runtime:
+If you are using Docker as your container runtime:
 
 ```bash
-# Login to NGC registry
+# Log in to the NGC registry
 docker login nvcr.io
 
 # When prompted:
@@ -74,7 +74,7 @@ docker login nvcr.io
 
 ### Authenticate with enroot
 
-If you're using enroot as your container runtime:
+If you are using enroot as your container runtime:
 
 ```bash
 # Create credentials file
