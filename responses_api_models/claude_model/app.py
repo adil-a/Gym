@@ -19,7 +19,7 @@ from time import time
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from pydantic import Field
 
 from nemo_gym.base_responses_api_model import (
@@ -52,6 +52,7 @@ class ClaudeModelConfig(BaseResponsesAPIModelConfig):
     anthropic_model: str
     max_tokens: int
     anthropic_version: str = "2023-06-01"
+    thinking: Optional[Dict[str, Any]] = None
     thinking_budget_tokens: Optional[int] = None
     max_concurrent_requests: Optional[int] = Field(
         default=None,
@@ -77,13 +78,17 @@ class ClaudeModel(SimpleResponsesAPIModel):
     async def responses(
         self, request: Request, body: NeMoGymResponseCreateParamsNonStreaming = Body()
     ) -> NeMoGymResponse:
-        anthropic_body = self._converter.responses_to_anthropic(
-            body=body,
-            model=self.config.anthropic_model,
-            max_tokens=self.config.max_tokens,
-            thinking_budget_tokens=self.config.thinking_budget_tokens,
-            extra_body=self.config.extra_body,
-        )
+        try:
+            anthropic_body = self._converter.responses_to_anthropic(
+                body=body,
+                model=self.config.anthropic_model,
+                max_tokens=self.config.max_tokens,
+                thinking=self.config.thinking,
+                thinking_budget_tokens=self.config.thinking_budget_tokens,
+                extra_body=self.config.extra_body,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         async with self._semaphore:
             anthropic_response = await self._messages_create(anthropic_body, cookies=request.cookies)
 
@@ -125,6 +130,7 @@ class ClaudeConverter:
         body: NeMoGymResponseCreateParamsNonStreaming,
         model: str,
         max_tokens: int,
+        thinking: Optional[Dict[str, Any]],
         thinking_budget_tokens: Optional[int],
         extra_body: Dict[str, Any],
     ) -> Dict[str, Any]:
@@ -179,15 +185,57 @@ class ClaudeConverter:
             anthropic_body["system"] = self._system_parts_to_anthropic_blocks(system_parts)
 
         self._copy_sampling_params(body_dict, anthropic_body)
+        self._validate_sampling_params_for_model(model, anthropic_body)
         self._copy_tools(body_dict, anthropic_body)
         self._copy_tool_choice(body_dict, anthropic_body)
-        if thinking_budget_tokens is not None:
+        self._copy_thinking_params(
+            anthropic_body=anthropic_body,
+            thinking=thinking,
+            thinking_budget_tokens=thinking_budget_tokens,
+        )
+
+        return anthropic_body
+
+    def _copy_thinking_params(
+        self,
+        anthropic_body: Dict[str, Any],
+        thinking: Optional[Dict[str, Any]],
+        thinking_budget_tokens: Optional[int],
+    ) -> None:
+        configured_sources = sum(
+            source_is_set
+            for source_is_set in (
+                "thinking" in anthropic_body,
+                thinking is not None,
+                thinking_budget_tokens is not None,
+            )
+        )
+        if configured_sources > 1:
+            raise ValueError(
+                "Configure Claude thinking in only one place: thinking, thinking_budget_tokens, or extra_body."
+            )
+
+        if thinking is not None:
+            anthropic_body["thinking"] = thinking
+        elif thinking_budget_tokens is not None:
             anthropic_body["thinking"] = {
                 "type": "enabled",
                 "budget_tokens": thinking_budget_tokens,
             }
 
-        return anthropic_body
+    def _validate_sampling_params_for_model(self, model: str, anthropic_body: Dict[str, Any]) -> None:
+        if not self._model_disallows_sampling_params(model):
+            return
+        configured_sampling_params = [
+            param for param in ("temperature", "top_p", "top_k") if anthropic_body.get(param) is not None
+        ]
+        if configured_sampling_params:
+            raise ValueError(
+                f"{model} does not support configurable sampling parameters; omit {configured_sampling_params}."
+            )
+
+    def _model_disallows_sampling_params(self, model: str) -> bool:
+        return any(model_id in model for model_id in ("claude-opus-4-7", "claude-opus-4-8"))
 
     def anthropic_to_responses(
         self,
@@ -235,7 +283,7 @@ class ClaudeConverter:
 
         usage = self._usage_to_responses_usage(anthropic_response.get("usage"))
         stop_reason = anthropic_response.get("stop_reason")
-        incomplete_details = {"reason": "max_output_tokens"} if stop_reason == "max_tokens" else None
+        incomplete_details = self._incomplete_details_from_stop_reason(stop_reason)
 
         return NeMoGymResponse(
             id=f"resp_{uuid4().hex}",
@@ -264,6 +312,13 @@ class ClaudeConverter:
             incomplete_details=incomplete_details,
             usage=usage,
         )
+
+    def _incomplete_details_from_stop_reason(self, stop_reason: Optional[str]) -> Optional[Dict[str, str]]:
+        if stop_reason in ("max_tokens", "model_context_window_exceeded"):
+            return {"reason": "max_output_tokens"}
+        if stop_reason == "refusal":
+            return {"reason": "content_filter"}
+        return None
 
     def _normalize_input(self, response_input: Any) -> List[Dict[str, Any]]:
         if isinstance(response_input, str):

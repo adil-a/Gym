@@ -17,6 +17,7 @@ import json
 from contextlib import nullcontext
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from nemo_gym.openai_utils import NeMoGymResponseCreateParamsNonStreaming
@@ -80,6 +81,7 @@ class TestClaudeConverter:
             body=body,
             model="claude-sonnet-4-20250514",
             max_tokens=4096,
+            thinking=None,
             thinking_budget_tokens=1024,
             extra_body={"metadata": {"request_id": "abc"}},
         )
@@ -186,11 +188,104 @@ class TestClaudeConverter:
         assert response.usage.total_tokens == 30
         assert response.usage.input_tokens_details.cached_tokens == 3
 
+    def test_anthropic_to_responses_maps_stop_reasons_to_incomplete_details(self) -> None:
+        converter = ClaudeConverter()
+        request_body = NeMoGymResponseCreateParamsNonStreaming(input="hello")
+
+        base_response = {
+            "id": "msg_123",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-20250514",
+            "content": [{"type": "text", "text": "Partial response."}],
+        }
+
+        max_tokens_response = converter.anthropic_to_responses(
+            anthropic_response=base_response | {"stop_reason": "max_tokens"},
+            request_body=request_body,
+            model="claude-sonnet-4-20250514",
+        )
+        assert max_tokens_response.incomplete_details.reason == "max_output_tokens"
+
+        context_response = converter.anthropic_to_responses(
+            anthropic_response=base_response | {"stop_reason": "model_context_window_exceeded"},
+            request_body=request_body,
+            model="claude-sonnet-4-20250514",
+        )
+        assert context_response.incomplete_details.reason == "max_output_tokens"
+
+        refusal_response = converter.anthropic_to_responses(
+            anthropic_response=base_response | {"stop_reason": "refusal"},
+            request_body=request_body,
+            model="claude-sonnet-4-20250514",
+        )
+        assert refusal_response.incomplete_details.reason == "content_filter"
+
+        tool_use_response = converter.anthropic_to_responses(
+            anthropic_response=base_response | {"stop_reason": "tool_use"},
+            request_body=request_body,
+            model="claude-sonnet-4-20250514",
+        )
+        assert tool_use_response.incomplete_details is None
+
+    def test_responses_to_anthropic_maps_typed_adaptive_thinking(self) -> None:
+        converter = ClaudeConverter()
+        body = NeMoGymResponseCreateParamsNonStreaming(input="Hello")
+
+        actual = converter.responses_to_anthropic(
+            body=body,
+            model="claude-opus-4-8",
+            max_tokens=1024,
+            thinking={"type": "adaptive"},
+            thinking_budget_tokens=None,
+            extra_body={},
+        )
+
+        assert actual["thinking"] == {"type": "adaptive"}
+
+    def test_responses_to_anthropic_rejects_ambiguous_thinking_config(self) -> None:
+        converter = ClaudeConverter()
+        body = NeMoGymResponseCreateParamsNonStreaming(input="Hello")
+
+        with pytest.raises(ValueError, match="Configure Claude thinking in only one place"):
+            converter.responses_to_anthropic(
+                body=body,
+                model="claude-opus-4-8",
+                max_tokens=1024,
+                thinking={"type": "adaptive"},
+                thinking_budget_tokens=1024,
+                extra_body={},
+            )
+
+    def test_responses_to_anthropic_rejects_opus_4_8_sampling_params(self) -> None:
+        converter = ClaudeConverter()
+
+        with pytest.raises(ValueError, match="does not support configurable sampling"):
+            converter.responses_to_anthropic(
+                body=NeMoGymResponseCreateParamsNonStreaming(input="Hello", temperature=0.2),
+                model="claude-opus-4-8",
+                max_tokens=1024,
+                thinking={"type": "adaptive"},
+                thinking_budget_tokens=None,
+                extra_body={},
+            )
+
+        with pytest.raises(ValueError, match="does not support configurable sampling"):
+            converter.responses_to_anthropic(
+                body=NeMoGymResponseCreateParamsNonStreaming(input="Hello"),
+                model="us/aws/anthropic/eccn-claude-opus-4-8",
+                max_tokens=1024,
+                thinking={"type": "adaptive"},
+                thinking_budget_tokens=None,
+                extra_body={"top_k": 5},
+            )
+
 
 class TestClaudeModel:
     def _setup_server(
         self,
         max_concurrent_requests=None,
+        thinking=None,
         thinking_budget_tokens=None,
         anthropic_model="claude-sonnet-4-20250514",
         max_tokens=4096,
@@ -207,6 +302,7 @@ class TestClaudeModel:
             entrypoint="",
             name="",
             max_concurrent_requests=max_concurrent_requests,
+            thinking=thinking,
             thinking_budget_tokens=thinking_budget_tokens,
             extra_body=extra_body or {},
         )
@@ -278,9 +374,7 @@ class TestClaudeModel:
         server = self._setup_server(
             anthropic_model="claude-opus-4-6",
             max_tokens=1024,
-            extra_body={
-                "thinking": {"type": "adaptive"},
-            },
+            thinking={"type": "adaptive"},
         )
         app = server.setup_webserver()
         client = TestClient(app)
@@ -363,6 +457,16 @@ class TestClaudeModel:
         assert json.loads(response_body["output"][2]["arguments"]) == {"location": "NYC"}
         assert response_body["usage"]["input_tokens"] == 11
         assert response_body["usage"]["output_tokens"] == 7
+
+    def test_responses_endpoint_rejects_opus_4_8_sampling_params(self) -> None:
+        server = self._setup_server(anthropic_model="claude-opus-4-8", thinking={"type": "adaptive"})
+        app = server.setup_webserver()
+        client = TestClient(app)
+
+        response = client.post("/v1/responses", json={"input": "hello", "temperature": 0.2})
+
+        assert response.status_code == 400
+        assert "does not support configurable sampling" in response.json()["detail"]
 
     def test_semaphore_disabled_by_default(self) -> None:
         server = self._setup_server()

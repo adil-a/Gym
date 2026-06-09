@@ -7,6 +7,7 @@ policy_model:
       anthropic_model: ${policy_model_name}
       max_tokens: 4096
       anthropic_version: "2023-06-01"
+      thinking: null
       thinking_budget_tokens: null
       max_concurrent_requests: null
       extra_body: {}

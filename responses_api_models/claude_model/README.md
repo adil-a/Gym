@@ -10,12 +10,23 @@ Start with a resources server config and the Claude model config:
 
 ```bash
 ng_run "+config_paths=[resources_servers/example_single_tool_call/configs/example_single_tool_call.yaml,responses_api_models/claude_model/configs/claude_model.yaml]" \
-  +policy_base_url=https://inference-api.nvidia.com/v1 \
-  '+policy_api_key=${anthropic_api_key}' \
-  +policy_model_name=us/aws/anthropic/eccn-claude-opus-4-8
+  +policy_base_url="$ANTHROPIC_BASE_URL" \
+  +policy_api_key="$ANTHROPIC_API_KEY" \
+  +policy_model_name="$ANTHROPIC_MODEL_NAME"
 ```
 
 `anthropic_base_url` accepts either host-only or `/v1` style URLs. Both `https://api.anthropic.com` and `https://api.anthropic.com/v1` resolve to `/v1/messages`.
+
+This example uses the simple agent harness because it exercises `claude_model` as the policy model server through NeMo Gym's `/v1/responses` interface. `claude_code_agent` is a separate agent harness that invokes Claude Code/Anthropic directly, so it is useful for testing Claude Code workflows but does not validate this model server.
+
+For modern Claude models, prefer adaptive thinking with the typed `thinking` config:
+
+```yaml
+thinking:
+  type: adaptive
+```
+
+`thinking_budget_tokens` remains available for older models that require manual `thinking: {type: enabled, budget_tokens: ...}`.
 
 Minimal direct smoke test once the model server is running:
 
@@ -43,7 +54,9 @@ ng_collect_rollouts \
 
 # Notes
 
-Provider-specific Anthropic fields that are not in NeMo Gym's shared Responses schema can be passed through `extra_body`. Some options are mutually constrained by Anthropic; for example, adaptive/extended thinking is not compatible with `top_k`, and `top_p` must stay in the supported thinking range.
+Provider-specific Anthropic fields that are not modeled as typed config can be passed through `extra_body`. Some options are model-specific: Claude Opus 4.7 and 4.8 reject configurable sampling parameters (`temperature`, `top_p`, `top_k`), so omit them and use prompting or adaptive thinking/effort controls instead.
+
+Anthropic `stop_reason` values are mapped to Responses-compatible `incomplete_details` when possible. `max_tokens` and `model_context_window_exceeded` map to `max_output_tokens`; `refusal` maps to `content_filter`. Other stop reasons such as `end_turn`, `tool_use`, and `pause_turn` remain complete responses.
 
 # Licensing information
 
