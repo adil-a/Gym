@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,23 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import importlib
-from typing import Dict
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 import gymnasium as gym
-from fastapi import FastAPI, HTTPException, Request
-from gymnasium import Env
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import HTTPException
+from pydantic import Field
 
-from nemo_gym.base_resources_server import (
-    BaseResourcesServerConfig,
-    BaseSeedSessionRequest,
-    BaseSeedSessionResponse,
-    BaseVerifyRequest,
-    BaseVerifyResponse,
-    SimpleResourcesServer,
-)
-from nemo_gym.server_utils import SESSION_ID_KEY
+from nemo_gym.base_resources_server import BaseResourcesServerConfig
+from nemo_gym.openai_utils import NeMoGymResponse
+from resources_servers.gymnasium import GymnasiumServer, extract_text
+
+
+_DELTA_REWARD_FRAMEWORKS = {"textworld"}
 
 
 class TALESResourcesServerConfig(BaseResourcesServerConfig):
@@ -35,331 +34,125 @@ class TALESResourcesServerConfig(BaseResourcesServerConfig):
     framework: str = "alfworld"
     task_no: int = 0
     seed: int = 0
-    split: str = "train"  # "train" or "test"
-    max_episode_steps: int = 25  # If not provided, use default from config
+    split: str = "train"
+    max_episode_steps: int = 25
 
 
-class TALESSeedSessionResponse(BaseSeedSessionResponse):
+@dataclass
+class TALESSessionState:
+    env: Any
+    framework: str
     observation: str
-    score: float
-    done: bool
-    info: dict
-    session_id: str
-    available_tasks: int
-    admissible_commands: list[str] | None = None
-
-
-class ExecuteCommandResponse(BaseModel):
-    observation: str
-    score: float
-    done: bool
-    info: dict
-    admissible_commands: list[str] | None = None
-
-
-class ExecuteCommandRequest(BaseModel):
-    command: str
-    session_id: str
-
-
-class ExecuteCommandRequestBug(BaseModel):
-    command: str
-
-
-class ExecuteResetResponse(BaseModel):
-    observation: str
-    infos: dict
-
-
-class ExecuteResetRequest(BaseModel):
-    pass
-
-
-class TALESVerifyRequest(BaseVerifyRequest):
-    pass
-
-
-class TALESVerifyResponse(BaseVerifyResponse):
-    observation: str
-    score: float
-    done: bool
-    info: dict
-    admissible_commands: list[str] | None = None
-    responses_create_params: Dict | None = None
-    response: Dict | None = None
-
-
-class TALESSeedSessionRequest(BaseSeedSessionRequest):
-    framework: str | None = None
-    task_no: int | None = None
-    split: str | None = None  # "train" or "test"
-    max_episode_steps: int | None = None  # If not provided, use default from config
-    seed: int | None = None  # If not provided, use default from config
-
-
-class TALESRequest(BaseModel):
-    session_id: str | None = None
-    command: str | None = None
-
-
-class TALESResponse(BaseModel):
-    observation: str
-    score: float
-    done: bool
-    info: dict
-    admissible_commands: list[str] | None = None
-
-
-class TALESResourcesServer(SimpleResourcesServer):
-    config: TALESResourcesServerConfig
-    session_id_to_env: Dict[str, Env] = Field(default_factory=dict)
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    framework: str = ""
+    max_episode_steps: int
     last_score: float = 0.0
     total_score: float = 0.0
-    last_env_used: Env | None = None
+    step_count: int = 0
+    done: bool = False
+    last_info: Dict[str, Any] = field(default_factory=dict)
 
-    def setup_webserver(self) -> FastAPI:
-        app = super().setup_webserver()
-        # Seed session at start up in case it isnt called:
-        app.post("/seed_session")(self.seed_session)
-        app.post("/{path}")(self.route_to_python_function)
-        return app
 
-    async def route_to_python_function(self, path: str, body: TALESRequest, request: Request) -> TALESResponse:
-        session_id = request.session[SESSION_ID_KEY]
+class TALESResourcesServer(GymnasiumServer):
+    config: TALESResourcesServerConfig
+    session_id_to_state: Dict[str, TALESSessionState] = Field(default_factory=dict)
 
-        # Check if session exists
-        if session_id not in self.session_id_to_env and body.session_id not in self.session_id_to_env:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Session id: {session_id} not initialized. Please call seed_session first.",
-            )
-        if session_id != body.session_id:
-            session_id = body.session_id
+    async def reset(self, metadata: dict, session_id: Optional[str] = None) -> tuple[Optional[str], dict]:
+        if session_id is None:
+            raise HTTPException(status_code=400, detail="Missing session id.")
 
-        args = {key: value for key, value in body.model_dump(exclude_unset=True).items() if value is not None}
+        framework = self._resolve(metadata, "framework")
+        task_no = self._resolve(metadata, "task_no")
+        split = self._resolve(metadata, "split")
+        seed = self._resolve(metadata, "seed")
+        max_episode_steps = self._resolve(metadata, "max_episode_steps")
 
         try:
-            if "session_id" in args.keys() and "command" in args.keys():
-                return await self.execute_command(request, ExecuteCommandRequest(**args))
-            elif "command" in args.keys():
-                return await self.execute_bug(request, ExecuteCommandRequestBug(**args))
-            else:
-                return await self.reset(request)
+            framework_module = importlib.import_module(f"tales.{framework}")
         except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Error trying to execute command {args}, request body: {request}, Exception \n{e}\n",
-            )
-
-    async def seed_session(self, request: Request, body: TALESSeedSessionRequest) -> TALESSeedSessionResponse:
-        session_id = request.session[SESSION_ID_KEY]
-
-        # Lazy importing to avoid slowdown from loading all of the environments if not used
-        # Check if framework and other start info was sent in the request body, otherwise use the defaults from config
-        if body.framework is not None:
-            framework_path = f"tales.{body.framework}"
-        else:
-            framework_path = f"tales.{self.config.framework}"
-
-        self.framework = framework_path
-        self.last_score = 0
-        self.total_score = 0
-
-        if body.task_no is not None:
-            task_no = body.task_no
-        else:
-            task_no = self.config.task_no
-
-        if body.split is not None:
-            split = body.split
-        else:
-            split = self.config.split
-
-        if body.seed is not None:
-            self.config.seed = body.seed
-
-        framework = importlib.import_module(framework_path)
+            raise HTTPException(status_code=400, detail=f"Could not load TALES framework '{framework}': {e!r}")
 
         if split == "train":
-            envs = framework.train_environments
+            envs = getattr(framework_module, "train_environments", None) or framework_module.environments
         else:
-            envs = framework.environments
-
-        # Make sure the task number is within the range of available tasks. If not, return an error:
+            envs = framework_module.environments
         if task_no < 0 or task_no >= len(envs):
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid task number {task_no}. Please choose a task number between 0 and {len(envs) - 1}.",
+                detail=f"Invalid task number {task_no} for framework '{framework}' (split '{split}'). "
+                f"Choose 0..{len(envs) - 1}.",
             )
+
+        self._close_env(session_id)
+
         task = envs[task_no]
-
         env_key = f"{task[0]}-{task[1]}"
-        env = gym.make(id=f"tales/{env_key}", disable_env_checker=True, admissible_commands=True)
+        make_kwargs: dict[str, Any] = {"disable_env_checker": True, "admissible_commands": True}
+        if framework == "scienceworld":
+            make_kwargs["split"] = split
+        try:
+            env = gym.make(id=f"tales/{env_key}", **make_kwargs)
+            obs, info = env.reset(seed=seed)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not launch TALES env 'tales/{env_key}': {e!r}")
 
-        obs, info = env.reset()
-
-        self.session_id_to_env[session_id] = env
-        self.last_env_used = env
-
-        response = TALESSeedSessionResponse(
-            observation=obs, done=False, score=0, info=info, session_id=session_id, available_tasks=len(envs)
-        )
-
-        if self.config.expose_admissible_commands and "admissible_commands" in info.keys():
-            response.admissible_commands = info["admissible_commands"]
-
-        return response
-
-    async def reset(self, request: Request) -> ExecuteResetResponse:
-        session_id = request.session[SESSION_ID_KEY]
-
-        if session_id not in self.session_id_to_env:
-            raise HTTPException(
-                status_code=400,
-                detail="Session not initialized. Please call seed_session first.",
-            )
-        env = self.session_id_to_env[session_id]
-        obs, info = env.reset(self.config.seed)
-
-        response = ExecuteResetResponse(
+        self.session_id_to_state[session_id] = TALESSessionState(
+            env=env,
+            framework=framework,
             observation=obs,
-            score=0,
-            done=False,
-            info=info,
-            session_id_key=SESSION_ID_KEY,
+            max_episode_steps=max_episode_steps,
         )
+        return obs, self._build_info(info)
 
-        if self.config.expose_admissible_commands and "admissible_commands" in info:
-            response.admissible_commands = info["admissible_commands"]
+    async def step(
+        self, action: NeMoGymResponse, metadata: dict, session_id: Optional[str] = None
+    ) -> tuple[Optional[str], float, bool, bool, dict]:
+        if session_id is None or session_id not in self.session_id_to_state:
+            raise HTTPException(status_code=400, detail="Session not initialized. Call /reset first.")
 
-        return response
+        state = self.session_id_to_state[session_id]
+        if state.done:
+            return state.observation, 0.0, True, False, dict(state.last_info)
 
-    async def execute_command(self, request: Request, body: ExecuteCommandRequest) -> ExecuteCommandResponse:
-        # If session id is not provided, use the last environment used
-        if "session_id" in body.model_dump().keys() and body.session_id is not None:
-            session_id = request.session[SESSION_ID_KEY]
-            session_id = body.session_id if body.session_id is not None else session_id
-            if (
-                session_id not in self.session_id_to_env and body.session_id not in self.session_id_to_env
-            ) or not self.framework:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Session id {session_id} and {body.session_id} not initialized. Please call seed_session first.",
-                )
+        command = extract_text(action).strip()
+        obs, score, done, info = state.env.step(command)
 
-            env = self.session_id_to_env[session_id]
+        if state.framework in _DELTA_REWARD_FRAMEWORKS:
+            reward = float(score - state.last_score)
         else:
-            if self.last_env_used is None or not self.framework:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No environment has been used yet. Please call seed_session first.",
-                )
-            env = self.last_env_used
+            reward = float(score)
+        state.last_score = float(score)
+        state.total_score += reward
+        state.step_count += 1
+        state.observation = obs
+        state.done = bool(done)
 
-        obs, score, done, info = env.step(body.command)
-        # print(f"Command: {body.command}\nObservation: {obs}\nScore: {score}\nDone: {done}\nInfo: {info}\n")
-        if self.framework == "textworld":
-            if score != self.last_score:
-                reward = float(score - self.last_score)
-                self.last_score = score
-            else:
-                reward = 0
-        else:
-            reward = score
+        terminated = state.done
+        truncated = (not terminated) and state.step_count >= state.max_episode_steps
 
-        self.total_score += reward
-        self.last_score = score
+        state.last_info = self._build_info(info) | {
+            "score": score,
+            "total_score": state.total_score,
+            "step_count": state.step_count,
+        }
+        return obs, reward, terminated, truncated, dict(state.last_info)
 
-        response = ExecuteCommandResponse(observation=obs, score=self.total_score, done=done, info=info, reward=reward)
+    def _resolve(self, metadata: dict, key: str) -> Any:
+        value = metadata.get(key)
+        return value if value is not None else getattr(self.config, key)
 
-        if self.config.expose_admissible_commands and "admissible_commands" in info:
-            response.admissible_commands = info["admissible_commands"]
+    def _build_info(self, info: dict) -> dict:
+        info = dict(info or {})
+        if not self.config.expose_admissible_commands:
+            info.pop("admissible_commands", None)
+        return info
 
-        return response
-
-    async def execute_bug(self, request: Request, body: ExecuteCommandRequestBug) -> ExecuteCommandResponse:
-        # If session id is not provided, use the last environment used
-        if self.last_env_used is None or not self.framework:
-            raise HTTPException(
-                status_code=400,
-                detail="No environment has been used yet. Please call seed_session first.",
-            )
-
-        session_id = request.session[SESSION_ID_KEY]
-        env = self.session_id_to_env[session_id]
-        obs, score, done, info = env.step(body.command)
-        # print(f"Command: {body.command}\nObservation: {obs}\nScore: {score}\nDone: {done}\nInfo: {info}\n")
-        if self.framework == "textworld":
-            if score != self.last_score:
-                reward = float(score - self.last_score)
-                self.last_score = score
-            else:
-                reward = 0
-        else:
-            reward = score
-
-        self.total_score += reward
-        self.last_score = score
-
-        response = ExecuteCommandResponse(observation=obs, score=self.total_score, done=done, info=info, reward=reward)
-
-        if self.config.expose_admissible_commands and "admissible_commands" in info:
-            response.admissible_commands = info["admissible_commands"]
-
-        return response
-
-    async def verify(self, request: Request, body: TALESVerifyRequest) -> TALESVerifyResponse:
-        # If session id is not provided, use the last environment used
-        if "session_id" in body.model_dump().keys() and body.session_id is not None:
-            session_id = request.session[SESSION_ID_KEY]
-            session_id = body.session_id if body.session_id is not None else session_id
-            if (
-                session_id not in self.session_id_to_env and body.session_id not in self.session_id_to_env
-            ) or not self.framework:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Session id {session_id} and {body.session_id} not initialized. Please call seed_session first.",
-                )
-
-            env = self.session_id_to_env[session_id]
-        else:
-            if self.last_env_used is None or not self.framework:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No environment has been used yet. Please call seed_session first.",
-                )
-            env = self.last_env_used
-
-        command = body.response.output[0].model_dump()["content"][0]["text"]
-        obs, score, done, info = env.step(command)
-        if self.framework == "textworld":
-            if score != self.last_score:
-                reward = float(score - self.last_score)
-                self.last_score = score
-            else:
-                reward = 0
-        else:
-            reward = score
-
-        self.total_score += reward
-        self.last_score = score
-
-        response = TALESVerifyResponse(
-            observation=obs,
-            score=self.total_score,
-            done=done,
-            info=info,
-            reward=reward,
-            responses_create_params=body.responses_create_params.model_dump(),
-            response=body.response.model_dump(),
-        )
-
-        if self.config.expose_admissible_commands and "admissible_commands" in info:
-            response.admissible_commands = info["admissible_commands"]
-
-        return response
+    def _close_env(self, session_id: str) -> None:
+        state = self.session_id_to_state.pop(session_id, None)
+        if state is None:
+            return
+        try:
+            state.env.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -1,150 +1,82 @@
 # TALES Resource Server
 
-Integrates: [TALES](https://github.com/microsoft/tale-suite)
+Integrates [TALES](https://github.com/microsoft/tale-suite)
 
-Specifically, this uses the tt_split branch which provides both a set of tasks for training and evaluation.
+Specifically, this uses the `tt_split` branch, which provides both a set of tasks for
+training and evaluation across five text-adventure frameworks: `textworld`,
+`textworld_express`, `alfworld`, `scienceworld`, and `jericho`.
 
-Partially based on code at [draft textworld implementation](https://github.com/NVIDIA-NeMo/Gym/tree/cmunley1/textworld/resources_servers/textworld) and [workbench](https://github.com/NVIDIA-NeMo/Gym/tree/main/resources_servers/workbench)
+This server is a thin adapter over each framework's Gymnasium environment, built on
+NeMo Gym's [`GymnasiumServer`](../gymnasium/base.py) step/reset base class and driven by
+the shared [`gymnasium_agent`](../../responses_api_agents/gymnasium_agent). The agent calls
+`/reset` once, then loops `/step` (feeding each observation back as a `user` turn) until the
+episode terminates or truncates. The environment itself supplies the reward, so it acts as
+its own verifier.
 
-You need Java to run Scienceworld. If you don't have it, you'll get an error message but should otherwise be uneffected if you are using other environments.
+## Install
 
-This can be installed with 
-`sudo apt-get update && apt-get install default-jre default-jdk`
+`tale-suite` is pinned in `requirements.txt` (installed automatically with the server's
+venv). `textworld_express` and `scienceworld` need a JRE/JDK (they launch a Java gateway
+via py4j); `textworld`, `alfworld`, and `jericho` run without it. The Java binary must be on
+the server process's `PATH`.
 
-## Multi-Turn vs. Single-Turn
-TALES is natively a multi-turn environment for evaluating the reasoning capabilities of LLMs, where observations are provided as `user` inputs while the agent's past actions are represented as `assistant` inputs. The *_clean.jsonl shows some examples from each framework for how the message history looks.
-
-For compatability with NeMo Gym, we provide an alternative single-turn formulation where the entire observation-action history is condensed into the content of the first 'user' message and the LLM is queried for the next action.
-
-Please see the README.md under the single_turn and multi_turn folders of example_scripts for more information and code samples.
-
-## Verifiers and Walkthroughts
-All environments within TALES have a reward (or score) provided by the underlying gynmasium implementation. Because of this, the environment itself acts as a verifier.
-
-Walkthroughs for each environment are also provided. (See generate_single_turn_rollouts.py under example_scripts/single_turn for an example of how to access them.)
-
-Note, the action sequence in the walkthroughs are often not the only unique sequence of actions that can complete the task. A number of environments in TALES also use nearest-neighbour parsers. This means that, for example, the actions `take lantern`, `get lantern`, and `pick up lantern`, may all be interpreted to be declaring the same intent. For this reason, we recommend that the action is sent to the environment itself for feedback rather than attempting string-matching with the walkthrough.
-
-## CONTRIBUTING.md Notes:
-All of the .jsonl files that are in the top level of the data folder are from the single_turn examples. We place them here to pass the checks on the PR.
-
-## Key App Functions:
-*/seed_session*:
-This is largely used to initialize the environment as well as switch tasks (CookingWorld1, CookingWorld2, etc) or frameworks (Textworld, Textworld_Express, etc).
-This function also automatically calls 'reset' and returns the corresponding observation and information. If you want to switch the environment, you can call /seed_session. If you want to just reset the current environment, call /reset.
-Input example:
-```
-{
-  "framework": "alfworld",
-  "split": "train",
-  "task_no": 0,
-  "seed": 123
-}
-```
-All arguments are optional and will default to the values in the config if not used.
-
-Response example:
-```
-{
-  "observation": "You are in a kitchen...",
-  "score": 0.0,
-  "done": false,
-  "info": { "admissible_commands": ["look", "inventory"] },
-  "session_id": "c8a1f3e2-...",
-  "available_tasks": 54,
-  "admissible_commands": ["look", "inventory"]
-}
+```bash
+# Linux
+sudo apt-get update && sudo apt-get install -y default-jre default-jdk
+# macOS
+brew install openjdk
+export JAVA_HOME="$(brew --prefix)/opt/openjdk/libexec/openjdk.jdk/Contents/Home"
+export PATH="$(brew --prefix)/opt/openjdk/bin:$PATH"
 ```
 
-*/execute_command*:
-Sends the command to the environment and returns the output. For now, we need to include the `session_id` due to some issues with the wrong server being queried otherwise. If `session_id` is not included, then we default to the last used environment by the server.
-Input example:
-```
-{
-  "session_id": "c8a1f3e2-...",
-  "command": "look"
-}
-```
-Response example:
-```
-{
-  "observation": "You see a fridge and a table...",
-  "score": 0.0,
-  "done": false,
-  "info": { "...": "..." },
-  "admissible_commands": ["open fridge", "open table drawer"]
-}
+## Per-task selection
+
+Each dataset row selects a task via top-level keys (they arrive as `metadata` in
+`reset()`); anything omitted falls back to the server config in `configs/tales.yaml`:
+
+| field | meaning |
+|---|---|
+| `framework` | one of `textworld`, `textworld_express`, `alfworld`, `scienceworld`, `jericho` |
+| `task_no` | index into the framework's task list |
+| `split` | `train` or `test` |
+| `seed` | environment seed |
+| `max_episode_steps` | turns before the episode is truncated |
+
+Example row (`data/example.jsonl`):
+
+```json
+{"framework": "alfworld", "task_no": 0, "split": "train", "seed": 1234,
+ "responses_create_params": {"input": [{"role": "system", "content": "You are playing a text-based game..."}]},
+ "agent_ref": {"type": "responses_api_agents", "name": "tales_gymnasium_agent"}}
 ```
 
-*/execute_bug*:
-Illustrates the session_id binding error. To be removed once fixed.
-Input example:
-```
-{
-  "command": "look"
-}
-```
-Response example (Intended, currently will result in a 'session not found' error):
-```
-{
-  "observation": "You see a fridge and a table...",
-  "score": 0.0,
-  "done": false,
-  "info": { "...": "..." },
-  "admissible_commands": ["open fridge", "open table drawer"]
-}
+## Reward & walkthroughs
+
+Reward comes from the underlying Gymnasium env. For `textworld` the env reports a
+cumulative score, so per-step reward is the score delta, while the other frameworks should already
+report per-step reward. Ground-truth walkthroughs exist but are not unique, some envs use
+nearest-neighbour parsers (eg `take lantern` / `get lantern` / `pick up lantern` are
+equivalent), so acceptance is determined by stepping through the env, not by string-matching a
+walkthrough.
+
+Set `expose_admissible_commands: true` in the config to surface each env's
+`admissible_commands` in the step/reset `info`.
+
+## Run
+
+```bash
+# Set inference endpoint in env.yaml as in other Gym environments, then
+
+# Start environment 
+ng_run "+config_paths=[resources_servers/tales/configs/tales.yaml,responses_api_models/vllm_model/configs/vllm_model.yaml]"
+
+# Collect example rollouts
+ng_collect_rollouts \
+  +agent_name=tales_gymnasium_agent \
+  +input_jsonl_fpath=resources_servers/tales/data/example.jsonl \
+  +output_jsonl_fpath=results/tales_rollouts.jsonl \
+  +num_repeats=1
 ```
 
-*/verify*:
-Since the environment itself acts as a verifier, we basically treat the `verify` function as a step command, the same as `execute_command`. For now, we're keeping them seperate but may change them in the future.
-
-Input example:
-```
-{
-  "responses_create_params": {The input to the model...},
-  "response": {"content":["text": "do something..."]}
-}
-```
-Response example:
-```
-{
-  "observation": "Feedback from doing something...",
-  "score": 0.0,
-  "done": false,
-  "info": { "...": "..." },
-  "admissible_commands": ["open fridge", "open table drawer"],
-  "responses_create_params": {The input to the model...},
-  "response": {"content":["text": "do something..."]}
-}
-```
-
-
-*/reset*:
-Resets the environment.
-
-Input example:
-```
-{
-  "session_id": "c8a1f3e2-..."
-}
-```
-Response example:
-```
-{
-  "observation": "You are in a kitchen...",
-  "score": 0.0,
-  "done": false,
-  "info": { "...": "..." },
-  "admissible_commands": ["look", "inventory"]
-}
-```
-
-
-# Future Updates
-(Things to add when time/infra allows):
-1. True Multi-turn Examples: Waiting for response from NeMo developers about including 'assistant' role messages.
-2. Example RL Training: Waiting for integration.
-3. Tool-Use Agent and corresponding resource server functions: Needs testing and validation before pushing.
-4. Better way of passing in tasks
-5. Remove request for admissible commands from execute command/verify (this should only be on environment seeding/reset)
-6. More detailed README about TALES envs
+For reasoning models that emit `<think>…</think>`, start vLLM with the appropriate
+`--reasoning-parser`.
