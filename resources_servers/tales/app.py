@@ -26,9 +26,6 @@ from nemo_gym.openai_utils import NeMoGymResponse
 from resources_servers.gymnasium import GymnasiumServer, extract_text
 
 
-_DELTA_REWARD_FRAMEWORKS = {"textworld"}
-
-
 class TALESResourcesServerConfig(BaseResourcesServerConfig):
     expose_admissible_commands: bool = False
     framework: str = "alfworld"
@@ -115,7 +112,7 @@ class TALESResourcesServer(GymnasiumServer):
         command = extract_text(action).strip()
         obs, score, done, info = state.env.step(command)
 
-        if state.framework in _DELTA_REWARD_FRAMEWORKS:
+        if state.framework == "textworld":
             reward = float(score - state.last_score)
         else:
             reward = float(score)
