@@ -2081,7 +2081,7 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
 
         self._swe_bench_wrapper_server_config = SWEBenchWrapperServerConfig(
             run_session_id=run_session_id,
-            base_results_dir=workspace_root / f"swebench_results_{run_session_id}",
+            base_results_dir=workspace_root / "results" / f"swebench_results_{run_session_id}",
             ng_global_config_dict_str=shlex.quote(OmegaConf.to_yaml(get_global_config_dict())),
             model_server_name=self.config.model_server.name,
             openhands_setup_dir=openhands_setup_dir,
