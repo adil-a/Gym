@@ -1088,6 +1088,51 @@ printf '{{"_test_completed": true, "exit_code": %d}}\\n' $TEST_EXIT \
 
 
 class OpenHandsHarnessProcessor(BaseDatasetHarnessProcessor):
+    def _sync_openhands_to_config_commit(self, openhands_dir: Path) -> None:
+        """Ensure OpenHands checkout matches config.agent_framework_commit.
+
+        The config is treated as the golden truth. If the local HEAD differs
+        from the target commit, this fetches from the remote, discards any
+        local changes (tracked modifications and untracked files, while
+        preserving gitignored paths like `.venv`), and checks out the target.
+        """
+        target = self.config.agent_framework_commit
+
+        def _git(*args: str) -> str:
+            result = subprocess_run(
+                ["git", "-C", str(openhands_dir), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return result.stdout.strip()
+
+        current_commit = _git("rev-parse", "HEAD")
+        try:
+            resolved_target = _git("rev-parse", "--verify", f"{target}^{{commit}}")
+        except Exception:
+            resolved_target = None
+
+        if resolved_target and resolved_target == current_commit:
+            print(
+                f"OpenHands already at config commit {current_commit[:12]} (target={target})",
+                flush=True,
+            )
+            return
+
+        print(
+            f"OpenHands commit mismatch: local={current_commit[:12]}, target={target}. "
+            f"Syncing to config (discarding local changes)...",
+            flush=True,
+        )
+        _git("fetch", "--all", "--tags", "--prune")
+        _git("reset", "--hard", "HEAD")
+        _git("clean", "-fd")
+        _git("checkout", "--force", target)
+
+        new_commit = _git("rev-parse", "HEAD")
+        print(f"OpenHands now at commit {new_commit[:12]} (target={target})", flush=True)
+
     def setup(self) -> Path:
         setup_dir = self.parent_dir / "swe_openhands_setup"
 
@@ -1097,6 +1142,7 @@ class OpenHandsHarnessProcessor(BaseDatasetHarnessProcessor):
 
             if openhands_dir.exists() and Path(openhands_dir / ".venv" / "bin" / "python").exists():
                 print(f"OpenHands already set up at {setup_dir}", flush=True)
+                self._sync_openhands_to_config_commit(openhands_dir)
                 return setup_dir
 
             print(f"Setting up OpenHands environment at {setup_dir}...", flush=True)
@@ -1125,8 +1171,12 @@ AGENT_FRAMEWORK_COMMIT={self.config.agent_framework_commit} \\
         with open(agent_config, "r") as f:
             config = tomlkit.parse(f.read())
 
+        # body.model may be None (replay JSONLs intentionally omit it — the
+        # openai_model proxy force-overrides). tomlkit refuses to serialize None,
+        # so coerce to an empty string here; the value is unused once the proxy
+        # substitutes its configured backend.
         config["llm"]["model"] |= {
-            "model": self.config.body.model,
+            "model": self.config.body.model or "",
             "base_url": "",  # May need to populate this
             "temperature": self.config.inference_params["temperature"],
             "top_p": self.config.inference_params["top_p"],
@@ -1139,6 +1189,47 @@ AGENT_FRAMEWORK_COMMIT={self.config.agent_framework_commit} \\
         config_file_path = self.config.openhands_config_file_path
 
         assert self.config.openhands_setup_dir is not None, "OpenHands setup directory is not set"
+
+        # REPLAY_MESSAGES_PATH support: if the body.metadata carries `replay_messages`
+        # (a JSON-encoded list of OpenAI chat-completion-format messages — same
+        # encoding pattern that `instance_dict` follows), dump it to a file under
+        # persistent_dir (mounted as /trajectories_mount inside the apptainer) and
+        # forward the path as positional arg #18 to run_infer.sh.
+        replay_messages_mounted_path = ""
+        replay_messages_raw = self.config.problem_info.get("replay_messages")
+        if isinstance(replay_messages_raw, str):
+            try:
+                replay_messages_list = json.loads(replay_messages_raw)
+            except json.JSONDecodeError:
+                replay_messages_list = None
+        else:
+            replay_messages_list = replay_messages_raw
+        if replay_messages_list:
+            replay_messages_host_path = self.config.persistent_dir / "replay_messages.json"
+            replay_messages_host_path.write_text(json.dumps(replay_messages_list))
+            replay_messages_mounted_path = f"{self.config.base_mounted_dir}/replay_messages.json"
+
+            # The replay file already encodes the original system prompt, but
+            # OpenHands' replay_utils.messages_to_replay_events() drops system
+            # messages entirely — the agent would otherwise render its OWN
+            # system_prompt.j2 for the live continuation, causing drift between
+            # the recorded conversation and the resumed one. The replay's system
+            # message is the canonical source of truth, so we extract it and pin
+            # it as the agent's system prompt UNCONDITIONALLY (overriding any
+            # YAML-level agent_prompt_overrides). The standard mount logic in
+            # _build_apptainer_command bind-mounts this file at the container's
+            # system_prompt.j2 path.
+            replay_system_content = None
+            for m in replay_messages_list:
+                if isinstance(m, dict) and m.get("role") == "system":
+                    c = m.get("content")
+                    if isinstance(c, str) and c.strip():
+                        replay_system_content = c
+                        break
+            if replay_system_content:
+                sp_host_path = self.config.persistent_dir / "replay_system_prompt.j2"
+                sp_host_path.write_text(replay_system_content)
+                self.config.resolved_system_prompt_template = str(sp_host_path)
 
         if self.config.debug:
             profiling_cmd = f"export NG_PROFILING_DIR={self.config.profiling_mounted_dir} && "
@@ -1236,11 +1327,24 @@ AGENT_FRAMEWORK_COMMIT={self.config.agent_framework_commit} \\
             f"    {config_file_path}"
         )
 
-        if self.config.resolved_user_prompt_template is not None:
-            agent_main_cmd += "    /openhands_setup/OpenHands/user_prompt.j2 "
-        if self.config.resolved_user_prompt_template is not None:
-            agent_main_cmd += "    /openhands_setup/OpenHands/system_prompt.j2 "
-            agent_main_cmd += "    /openhands_setup/OpenHands/system_prompt_long_horizon.j2 "
+        # Positional args 13..18 of run_infer.sh. Empty = shell-side default.
+        # Build the full slot list, then emit up to the LAST non-empty slot so
+        # trailing placeholders are only inserted when a later arg (e.g.
+        # REPLAY_MESSAGES_PATH at #18) needs them at the right shift index.
+        oh_dir = "/openhands_setup/OpenHands"
+        sp_set = self.config.resolved_system_prompt_template is not None
+        up_set = self.config.resolved_user_prompt_template is not None
+        positional_args = [
+            f"{oh_dir}/user_prompt.j2" if up_set else "",  # 13 INSTRUCTION_TEMPLATE_PATH
+            f"{oh_dir}/system_prompt.j2" if sp_set else "",  # 14 SYSTEM_PROMPT_PATH
+            f"{oh_dir}/system_prompt_long_horizon.j2" if sp_set else "",  # 15 SYSTEM_PROMPT_LONG_HORIZON_PATH
+            "",  # 16 N_RUNS (default 1)
+            "",  # 17 MODE   (default "swe")
+            replay_messages_mounted_path or "",  # 18 REPLAY_MESSAGES_PATH
+        ]
+        last_set = max((i for i, a in enumerate(positional_args) if a), default=-1)
+        for a in positional_args[: last_set + 1]:
+            agent_main_cmd += f"    {a} " if a else "    '' "
 
         agent_script_name = f"agent_script_{agent_run_id}.sh"
         agent_script_path = self.config.persistent_dir / agent_script_name
@@ -1400,9 +1504,7 @@ class OpenCodeHarnessProcessor(BaseDatasetHarnessProcessor):
             model_server_cfg = get_first_server_config_dict(get_global_config_dict(), self.config.model_server_name)
             model_server_base_url = f"http://{model_server_cfg.host}:{model_server_cfg.port}"
             default_model_name = (
-                getattr(model_server_cfg, "openai_model", None)
-                or getattr(model_server_cfg, "model", None)
-                or ""
+                getattr(model_server_cfg, "openai_model", None) or getattr(model_server_cfg, "model", None) or ""
             )
         except Exception as e:
             raise RuntimeError(
@@ -1468,6 +1570,9 @@ class OpenCodeHarnessProcessor(BaseDatasetHarnessProcessor):
             f"export NEMO_GYM_MODEL_SERVER_BASE_URL={shlex.quote(model_server_base_url)} && "
             f"export COMMAND_EXEC_TIMEOUT={self.config.command_exec_timeout} && "
             f"export ENABLE_SUBAGENTS={'1' if self.config.opencode_subagents_enabled else '0'} && "
+            "export OPENCODE_DISABLE_MODELS_FETCH=1 && "
+            "mkdir -p /root/.cache/opencode && "
+            "echo '{}' >/root/.cache/opencode/models.json && "
             f"echo {shlex.quote(config_str)} >{config_file_path} && "
             f"{conda_activate_cmd}"
             "./evaluation/benchmarks/swe_bench/scripts/run_infer.sh "
@@ -1493,7 +1598,7 @@ class OpenCodeHarnessProcessor(BaseDatasetHarnessProcessor):
             "trap '_rc=$?; "
             "mkdir -p /trajectories_mount/opencode_logs 2>/dev/null; "
             "cp -r /root/.local/share/opencode /trajectories_mount/opencode_logs/xdg 2>/dev/null; "
-            'for d in /tmp/bench-*; do '
+            "for d in /tmp/bench-*; do "
             '[ -d "$d/data/log" ] && '
             'cp -r "$d/data/log" "/trajectories_mount/opencode_logs/bench_$(basename "$d")" 2>/dev/null; '
             "done; "
@@ -1885,9 +1990,7 @@ class RunOpenHandsAgent(BaseModel):
     async def _run_golden_patch_verification(self) -> Optional[Path]:
         instance_id = self.config.instance_id
         dataset_name = self.config.problem_info.get("dataset_name") or ""
-        supported = dataset_name == "swe-bench-ext" or (
-            "SWE-bench" in dataset_name and "SWE-rebench" not in dataset_name
-        )
+        supported = dataset_name == "swe-bench-ext" or "SWE-bench" in dataset_name or "SWE-rebench" in dataset_name
         if not supported:
             raise NotImplementedError(
                 "verify_golden_patch is only supported for dataset_name=='swe-bench-ext' "
@@ -2024,18 +2127,35 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
         When opencode subagents are enabled there are multiple session_id
         files; we return the main session (no parent_session_id). All other
         per-session files stay on disk for offline training pickup.
+
+        Returns (messages, tools, prefix_message_count). `prefix_message_count`
+        is the number of chat messages the live model saw on its first call
+        (= the replay prefix in chat-completion format, or just system+user for
+        non-replay runs). Used by `_inner_responses` to split input/output at
+        the live continuation boundary.
         """
         messages, tools = [], []
 
         completions_dir = trajectories_dir / instance_id / "llm_completions" / instance_id
         if not completions_dir.exists():
             print(f"No llm_completions directory found: {completions_dir}", flush=True)
-            return messages, tools
+            return messages, tools, 0
 
         completion_files = sorted(completions_dir.glob("*.json"))
         if not completion_files:
             print(f"No completion files found in: {completions_dir}", flush=True)
-            return messages, tools
+            return messages, tools, 0
+
+        # The FIRST completion file (lex-sorted on the timestamp suffix in the
+        # filename) is the agent's first live LLM call. Its `messages` count is
+        # the chat-format prefix length — exactly the input/output boundary.
+        first_prefix_count = 0
+        try:
+            with open(completion_files[0], "r") as f:
+                first_data = json.load(f)
+            first_prefix_count = len(first_data.get("messages") or [])
+        except (OSError, json.JSONDecodeError):
+            pass
 
         # Prefer the main session (no parent_session_id). Fall back to the
         # last file if the payload predates session tagging (openhands).
@@ -2052,11 +2172,10 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             with open(completion_files[-1], "r") as f:
                 main_data = json.load(f)
 
-        return self._materialize_trajectory(main_data)
+        messages, tools = self._materialize_trajectory(main_data)
+        return messages, tools, first_prefix_count
 
-    def get_all_session_trajectories_from_completions(
-        self, trajectories_dir: Path, instance_id: str
-    ) -> list[dict]:
+    def get_all_session_trajectories_from_completions(self, trajectories_dir: Path, instance_id: str) -> list[dict]:
         """All per-session trajectories on disk (opencode subagent capture).
 
         Returns one entry per session_id with its full message history, tools,
@@ -2251,8 +2370,8 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             # we don't repeat the long base64 string.
             container_commands.append(
                 "for d in /home/gradle/.gradle/init.d /home/user/.gradle/init.d; do "
-                "[ -d \"$d\" ] && cp /root/.gradle/init.d/maven_central_mirror.gradle "
-                "\"$d/maven_central_mirror.gradle\" 2>/dev/null; done; true"
+                '[ -d "$d" ] && cp /root/.gradle/init.d/maven_central_mirror.gradle '
+                '"$d/maven_central_mirror.gradle" 2>/dev/null; done; true'
             )
 
         # Chrome wrapper for Karma-based JS tests. Karma's default
@@ -2266,8 +2385,8 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             "for b in /opt/google/chrome/google-chrome /opt/google/chrome/chrome "
             "/usr/bin/google-chrome-stable /usr/bin/google-chrome "
             "/usr/lib/chromium/chrome /usr/bin/chromium-browser /usr/bin/chromium; do\n"
-            "  if [ -x \"$b\" ] && [ \"$(realpath \"$b\")\" != \"$(realpath \"$0\")\" ]; then\n"
-            "    exec \"$b\" --no-sandbox --disable-dev-shm-usage \"$@\"\n"
+            '  if [ -x "$b" ] && [ "$(realpath "$b")" != "$(realpath "$0")" ]; then\n'
+            '    exec "$b" --no-sandbox --disable-dev-shm-usage "$@"\n'
             "  fi\n"
             "done\n"
             "echo 'chrome-wrapper.sh: no real chrome binary found' >&2\n"
@@ -2306,8 +2425,7 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             )
             user_message_host = params.persistent_dir / f"user_message_{params.agent_run_id}.txt"
             mount_args.append(
-                f"--mount type=bind,src={user_message_host},"
-                f"dst=/opencode_setup/opencode/user_message.txt,ro"
+                f"--mount type=bind,src={user_message_host},dst=/opencode_setup/opencode/user_message.txt,ro"
             )
             if params.resolved_system_prompt_template:
                 mount_args.append(
@@ -2499,11 +2617,52 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             return str(p)
         return str(PARENT_DIR / p)
 
+    def _maybe_build_replay_messages(self, body: NeMoGymResponseCreateParamsNonStreaming) -> Optional[str]:
+        """Convert Responses-format input into a chat-completion JSON string when
+        the input carries a prior agent trajectory.
+
+        Returns None for plain seed inputs (system + user only) — there is nothing
+        to replay in that case. Returns a JSON-encoded `list[dict]` (chat-completion
+        message format) when function_call / function_call_output items are present.
+        """
+        if self.config.agent_framework != "openhands":
+            return None
+        input_items = body.input if isinstance(body.input, list) else []
+
+        def _item_type(item) -> Optional[str]:
+            if isinstance(item, dict):
+                return item.get("type")
+            return getattr(item, "type", None)
+
+        has_trajectory = any(_item_type(item) in ("function_call", "function_call_output") for item in input_items)
+        if not has_trajectory:
+            return None
+        ccp = self._vllm_converter.responses_to_chat_completion_create_params(body)
+        chat_messages: list[dict] = []
+        for m in ccp.messages:
+            if hasattr(m, "model_dump"):
+                chat_messages.append(m.model_dump(exclude_none=True))
+            elif isinstance(m, dict):
+                chat_messages.append(m)
+        return json.dumps(chat_messages)
+
     def _setup_params(
         self, body: NeMoGymResponseCreateParamsNonStreaming
     ) -> Tuple[SWEBenchWrapperInstanceConfig, BaseDatasetHarnessProcessor]:
         problem_info = body.metadata | {"container_formatter": self.config.container_formatter}
         instance_id = problem_info.get("instance_id", "unknown")
+
+        # REPLAY_MESSAGES_PATH support (OpenHands harness only): when the request's
+        # input carries a prior agent trajectory (function_call / function_call_output
+        # items beyond the initial system+user messages), convert the partial
+        # Responses-format input to OpenAI chat-completion format here in the gym
+        # layer and surface it via problem_info["replay_messages"] (JSON-encoded
+        # because metadata is typed as Dict[str, str]). OpenHandsHarnessProcessor
+        # then writes it to a file and forwards the path to run_infer.sh as
+        # positional arg #18.
+        replay_messages_json = self._maybe_build_replay_messages(body)
+        if replay_messages_json is not None:
+            problem_info = {**problem_info, "replay_messages": replay_messages_json}
 
         # Create persistent directory for I/O and logs in local workspace
         instance_dir = f"{instance_id}_{int(time.time() * 1000)}_{str(uuid.uuid4())[:8]}"
@@ -2675,24 +2834,73 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             params.mask_sample = True
 
         trajectories_dir = params.persistent_dir / "trajectories"
-        chat_completions_trajectory, chat_completions_tools = self.get_openhands_trajectory_from_completions(
-            trajectories_dir, params.instance_id
+        chat_completions_trajectory, chat_completions_tools, prefix_msg_count = (
+            self.get_openhands_trajectory_from_completions(trajectories_dir, params.instance_id)
         )
 
         tools = [
             FunctionTool.model_validate(tool["function"] | {"type": "function"}) for tool in chat_completions_tools
         ]
-        responses_items = self._vllm_converter.chat_completions_messages_to_responses_items(
-            chat_completions_trajectory
+
+        # For replay rollouts, the request's `body.input` already carries a partial
+        # trajectory. Echo it back verbatim as `input` and isolate only the
+        # genuinely new live-continuation messages as `output`. We find the boundary
+        # by matching tool_call ids against body.input: every replayed action's
+        # call_id appears in body.input, so the live continuation begins immediately
+        # after the last chat message that references one of those ids.
+        def _item_type(item) -> Optional[str]:
+            if isinstance(item, dict):
+                return item.get("type")
+            return getattr(item, "type", None)
+
+        def _item_field(item, name: str):
+            if isinstance(item, dict):
+                return item.get(name)
+            return getattr(item, name, None)
+
+        body_input = params.body.input if isinstance(params.body.input, list) else None
+        has_replay_prefix = bool(
+            body_input and any(_item_type(it) in ("function_call", "function_call_output") for it in body_input)
         )
-        input_items, output_items = split_responses_input_output_items(responses_items)
+        if has_replay_prefix:
+            body_call_ids: set[str] = {
+                _item_field(it, "call_id")
+                for it in body_input
+                if _item_type(it) in ("function_call", "function_call_output") and _item_field(it, "call_id")
+            }
+            # Walk the chat trajectory and find the last chat-message index whose
+            # tool_call.id (assistant) or tool_call_id (tool) is in body_call_ids.
+            last_replay_idx = -1
+            for i, msg in enumerate(chat_completions_trajectory):
+                role = msg.get("role")
+                if role == "assistant":
+                    for tc in msg.get("tool_calls") or []:
+                        if tc.get("id") in body_call_ids:
+                            last_replay_idx = i
+                            break
+                elif role == "tool":
+                    if msg.get("tool_call_id") in body_call_ids:
+                        last_replay_idx = i
+            split_at = last_replay_idx + 1 if last_replay_idx >= 0 else 0
+            input_items = list(body_input)
+            output_items = self._vllm_converter.chat_completions_messages_to_responses_items(
+                chat_completions_trajectory[split_at:]
+            )
+        else:
+            responses_items = self._vllm_converter.chat_completions_messages_to_responses_items(
+                chat_completions_trajectory
+            )
+            input_items, output_items = split_responses_input_output_items(responses_items)
 
         update_metrics(params.metrics_fpath, metrics_to_update)
 
+        # body.model can be None (replay JSONLs omit it; the openai_model proxy
+        # picks the backend). NeMoGymResponse.model is a required non-None string,
+        # so fall back to the agent's configured model server name.
         return NeMoGymResponse(
             id=f"swebench-{params.instance_id}",
             created_at=int(time.time()),
-            model=params.body.model,
+            model=params.body.model or self.config.model_server.name,
             object="response",
             output=output_items,
             parallel_tool_calls=params.body.parallel_tool_calls,

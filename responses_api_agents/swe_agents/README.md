@@ -18,6 +18,7 @@ The wrapper supports two agent harnesses, selected by the `agent_framework` conf
 - [Supported datasets and harnesses](#supported-datasets-and-harnesses)
 - [OpenHands integration](#openhands-integration)
 - [opencode integration](#opencode-integration)
+- [Replay rollouts (OpenHands)](#replay-rollouts-openhands)
 - [Prompt and agent-class diversity](#prompt-and-agent-class-diversity)
 - [Tool-name diversity](#tool-name-diversity)
 - [Configuration reference](#configuration-reference)
@@ -90,7 +91,7 @@ Implemented in `RunOpenHandsAgent.process_single_datapoint` (and `_run_golden_pa
 7. **Decide `mask_sample`** (GRPO) — see [GRPO masking and failure modes](#grpo-masking-and-failure-modes).
 8. **Build the response** — convert the OpenHands chat-completions trajectory to Responses-API items via `VLLMConverter`, attach the tool list, return reward = `1.0 if resolved else 0.0` and metrics.
 
-If `verify_golden_patch=true`, step 2–4 are skipped: the dataset's golden patch (`instance_dict["patch"]`) is written directly as the prediction and the eval container is the only thing that runs. This is a sanity check that a dataset sample's golden patch actually resolves under our local eval. Supported for `swe-bench-ext` and the SWE-bench / SWE-bench_Multilingual families (e.g. `princeton-nlp/SWE-bench_Verified`, `SWE-bench/SWE-bench_Multilingual`). See [Golden-patch validation](#golden-patch-validation).
+If `verify_golden_patch=true`, step 2–4 are skipped: the dataset's golden patch (`instance_dict["patch"]`) is written directly as the prediction and the eval container is the only thing that runs. This is a sanity check that a dataset sample's golden patch actually resolves under our local eval. Supported for `swe-bench-ext`, the SWE-bench / SWE-bench_Multilingual families (e.g. `princeton-nlp/SWE-bench_Verified`, `SWE-bench/SWE-bench_Multilingual`), and `SWE-rebench`. See [Golden-patch validation](#golden-patch-validation).
 
 ---
 
@@ -120,6 +121,7 @@ The agent always runs inside [OpenHands](https://github.com/All-Hands-AI/OpenHan
 Key details:
 
 - **Setup is one-time per workspace.** `setup_scripts/openhands.sh` clones the configured fork at the configured commit and bootstraps a miniforge3 + poetry venv at `swe_openhands_setup/OpenHands/`. The setup directory is mounted read-only into every agent container.
+- **Commit sync on startup.** On every server start, if the existing checkout's `HEAD` differs from `agent_framework_commit`, the wrapper hard-resets the working tree to that commit (`git fetch --all --tags --prune && git reset --hard HEAD && git clean -fd && git checkout --force <commit>`). The YAML is treated as the golden truth — local edits in `swe_openhands_setup/OpenHands/` are discarded (gitignored paths like `.venv` are preserved). Bump `agent_framework_commit` in the config to roll the fork forward.
 - **Inside the container** the agent driver is `OpenHands/evaluation/benchmarks/swe_bench/scripts/run_infer.sh`, parametrized by `agent_cls`, `agent_max_turns`, dataset name + split, and the per-instance dataset JSONL.
 - **LLM config** is generated per-run by reading `configs/oh_config.toml`, overriding `llm.model.{model,base_url,temperature,top_p}` from the request, dumping it back as a TOML string, and writing it to `/tmp/config_<run_id>.toml` inside the container.
 - **NeMo-Gym wiring** — `NEMO_GYM_METRICS_FPATH`, `NEMO_GYM_CONFIG_DICT`, and `NEMO_GYM_MODEL_SERVER_NAME` are exported into the agent container so the OpenHands fork can call back into the model server registered with this NeMo-Gym instance instead of using a raw HTTP base URL.
@@ -223,6 +225,8 @@ This means gym's existing `get_openhands_trajectory_from_completions` and patch-
 
 Both `swe_opencode_setup/opencode/` and `swe_opencode_setup/bun/` are bind-mounted read-only into every agent container at `/opencode_setup/opencode` and `/opencode_setup/bun`.
 
+At container start the wrapper exports `OPENCODE_DISABLE_MODELS_FETCH=1` and seeds an empty `/root/.cache/opencode/models.json` so opencode does not try to fetch the public models catalog over the network — the SIFs typically run with no outbound DNS and the `nemo-gym` provider supplies its own model metadata.
+
 ### Termination
 
 There is **no explicit `finish` tool** in the opencode bench path — by design. The trajectory ends via one of four signals:
@@ -244,6 +248,24 @@ There is **no explicit `finish` tool** in the opencode bench path — by design.
 ### Compaction (deferred)
 
 `compaction.auto: false` is hard-coded into the bench config so the loop runs without summarization for now — the user-facing requirement is "main agent loop in opencode without compaction" while keeping the design flexible to enable it later via opencode's existing `compaction.ts`. Token-ID continuity over a compaction event is a future RL-design problem.
+
+---
+
+## Replay rollouts (OpenHands)
+
+The OpenHands harness supports resuming a partial trajectory: the request's `body.input` can carry a prior agent run (system + user + zero or more `function_call` / `function_call_output` Responses-API items), and the agent will continue from that point instead of starting fresh. This is what powers training-time replay and trajectory branching.
+
+**How it's plumbed.** In `SWEBenchWrapper._setup_params`:
+
+1. `_maybe_build_replay_messages(body)` scans `body.input` for any `function_call` / `function_call_output` items. If none are present, the request is treated as a normal seed and replay support is a no-op. If any are present, the input is converted to OpenAI chat-completion message format via the shared `VLLMConverter` and stashed on `problem_info["replay_messages"]` as a JSON string (metadata is typed `Dict[str, str]`).
+2. `OpenHandsHarnessProcessor.get_run_command` writes the JSON to `<persistent_dir>/replay_messages.json`, bind-mounts it into the agent container, and forwards the mounted path as positional arg #18 (`REPLAY_MESSAGES_PATH`) to `run_infer.sh`. Positional args 13..17 are emitted as empty-string placeholders so the right shift index lands.
+3. The replay's own system message is extracted and written to `<persistent_dir>/replay_system_prompt.j2`, then pinned as `resolved_system_prompt_template` so the standard mount logic bind-mounts it over OpenHands' `system_prompt.j2`. This is **unconditional** — it overrides any `agent_prompt_overrides` selection. Reason: OpenHands' `replay_utils.messages_to_replay_events()` drops system messages, so without this the resumed run would render OpenHands' own `system_prompt.j2` and drift from the recorded conversation.
+
+**Input/output split in the response.** When a replay prefix is present, `_inner_responses` echoes `body.input` back as the response's `input` verbatim and isolates only the genuinely new live-continuation messages as `output`. The boundary is found by matching tool-call ids: every replayed action's `call_id` appears in `body.input`, so the live continuation begins immediately after the last chat message that references one of those ids. Non-replay requests still use the original `split_responses_input_output_items` path.
+
+**`body.model` is optional in replay mode.** Replay JSONLs intentionally omit `model` because the upstream `openai_model` proxy force-overrides to its configured backend. The wrapper coerces `body.model or ""` when writing `oh_config.toml`, and falls back to the agent's `model_server.name` when constructing `NeMoGymResponse.model`.
+
+Replay is not implemented for the `opencode` harness; `_maybe_build_replay_messages` short-circuits unless `agent_framework == "openhands"`.
 
 ---
 
@@ -449,6 +471,7 @@ Supported datasets:
 | `swe-bench-ext`                          | `SweBenchExtDatasetProcessor`        |
 | `princeton-nlp/SWE-bench*` (e.g. `_Verified`, `_Lite`) | `SweBenchDatasetProcessor`           |
 | `SWE-bench/SWE-bench_Multilingual` (any name containing `SWE-bench_Multilingual`) | `SweBenchMultilingualDatasetProcessor` |
+| any name containing `SWE-rebench`        | `SWERebenchDatasetProcessor`         |
 
 For each supported dataset, the wrapper:
 
