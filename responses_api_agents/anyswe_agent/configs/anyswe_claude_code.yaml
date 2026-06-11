@@ -10,21 +10,21 @@ anyswe_claude_code:
       agent_server_class: ClaudeCodeAgent
       agent_config_class: ClaudeCodeAgentConfig
       agent_kwargs:
+        model: aws/anthropic/bedrock-claude-opus-4-7
+        anthropic_api_key: ${anthropic_api_key}
+        anthropic_base_url: https://inference-api.nvidia.com
         max_turns: 100
         timeout: 1800
-        model: claude-sonnet-4-6
+        system_prompt: "You are fixing a bug in the repository at /testbed. Edit the source files to fix the root cause, then verify. You MUST actually apply the fix with your file-editing tools; do not just describe it."
 
-      container_formatter: ???
+      container_formatter: data/sifs/{instance_id}.sif
       swebench_agent_timeout: 2700
       swebench_tests_timeout: 1800
       apptainer_memory_limit_mb: 32768
-      concurrency: 64
+      concurrency: 4
       skip_eval: false
 
-      # i think should be no model server for now, testing with _local
-      model_server:
-        name: policy_model
-        type: responses_api_models
+      # Claude Code calls anthropic_base_url directly.
 
       datasets:
         - name: example

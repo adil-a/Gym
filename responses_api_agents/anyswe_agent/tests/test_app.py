@@ -59,7 +59,7 @@ class TestRunnerTemplate:
         # Must be syntactically valid Python and reference the agent class.
         compile(rendered, "<runner>", "exec")
         assert "HermesAgent(config=config" in rendered
-        assert "git diff" in rendered  # agent-agnostic patch extraction
+        assert '"git", "diff", "HEAD"' in rendered
 
     def test_patch_extraction_is_git_diff(self) -> None:
         # The runner always extracts the patch via `git diff HEAD`, independent

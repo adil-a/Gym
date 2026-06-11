@@ -10,16 +10,17 @@ anyswe_hermes:
       agent_server_class: HermesAgent
       agent_config_class: HermesAgentConfig
       agent_kwargs:
-        max_turns: 100
+        max_turns: 30
         temperature: 1.0
         terminal_backend: local
         enabled_toolsets: null
+        system_prompt: "You are an expert software engineer. The source code repository is at /testbed. Explore the code, reproduce the bug, fix the root cause, and verify the fix. You MUST actually use terminal and file tools to explore, edit, and test the code; do not just describe what to do."
 
-      container_formatter: ???
+      container_formatter: data/sifs/{instance_id}.sif
       swebench_agent_timeout: 2700
       swebench_tests_timeout: 1800
       apptainer_memory_limit_mb: 32768
-      concurrency: 64
+      concurrency: 4
       skip_eval: false
 
       model_server:
