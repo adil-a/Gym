@@ -23,6 +23,11 @@ Load `references/blade-benchmark-build-guide.md` when the user asks how to
 build, validate, submit, or review a BLADE benchmark or asks whether a benchmark
 has all required BLADE deliverables.
 
+Use the bundled public helper at `scripts/blade_toolkit.py` for package
+validation, draft anchor-fact extraction, shallow baseline generation, and local
+calibration when external BLADE tooling is not available in the target
+repository.
+
 Do not load benchmark-specific examples by default. Load
 `references/cvdp-report-example.md` only when the user explicitly asks for a
 CVDP example, the original CVDP report layout, or this optional reference, or
@@ -57,6 +62,15 @@ report packages with metrics and anchor facts. Current BLADE scoring is handled
 by the universal `blade-judge`; benchmark-local judge utilities are optional
 pre-checks, not required deliverables. Missing deliverables are blocking work
 items, not footnotes.
+
+If external BLADE tools are not available, use the local helper script:
+
+```bash
+python3 scripts/blade_toolkit.py validate --benchmark-dir <benchmark_dir>
+python3 scripts/blade_toolkit.py extract-anchor-facts --help
+python3 scripts/blade_toolkit.py make-shallow --help
+python3 scripts/blade_toolkit.py calibrate --help
+```
 
 ## Analysis Workflow
 

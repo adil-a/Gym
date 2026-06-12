@@ -20,36 +20,43 @@ been checked for consistency. Current BLADE scoring is handled by the universal
 hold deterministic pre-check utilities. It is not a required deliverable and
 does not replace the universal judge.
 
-## BLADE Tooling To Reference
+## Bundled Public Tooling
 
-When working in the canonical BLADE submission repository, use these tools:
+This skill includes a public helper script at `scripts/blade_toolkit.py` so a
+GitHub user does not need access to external BLADE repositories. Use it for the
+BLADE package workflow:
 
-- `.claude/skills/blade-contribute/scripts/validate_submission.py`: checks
-  benchmark deliverable presence and schema by phase.
-- `judge/anchor_facts_extractor.py`: extracts benchmark-specific anchor facts
-  from each golden report.
-- `tools/run_synthetic_calibration.sh`: compares golden-vs-self and
-  shallow-vs-golden to validate judge configuration and anchor quality.
-- `judge/blade_judge.py`: universal scorer. Benchmark-specific signal enters
-  through D3 artifacts, especially `_anchor_facts.json`, not through a required
-  benchmark-specific scorer.
+- `validate`: checks D1-D3 deliverable presence and schema.
+- `extract-anchor-facts`: drafts benchmark-specific anchor facts from a golden
+  report without external model calls.
+- `make-shallow`: creates a script-output-style shallow baseline for negative
+  control calibration.
+- `score`: runs a deterministic local scoring proxy using the golden report and
+  anchor facts.
+- `calibrate`: compares golden-vs-self and shallow-vs-golden with the local
+  scoring proxy.
 
-If those tools are not vendored in the target repository, reference the
-canonical BLADE tooling rather than inventing a benchmark-specific replacement
-judge.
+The local scoring proxy is not a replacement for official BLADE scoring when
+that infrastructure is available. It is a portable public fallback that catches
+missing artifacts, weak anchor coverage, and shallow-report failures before
+review.
 
 Typical command shapes:
 
 ```bash
-python .claude/skills/blade-contribute/scripts/validate_submission.py \
-  --benchmark <benchmark_name> --phase all
+python3 scripts/blade_toolkit.py validate \
+  --benchmark-dir benchmarks/<benchmark_name> --phase all
 
-uv run python judge/anchor_facts_extractor.py extract \
+python3 scripts/blade_toolkit.py extract-anchor-facts \
   --golden benchmarks/<benchmark_name>/golden_reports/<model>_golden_report.md \
   --benchmark <benchmark_name> --model-name <model> \
   --output benchmarks/<benchmark_name>/golden_reports/<model>_anchor_facts.json
 
-tools/run_synthetic_calibration.sh \
+python3 scripts/blade_toolkit.py make-shallow \
+  --input benchmarks/<benchmark_name>/golden_reports/<model>_golden_report.md \
+  --output benchmarks/<benchmark_name>/golden_reports/<model>_shallow.md
+
+python3 scripts/blade_toolkit.py calibrate \
   --golden-report benchmarks/<benchmark_name>/golden_reports/<model>_golden_report.md \
   --anchor-facts benchmarks/<benchmark_name>/golden_reports/<model>_anchor_facts.json \
   --shallow-report benchmarks/<benchmark_name>/golden_reports/<model>_shallow.md

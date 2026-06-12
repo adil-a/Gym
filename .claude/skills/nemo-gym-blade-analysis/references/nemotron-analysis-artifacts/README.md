@@ -4,6 +4,7 @@ This folder contains only the original-CVDP Nemotron 3 Super golden analysis
 artifacts from the source benchmark package:
 
 - `nemotron-3-super-golden-report.md`
+- `nemotron_3_super_golden_report_metrics.json`
 - `nemotron_3_super_anchor_facts.json`
 
 The large rollout JSONL is intentionally not included. Use these files only when
