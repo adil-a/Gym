@@ -1,6 +1,5 @@
 config_paths:
   - resources_servers/scicode/configs/scicode.yaml
-  - responses_api_agents/scicode_agent/configs/scicode_agent.yaml
 
 scicode_benchmark_resources_server:
   _inherit_from: scicode
