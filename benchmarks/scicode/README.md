@@ -7,8 +7,10 @@ sub-steps. Generated code is executed against the problem's test cases.
 
 - **Tasks**: 80 problems / 341 sub-steps (`validation` + `test` combined — the split nemo-skills calls `test_aai`)
 - **Reward**: binary per problem — `1.0` only if every sub-step passes its tests
-- **Metrics**: problem-level accuracy (`pass@1` = mean reward) and sub-step accuracy
-  (Σ sub-steps passed / Σ sub-steps total), the headline SciCode number
+- **Metrics** (reported by the resources server): `subtask_accuracy` — the headline SciCode number,
+  total sub-steps passed divided by total sub-steps across all rollouts (matches nemo-skills'
+  `pass@1[avg-of-3]/subtask_accuracy`) — and `problem_accuracy` (= `mean/reward`, the whole problem
+  passing)
 
 A custom multi-step agent (`responses_api_agents/scicode_agent`) drives the per-sub-step
 generation loop; the resources server (`resources_servers/scicode`) executes each sub-step's
