@@ -1,0 +1,8 @@
+[
+  {
+    "agent_ref": {"name": "agent"},
+    "key_metrics": {"mean/reward": 0.5, "mean/total_tokens": 122.5},
+    "agent_metrics": {"mean/reward": 0.5, "std/reward": 0.5},
+    "group_level_metrics": []
+  }
+]

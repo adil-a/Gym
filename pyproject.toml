@@ -259,6 +259,26 @@ dev = [
     "requests-mock",
 ]
 
+# Optional dependencies for the offline rollout viewer (tools/rollout_viewer).
+# Kept out of core deps because the framework mostly runs headless and these libs
+# are heavy. Altair ships transitively with Streamlit, so it powers the charts
+# without an explicit pin here.
+viewer = [
+    # Streamlit: UI framework for the offline rollout-trajectory viewer.
+    # License: Apache 2.0 https://github.com/streamlit/streamlit/blob/develop/LICENSE
+    "streamlit",
+
+    # pandas: Tabular flattening of rollouts for the viewer's metrics tables/charts.
+    # License: BSD 3-Clause https://github.com/pandas-dev/pandas/blob/main/LICENSE
+    "pandas",
+]
+# NOTE: Streamlit requires `blinker`, which the global [tool.uv] exclude-dependencies
+# below strips. `blinker` is removed from that exclude list so it installs as a
+# transitive dep of Streamlit. It is only pulled in when this `viewer` extra is
+# installed (nothing in core depends on it once Flask is excluded). Streamlit's other
+# excluded requirement, `pillow`, stays excluded: it is only needed for image features
+# the viewer does not use, and Streamlit imports it lazily.
+
 [build-system]
 requires = ["setuptools>=61", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
@@ -269,7 +289,9 @@ required-version = ">=0.9.30"
 exclude-dependencies = [
     # Exclude unwanted dependencies from mlflow
     "alembic",
-    "blinker",
+    # NOTE: `blinker` intentionally NOT excluded — Streamlit (the `viewer` extra)
+    # requires it. With Flask excluded below, nothing in core pulls it, so it is
+    # installed only when the `viewer` extra is requested.
     "cffi",
     "contourpy",
     "cryptography",
@@ -372,6 +394,10 @@ ng_delete_dataset_from_gitlab = "nemo_gym.dataset_orchestrator:delete_jsonl_data
 # Configuration utils
 nemo_gym_dump_config = "nemo_gym.cli:dump_config"
 ng_dump_config = "nemo_gym.cli:dump_config"
+
+# Rollout viewer (requires the optional 'viewer' extra)
+nemo_gym_view_rollouts = "nemo_gym.view_rollouts:view_rollouts"
+ng_view_rollouts = "nemo_gym.view_rollouts:view_rollouts"
 
 # Display help
 nemo_gym_help = "nemo_gym.cli:display_help"
