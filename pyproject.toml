@@ -311,6 +311,12 @@ Download = "https://github.com/NVIDIA-NeMo/Gym/releases"
 Homepage = "https://github.com/NVIDIA-NeMo/Gym"
 
 [project.scripts]
+
+gym = "nemo_gym.cli.main:main"
+ng = "nemo_gym.cli.main:main"
+
+########################## DEPRECATED COMMANDS ##########################
+
 # Run/test scripts for servers.
 nemo_gym_run = "nemo_gym.cli.env:run"
 ng_run = "nemo_gym.cli.env:run"
