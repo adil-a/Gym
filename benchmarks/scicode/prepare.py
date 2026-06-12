@@ -54,6 +54,9 @@ def prepare() -> Path:
     for split in SPLITS:
         for entry in ds[split]:
             row = {
+                # The agent builds each sub-step's messages from sub_steps, so the row carries an
+                # empty input; rollout collection still requires the key to be present.
+                "responses_create_params": {"input": []},
                 "problem_id": entry["problem_id"],
                 "problem_name": entry["problem_name"],
                 "required_dependencies": entry["required_dependencies"],

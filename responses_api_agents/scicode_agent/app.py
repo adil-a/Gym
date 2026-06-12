@@ -78,6 +78,20 @@ class ScicodeAgentRunRequest(BaseRunRequest):
     required_dependencies: str
 
 
+def _empty_response() -> dict:
+    """Minimal NeMoGymResponse for the degenerate case where no sub-step was generated."""
+    return NeMoGymResponse(
+        id="scicode",
+        created_at=0.0,
+        model="",
+        object="response",
+        output=[],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[],
+    ).model_dump()
+
+
 class ScicodeAgent(SimpleResponsesAPIAgent):
     """Agent that drives the SciCode per-sub-step generation + code-accumulation loop."""
 
@@ -119,6 +133,7 @@ class ScicodeAgent(SimpleResponsesAPIAgent):
         previous_llm_code = [None] * total
         solutions: Dict[str, str] = {}
         out_of_context = False
+        last_response_json = None
 
         for cur_step in range(total):
             # Prefilled steps provide context for later steps but are not scored (no solution entry).
@@ -155,13 +170,16 @@ class ScicodeAgent(SimpleResponsesAPIAgent):
                 raise
 
             cookies = gen_response.cookies
-            generation = NeMoGymResponse.model_validate(await gen_response.json()).output_text
+            last_response_json = await gen_response.json()
+            generation = NeMoGymResponse.model_validate(last_response_json).output_text
             extracted = extract_python_script(generation)
             previous_llm_code[cur_step] = extracted
             solutions[f"{body.problem_id}.{cur_step + 1}"] = f"{previous_code}\n{extracted}"
 
         verify_request_data = body.model_dump()
         verify_request_data["solutions"] = solutions
+        # /verify requires a response; record the last sub-step's generation (empty if none ran).
+        verify_request_data["response"] = last_response_json if last_response_json is not None else _empty_response()
         verify_response = await self.server_client.post(
             server_name=self.config.resources_server.name,
             url_path="/verify",

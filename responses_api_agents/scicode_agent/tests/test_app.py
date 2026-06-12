@@ -190,7 +190,9 @@ class TestApp:
             result = await agent.run(_FakeRequest(), _run_request(problem_id="1", n_steps=2))
 
         assert result == {"reward": 1.0}
-        solutions = captured["verify"]["solutions"]
+        verify = captured["verify"]
+        assert "response" in verify  # /verify requires a response field
+        solutions = verify["solutions"]
         assert set(solutions.keys()) == {"1.1", "1.2"}
         assert "x = 1" in solutions["1.1"]
 

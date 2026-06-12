@@ -30,6 +30,7 @@ import ray
 from pydantic import ConfigDict
 from scicode_integration.runner import build_test_program, run_substep_remote, sanitize_test
 
+from nemo_gym import PARENT_DIR
 from nemo_gym.base_resources_server import (
     BaseResourcesServerConfig,
     BaseRunRequest,
@@ -83,6 +84,9 @@ class ScicodeResourcesServer(SimpleResourcesServer):
                 "test_data_fpath (see benchmarks/scicode/README.md)."
             )
         path = Path(self.config.test_data_fpath).expanduser()
+        # Resolve relative paths against the Gym root, since the server's cwd is its own dir.
+        if not path.is_absolute():
+            path = PARENT_DIR / path
         if not path.is_file():
             raise RuntimeError(
                 f"SciCode test_data.h5 not found at {path}. Download and stage it "

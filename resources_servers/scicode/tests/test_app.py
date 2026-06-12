@@ -156,6 +156,14 @@ class TestApp:
             await server.verify(_request(solutions={"1.1": "x = 1", "1.2": "y = 2"}))
 
     @pytest.mark.asyncio
+    async def test_verify_relative_test_data_resolved_under_gym_root(self):
+        from nemo_gym import PARENT_DIR
+
+        server = _server(test_data_fpath="nonexistent/test_data.h5")
+        with pytest.raises(RuntimeError, match=str(PARENT_DIR)):
+            await server.verify(_request(solutions={"1.1": "x = 1", "1.2": "y = 2"}))
+
+    @pytest.mark.asyncio
     async def test_verify_all_pass(self):
         with tempfile.NamedTemporaryFile(suffix=".h5") as h5, _mock_ray(passed=True):
             result = await _server(h5.name).verify(_request(solutions={"1.1": "a", "1.2": "b"}))
