@@ -66,10 +66,10 @@ items, not footnotes.
 If external BLADE tools are not available, use the local helper script:
 
 ```bash
-python3 scripts/blade_toolkit.py validate --benchmark-dir <benchmark_dir>
-python3 scripts/blade_toolkit.py extract-anchor-facts --help
-python3 scripts/blade_toolkit.py make-shallow --help
-python3 scripts/blade_toolkit.py calibrate --help
+uv run python scripts/blade_toolkit.py validate --benchmark-dir <benchmark_dir>
+uv run python scripts/blade_toolkit.py extract-anchor-facts --help
+uv run python scripts/blade_toolkit.py make-shallow --help
+uv run python scripts/blade_toolkit.py calibrate --help
 ```
 
 ## Analysis Workflow

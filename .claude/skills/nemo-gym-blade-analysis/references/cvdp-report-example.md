@@ -16,6 +16,29 @@ The original CVDP flow asks the model to produce SystemVerilog from a hardware
 design specification. The verifier runs the generated RTL against a cocotb-style
 test harness and returns binary reward.
 
+## D1-D3 Mapping
+
+This reference is intentionally an opt-in example, not a default-loaded
+benchmark package.
+
+- D1 analysis skill: the generic `nemo-gym-blade-analysis` skill explains the
+  portable BLADE workflow. The source CVDP-specific skill is more specialized
+  than a generic NeMo Gym skill and is not loaded by default.
+- D2 rollout data: small public CVDP example rollouts live in
+  `resources_servers/cvdp/data/` and are suitable for learning the report
+  command shape. The bundled Nemotron 3 Super golden report was produced from
+  the source benchmark rollout
+  `benchmarks/cvdp/rollouts/nemotron_super_cvdp_nonagentic_noncommercial_1.0.4_rollouts.jsonl`
+  with 1510 rows across 302 tasks; that large Git LFS rollout is not bundled in
+  this skill reference.
+- D3 golden package: the optional Nemotron 3 Super report, metrics sidecar, and
+  anchor facts are bundled under `references/nemotron-analysis-artifacts/`.
+  Use them as a completed D3 example when explicitly requested.
+
+Do not imply that the bundled Nemotron D3 package can be recomputed from the
+small public example rollout files alone. To fully reproduce that report, use
+the source CVDP rollout artifact named above.
+
 ## Command Shape
 
 Start the CVDP and model servers:
@@ -40,7 +63,7 @@ ng_collect_rollouts \
 Generate the CVDP report layout:
 
 ```bash
-python resources_servers/cvdp/scripts/cvdp_pass_at_k_report.py \
+uv run python resources_servers/cvdp/scripts/cvdp_pass_at_k_report.py \
   --rollouts results/cvdp_rollouts.jsonl \
   --output results/cvdp_report/ \
   --model <model-or-agent-name> \

@@ -19,33 +19,30 @@ repos:
       - id: python-end-of-file-fixer
         name: Fix Python end-of-file newlines
         language: system
-        entry: python3 scripts/precommit_python_fixes.py --end-of-file
+        entry: uv run --no-project python scripts/precommit_python_fixes.py --end-of-file
         files: \.py$
       - id: python-trailing-whitespace
         name: Trim Python trailing whitespace
         language: system
-        entry: python3 scripts/precommit_python_fixes.py --trailing-whitespace
+        entry: uv run --no-project python scripts/precommit_python_fixes.py --trailing-whitespace
         files: \.py$
       - id: ruff
         name: ruff
-        language: python
-        entry: ruff
+        language: system
+        entry: uv run --no-project --with ruff==0.9.9 ruff
         args: ["check", "--force-exclude", "--fix"]
-        additional_dependencies: ["ruff==0.9.9"]
         types_or: [python, pyi, jupyter]
       - id: ruff-imports
         name: ruff import sorting
-        language: python
-        entry: ruff
+        language: system
+        entry: uv run --no-project --with ruff==0.9.9 ruff
         args: ["check", "--force-exclude", "--select", "I", "--fix"]
-        additional_dependencies: ["ruff==0.9.9"]
         types_or: [python, pyi, jupyter]
       - id: ruff-format
         name: ruff format
-        language: python
-        entry: ruff
+        language: system
+        entry: uv run --no-project --with ruff==0.9.9 ruff
         args: ["format", "--force-exclude"]
-        additional_dependencies: ["ruff==0.9.9"]
         types_or: [python, pyi, jupyter]
       - id: no-underscore-md
         name: "Disallow '_' in Markdown filenames"
