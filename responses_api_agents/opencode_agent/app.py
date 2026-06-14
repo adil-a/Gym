@@ -194,7 +194,7 @@ class OpenCodeAgentVerifyResponse(BaseVerifyResponse):
 
 class OpenCodeAgent(SimpleResponsesAPIAgent):
     """Runs the CLI (opencode run --format=json).
-    Each request runs one headless `opencode run` and parses the jsonl trajectory into Gym 
+    Each request runs one headless `opencode run` and parses the jsonl trajectory into Gym
     format. OpenCode runs its own tools internally. Not yet supported for training.
     """
 
