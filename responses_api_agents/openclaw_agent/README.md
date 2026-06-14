@@ -1,15 +1,14 @@
 # OpenClaw Agent
 
-Runs OpenClaw CLI (`openclaw agent --local --json`)
-NeMo Gym agent server. OpenClaw runs its own tools internally.
+Runs OpenClaw CLI (`openclaw agent --local --json`).
+OpenClaw runs its own tools internally.
 Resources server is used for verifier.
 
 Minimal, meant to be extended, and currently eval-only. 
-Token IDs and logprobs are not wired up and it does not use a Gym model server yet.
 
 ## Quick start
 
-OpenClaw must be on installed (or it is auto-installed on first start). 
+OpenClaw must be installed (or it is auto-installed on first start). 
 Make sure `env.yaml` is also set.
 
 ```bash
@@ -55,8 +54,3 @@ openclaw_config:
 - `openclaw_version`: npm version to pin on install (null means latest)
 
 See `configs/openclaw_agent.yaml`.
-
-## Limitations
-
-- Eval only, no token IDs or logprobs.
-- Token counts come from OpenClaw and may be 0 when its envelope omits usage.
