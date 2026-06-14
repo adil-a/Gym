@@ -79,7 +79,6 @@ def _decode_last_json_dict_suffix(raw: str) -> Optional[dict[str, Any]]:
 
 
 def _text_from_openclaw_payloads(envelope: dict[str, Any]) -> str:
-    """Join the assistant text payloads from an openclaw --json envelope."""
     payloads = envelope.get("payloads")
     if not isinstance(payloads, list):
         payloads = []
@@ -118,10 +117,7 @@ def parse_openclaw_output(stdout: str) -> tuple[list[Any], dict[str, int]]:
 
 
 def parse_openclaw_session(session_text: str) -> list[Any]:
-    """Convert an OpenClaw session .jsonl into Gym output items, including tool calls.
-    The session file (meta.agentMeta.sessionFile) has the full trajectory with toolCall and
-    toolResult messages, unlike the --json envelope which only has the final assistant text.
-    """
+    """Convert an OpenClaw session .jsonl into Gym output items, including tool calls"""
     output_items: list[Any] = []
     for line in session_text.splitlines():
         line = line.strip()
@@ -251,10 +247,7 @@ class OpenClawAgentVerifyResponse(BaseVerifyResponse):
 
 
 class OpenClawAgent(SimpleResponsesAPIAgent):
-    """Runs the OpenClaw CLI (openclaw agent --local --json).
-    Each request runs `openclaw setup`, merges openclaw_config into the generated config, runs one
-    headless `openclaw agent`, and parses the trajectory into Gym output items.
-    """
+    """Runs the OpenClaw CLI (openclaw agent --local --json)"""
 
     config: OpenClawAgentConfig
     sem: Semaphore = None
