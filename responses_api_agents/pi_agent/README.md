@@ -9,11 +9,10 @@ it does not use a Gym model server yet.
 ## Quick start
 
 pi must be on PATH (auto-installed on first start, or `npm install -g @earendil-works/pi-coding-agent`).
-Put `policy_base_url` / `policy_api_key` in `env.yaml`.
+Put `policy_base_url`, `policy_api_key`, and `policy_model_name` in `env.yaml`.
 
 ```bash
-ng_run "+config_paths=[resources_servers/math_with_judge/configs/math_with_judge_pi_agent.yaml,responses_api_models/openai_model/configs/openai_model.yaml]" \
-  +policy_model_name=nvidia/meta/llama-3.3-70b-instruct
+ng_run "+config_paths=[resources_servers/math_with_judge/configs/math_with_judge_pi_agent.yaml,responses_api_models/openai_model/configs/openai_model.yaml]"
 
 ng_collect_rollouts +agent_name=math_with_judge_pi_agent \
   +input_jsonl_fpath=responses_api_agents/pi_agent/data/example.jsonl \
