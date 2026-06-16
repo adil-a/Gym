@@ -66,7 +66,7 @@ class BenchFlowAgentConfig(BaseResponsesAPIAgentConfig):
 
     # Extra environment variables forwarded to the agent harness.
     # The LLM server base URL and API key are passed automatically.
-    agent_env: dict[str, str] = Field(default_factory=dict)
+    agent_env: Optional[dict[str, str]] = None
 
     # Sandbox user. "none" or null runs as root.
     sandbox_user: Optional[str] = None
