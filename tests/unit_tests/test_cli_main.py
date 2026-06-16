@@ -393,3 +393,29 @@ class TestDatasetFlags:
         monkeypatch.setattr(sys, "argv", ["gym", "dataset", "collate", "--mode", "bogus"])
         with pytest.raises(SystemExit):
             main()
+
+
+class TestEvalAggregateFlags:
+    def test_output_flag(self, monkeypatch: MonkeyPatch) -> None:
+        target, overrides = _dispatch_for(monkeypatch, ["eval", "aggregate", "-o", "out.jsonl"])
+        assert target == "nemo_gym.cli.eval:aggregate_rollouts"
+        assert overrides == ["+output_jsonl_fpath=out.jsonl"]
+
+
+class TestEvalProfileFlags:
+    def test_profile_flags(self, monkeypatch: MonkeyPatch) -> None:
+        target, overrides = _dispatch_for(
+            monkeypatch, ["eval", "profile", "--inputs", "in.jsonl", "--rollouts", "r.jsonl"]
+        )
+        assert target == "nemo_gym.cli.eval:reward_profile"
+        assert set(overrides) == {
+            "+materialized_inputs_jsonl_fpath=in.jsonl",
+            "+rollouts_jsonl_fpath=r.jsonl",
+        }
+
+    def test_profile_does_not_accept_config(self, monkeypatch: MonkeyPatch) -> None:
+        # reward_profile reads file paths, not config_paths, so --config is not offered and is rejected.
+        monkeypatch.setattr(cli_main, "dispatch", lambda target, overrides: None)
+        monkeypatch.setattr(sys, "argv", ["gym", "eval", "profile", "--config", "x.yaml"])
+        with pytest.raises(SystemExit):
+            main()

@@ -274,11 +274,25 @@ COMMANDS = {
     "eval aggregate": Command(
         target="nemo_gym.cli.eval:aggregate_rollouts",
         summary="Aggregate sharded rollout results.",
-        flags=(CONFIG,),
+        flags=(
+            CONFIG,
+            _value_flag(
+                "output",
+                "output_jsonl_fpath",
+                "Path for the merged rollouts and aggregate-metrics file.",
+                aliases=("-o",),
+            ),
+        ),
     ),
     "eval profile": Command(
         target="nemo_gym.cli.eval:reward_profile",
         summary="Compute a reward profile from rollouts.",
+        flags=(
+            _value_flag(
+                "inputs", "materialized_inputs_jsonl_fpath", "Materialized inputs JSONL fed to rollout collection."
+            ),
+            _value_flag("rollouts", "rollouts_jsonl_fpath", "Rollouts JSONL produced by collection."),
+        ),
     ),
     "dev test": Command(target="nemo_gym.cli.dev:dev_test", summary="Run NeMo Gym's unit tests."),
 }
