@@ -12,14 +12,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import json
+import multiprocessing as mp
 from copy import deepcopy
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from math_verify.errors import TimeoutException
 from pydantic import ValidationError
-from pytest import approx, fixture, raises
+from pytest import approx, fixture, raises, skip
 
 from nemo_gym.config_types import ModelServerRef
 from nemo_gym.openai_utils import (
@@ -37,7 +39,49 @@ from resources_servers.math_with_judge.app import (
     LibraryJudgeMathResourcesServer,
     LibraryJudgeMathResourcesServerConfig,
     LibraryJudgeMathVerifyRequest,
+    _run_math_verify,
 )
+
+
+def _geometric_series_terms(num_terms: int) -> str:
+    return "+".join("1" if exponent == 0 else f"x^{exponent}" for exponent in range(num_terms))
+
+
+def _verify_pathological_sympy_expression(result_connection: Any) -> None:
+    config = LibraryJudgeMathResourcesServerConfig(
+        host="0.0.0.0",
+        port=8080,
+        entrypoint="",
+        name="",
+        should_use_judge=False,
+        library_verifier_timeout_seconds=1.0,
+        judge_model_server=ModelServerRef(
+            type="responses_api_models",
+            name="math_judge",
+        ),
+        judge_responses_create_params=NeMoGymResponseCreateParamsNonStreaming(input=[]),
+    )
+    resources_server = LibraryJudgeMathResourcesServer(
+        config=config,
+        server_client=MagicMock(spec=ServerClient),
+    )
+    generated_answer = "\\boxed{\\frac{x^{800}-1}{x-1}-(" + _geometric_series_terms(800) + ")}"
+
+    try:
+        result_connection.send(asyncio.run(resources_server._verify_answer("question", "0", generated_answer)))
+    except BaseException as e:
+        result_connection.send(e)
+    finally:
+        result_connection.close()
+
+
+def _sleeping_library_verifier_process(result_connection: Any) -> None:
+    import time
+
+    try:
+        time.sleep(60)
+    finally:
+        result_connection.close()
 
 
 class TestApp:
@@ -308,38 +352,160 @@ class TestApp:
             second_judge_equal_item,
         )
 
-    def test_verify_answer_with_library(self, config: LibraryJudgeMathResourcesServerConfig) -> None:
+    def test_library_verifier_returns_promptly_for_pathological_sympy_expression(self) -> None:
+        if "fork" not in mp.get_all_start_methods():
+            skip("This regression test requires fork to bound a stuck SymPy verifier.")
+
+        ctx = mp.get_context("fork")
+        result_connection, child_connection = ctx.Pipe(duplex=False)
+        process = ctx.Process(target=_verify_pathological_sympy_expression, args=(child_connection,))
+        process.start()
+        child_connection.close()
+        process.join(timeout=2.0)
+
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5.0)
+            raise AssertionError("library verifier did not return promptly for a real math_verify/SymPy expression")
+
+        assert process.exitcode == 0
+        if not result_connection.poll():
+            raise AssertionError("library verifier process exited without returning a result") from None
+        result = result_connection.recv()
+        result_connection.close()
+
+        if isinstance(result, BaseException):
+            raise result
+
+        reward, extracted_answer, library_reward, judge_evaluations = result
+        # This is a real SymPy/math_verify pathological case, so the exact result
+        # depends on whether it finishes before the subprocess timeout. The
+        # regression is that either outcome returns promptly instead of hanging.
+        assert reward == approx(0.0) or reward == approx(1.0)
+        assert extracted_answer is None or isinstance(extracted_answer, str)
+        assert library_reward == approx(reward)
+        assert judge_evaluations is None
+
+    async def test_library_verifier_process_is_cleaned_up_on_cancellation(self) -> None:
+        if "fork" not in mp.get_all_start_methods():
+            skip("This cancellation test requires fork.")
+
+        ctx = mp.get_context("fork")
+        result_connection, child_connection = ctx.Pipe(duplex=False)
+        process = ctx.Process(target=_sleeping_library_verifier_process, args=(child_connection,))
+        process.start()
+        child_connection.close()
+
+        try:
+            task = asyncio.create_task(
+                LibraryJudgeMathResourcesServer._wait_for_library_verifier_process(
+                    process,
+                    result_connection,
+                    60.0,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with raises(asyncio.CancelledError):
+                await task
+
+            assert not process.is_alive()
+        finally:
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=1.0)
+
+    async def test_library_verifier_process_is_cleaned_up_on_timeout(self) -> None:
+        if "fork" not in mp.get_all_start_methods():
+            skip("This timeout test requires fork.")
+
+        ctx = mp.get_context("fork")
+        result_connection, child_connection = ctx.Pipe(duplex=False)
+        process = ctx.Process(target=_sleeping_library_verifier_process, args=(child_connection,))
+        process.start()
+        child_connection.close()
+
+        try:
+            assert await LibraryJudgeMathResourcesServer._wait_for_library_verifier_process(
+                process,
+                result_connection,
+                0.01,
+            ) == (approx(0.0), None)
+            assert not process.is_alive()
+        finally:
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=1.0)
+
+    async def test_library_verifier_process_errors_return_zero_reward(self) -> None:
+        process = MagicMock()
+        process.is_alive.return_value = False
+        process.exitcode = 1
+        result_connection = MagicMock()
+
+        assert await LibraryJudgeMathResourcesServer._wait_for_library_verifier_process(
+            process,
+            result_connection,
+            1.0,
+        ) == (approx(0.0), None)
+        result_connection.close.assert_called_once()
+
+        process = MagicMock()
+        process.is_alive.return_value = False
+        process.exitcode = 0
+        result_connection = MagicMock()
+        result_connection.poll.return_value = True
+        result_connection.recv.side_effect = EOFError()
+
+        assert await LibraryJudgeMathResourcesServer._wait_for_library_verifier_process(
+            process,
+            result_connection,
+            1.0,
+        ) == (approx(0.0), None)
+        result_connection.close.assert_called_once()
+
+    async def test_verify_answer_with_library_async(self, config: LibraryJudgeMathResourcesServerConfig) -> None:
         resources_server = LibraryJudgeMathResourcesServer(config=config, server_client=MagicMock(spec=ServerClient))
 
-        assert resources_server._verify_answer_with_library("4", "2 + 2 = \\boxed{4}") == (approx(1.0), "4")
-        assert resources_server._verify_answer_with_library("\\boxed{12}", "3 * 4 = \\boxed{12}") == (
+        assert await resources_server._verify_answer_with_library_async("4", "2 + 2 = \\boxed{4}") == (
+            approx(1.0),
+            "4",
+        )
+        assert await resources_server._verify_answer_with_library_async("\\boxed{12}", "3 * 4 = \\boxed{12}") == (
             approx(1.0),
             "12",
         )
-        assert resources_server._verify_answer_with_library("\\boxed{5}", "10 - 5 = \\boxed{5}") == (approx(1.0), "5")
-        assert resources_server._verify_answer_with_library("4.0", "2 + 2 = \\boxed{\\frac{8}{2}}") == (
+        assert await resources_server._verify_answer_with_library_async("\\boxed{5}", "10 - 5 = \\boxed{5}") == (
+            approx(1.0),
+            "5",
+        )
+        assert await resources_server._verify_answer_with_library_async("4.0", "2 + 2 = \\boxed{\\frac{8}{2}}") == (
             approx(1.0),
             "4",
         )
 
-        assert resources_server._verify_answer_with_library("\\boxed{12}", "3 * 4 = 13") == (approx(0.0), "13")
-        assert resources_server._verify_answer_with_library("17.001", "17") == (
+        assert await resources_server._verify_answer_with_library_async("\\boxed{12}", "3 * 4 = 13") == (
+            approx(0.0),
+            "13",
+        )
+        assert await resources_server._verify_answer_with_library_async("17.001", "17") == (
             approx(0.0),
             "17",
         )
 
-        assert resources_server._verify_answer_with_library("", "") == (
+        assert await resources_server._verify_answer_with_library_async("", "") == (
             approx(0.0),
             None,
         )
 
-        assert resources_server._verify_answer_with_library("3", "3") == (
+        assert await resources_server._verify_answer_with_library_async("3", "3") == (
             approx(1.0),
             "3",
         )
+
+    def test_run_math_verify_handles_timeout_exception(self) -> None:
         timeout_mock = MagicMock(side_effect=TimeoutException())
-        resources_server._library_verifier = timeout_mock
-        assert resources_server._verify_answer_with_library("3", "3") == (
+        assert _run_math_verify(timeout_mock, "3", "3") == (
             approx(0.0),
             None,
         )
@@ -576,3 +742,218 @@ class TestApp:
             "not_equal_first_id",
             not_equal_first_item,
         )
+
+
+# ──────────────────────────────────────────────────────────
+# Math metrics tests
+# ──────────────────────────────────────────────────────────
+
+
+class TestComputeMetricsIntegration:
+    """Test the full compute_metrics method on LibraryJudgeMathResourcesServer."""
+
+    @fixture
+    def server(self) -> LibraryJudgeMathResourcesServer:
+        config = LibraryJudgeMathResourcesServerConfig(
+            host="0.0.0.0",
+            port=8080,
+            entrypoint="",
+            name="",
+            judge_model_server=ModelServerRef(type="responses_api_models", name="math_judge"),
+            judge_responses_create_params=NeMoGymResponseCreateParamsNonStreaming(input=[]),
+        )
+        return LibraryJudgeMathResourcesServer(config=config, server_client=MagicMock(spec=ServerClient))
+
+    def _make_tasks(self):
+        """3 tasks × 4 rollouts with varying correctness and some no_answer."""
+        return [
+            # Task 0: 3 correct, 1 no_answer
+            [
+                {"reward": 1.0, "library_reward": 1.0, "extracted_answer": "204"},
+                {"reward": 1.0, "library_reward": 1.0, "extracted_answer": "204"},
+                {"reward": 1.0, "library_reward": 1.0, "extracted_answer": "204"},
+                {"reward": 0.0, "library_reward": 0.0, "extracted_answer": None},
+            ],
+            # Task 1: 1 correct, 1 wrong, 2 no_answer
+            [
+                {"reward": 1.0, "library_reward": 1.0, "extracted_answer": "113"},
+                {"reward": 0.0, "library_reward": 0.0, "extracted_answer": "42"},
+                {"reward": 0.0, "library_reward": 0.0, "extracted_answer": None},
+                {"reward": 0.0, "library_reward": 0.0, "extracted_answer": None},
+            ],
+            # Task 2: all wrong, 1 no_answer
+            [
+                {"reward": 0.0, "library_reward": 0.0, "extracted_answer": "99"},
+                {"reward": 0.0, "library_reward": 0.0, "extracted_answer": "42"},
+                {"reward": 0.0, "library_reward": 0.0, "extracted_answer": "7"},
+                {"reward": 0.0, "library_reward": 0.0, "extracted_answer": None},
+            ],
+        ]
+
+    def test_pass_at_k(self, server) -> None:
+        tasks = self._make_tasks()
+        result = server.compute_metrics(tasks)
+        # pass@1: avg reward across all rollouts = (3+1+0)/3 tasks, each avg'd over 4 = 33.3%
+        assert result["pass@1/symbolic_accuracy"] == approx(100.0 / 3.0, abs=0.01)
+        # pass@4: binary per-task (any correct?) = 2/3 tasks = 66.7%
+        assert result["pass@4/symbolic_accuracy"] == approx(200.0 / 3.0, abs=0.01)
+
+    def test_majority_at_k(self, server) -> None:
+        tasks = self._make_tasks()
+        result = server.compute_metrics(tasks)
+        assert "majority@4/symbolic_accuracy" in result
+
+    def test_per_sample_aggregate(self, server) -> None:
+        tasks = self._make_tasks()
+        result = server.compute_metrics(tasks)
+        psa = result["per_sample_aggregate"]
+        assert "symbolic_accuracy" in psa
+        assert len(psa["symbolic_accuracy"]) == 4
+
+    def test_no_answer_tracking(self, server) -> None:
+        tasks = self._make_tasks()
+        result = server.compute_metrics(tasks)
+        assert "pass@1/no_answer" in result
+        assert "pass@4/no_answer" in result
+        assert "pass@1[avg-of-4]/no_answer" in result
+        psa = result["per_sample_aggregate"]
+        assert "no_answer" in psa
+        assert len(psa["no_answer"]) == 4
+        assert psa["no_answer"][0] == approx(0.0)
+        assert psa["no_answer"][3] == approx(100.0)
+        assert "pass@1[avg-of-2]/no_answer/std_dev_across_runs" in result
+        assert "pass@1[avg-of-4]/no_answer/std_dev_across_runs" in result
+
+    def test_no_answer_stats(self, server) -> None:
+        tasks = self._make_tasks()
+        result = server.compute_metrics(tasks)
+        assert "pass@1[avg-of-4]/no_answer/std_dev_across_runs" in result
+        assert "pass@1[avg-of-4]/no_answer/std_err_across_runs" in result
+        assert result["pass@1[avg-of-4]/no_answer/std_dev_across_runs"] > 0
+
+    def test_stat_key_separator(self, server) -> None:
+        tasks = self._make_tasks()
+        result = server.compute_metrics(tasks)
+        stat_keys = [k for k in result if "std_dev_across_runs" in k]
+        for k in stat_keys:
+            assert "/std_dev_across_runs" in k, f"Expected / separator in {k}"
+
+    def test_stats_for_all_k_values(self, server) -> None:
+        tasks = self._make_tasks()
+        result = server.compute_metrics(tasks)
+        for k_val in [2, 3, 4]:
+            key = f"pass@1[avg-of-{k_val}]/symbolic_accuracy/std_dev_across_runs"
+            assert key in result, f"Missing stats for k={k_val}: {key}"
+
+    def test_multi_score(self, server) -> None:
+        tasks = self._make_tasks()
+        result = server.compute_metrics(tasks)
+        assert "pass@1/symbolic_accuracy" in result
+        assert "accuracy" not in str(
+            [k for k in result if "accuracy" in k and "symbolic" not in k and "judge" not in k]
+        )
+
+    def test_empty_tasks(self, server) -> None:
+        result = server.compute_metrics([])
+        assert result == {}
+
+
+class TestGetKeyMetrics:
+    def test_selects_headlines(self) -> None:
+        agent_metrics = {
+            "mean/reward": 0.5,
+            "mean/library_reward": 0.5,
+            "mean/input_tokens": 100.0,
+            "mean/output_tokens": 500.0,
+            "mean/total_tokens": 600.0,
+            "pass@1/symbolic_accuracy": 50.0,
+            "pass@1/no_answer": 10.0,
+            "pass@1[avg-of-1]/symbolic_accuracy": 50.0,
+            "pass@1[avg-of-1]/no_answer": 10.0,
+            "pass@1[avg-of-4]/symbolic_accuracy": 45.0,
+            "pass@1[avg-of-4]/symbolic_accuracy/std_dev_across_runs": 3.0,
+            "pass@1[avg-of-4]/no_answer": 12.0,
+            "pass@1[avg-of-4]/no_answer/std_dev_across_runs": 2.0,
+            "pass@4/symbolic_accuracy": 70.0,
+            "pass@4/no_answer": 15.0,
+            "majority@4/symbolic_accuracy": 60.0,
+            "majority@4/no_answer": 5.0,
+        }
+        result = LibraryJudgeMathResourcesServer.get_key_metrics(None, agent_metrics)
+        assert "mean/input_tokens" in result
+        assert "mean/output_tokens" in result
+        assert "mean/reward" not in result
+        assert "mean/library_reward" not in result
+        assert "mean/total_tokens" not in result
+        assert "pass@1[avg-of-4]/symbolic_accuracy" in result
+        assert "pass@1[avg-of-4]/no_answer" in result
+        assert "pass@4/symbolic_accuracy" in result
+        assert "pass@4/no_answer" not in result
+        assert "majority@4/symbolic_accuracy" in result
+        assert "majority@4/no_answer" not in result
+        assert "pass@1[avg-of-4]/symbolic_accuracy/std_dev_across_runs" not in result
+        assert "pass@1[avg-of-4]/no_answer/std_dev_across_runs" not in result
+
+
+class TestAggregateMetrics:
+    """Test the full aggregate_metrics route on the math server."""
+
+    async def test_produces_symbolic_and_judge_accuracy(self) -> None:
+        from nemo_gym.base_resources_server import AggregateMetricsRequest
+        from nemo_gym.global_config import ROLLOUT_INDEX_KEY_NAME, TASK_INDEX_KEY_NAME
+
+        config = LibraryJudgeMathResourcesServerConfig(
+            host="127.0.0.1",
+            port=12345,
+            entrypoint="app.py",
+            name="math_with_judge",
+            judge_model_server=ModelServerRef(type="responses_api_models", name="judge"),
+            judge_responses_create_params=NeMoGymResponseCreateParamsNonStreaming(input=[]),
+        )
+        server = LibraryJudgeMathResourcesServer(config=config, server_client=MagicMock(spec=ServerClient))
+
+        responses = [
+            {
+                TASK_INDEX_KEY_NAME: 0,
+                ROLLOUT_INDEX_KEY_NAME: 0,
+                "reward": 1.0,
+                "library_reward": 1.0,
+                "judge_evaluations": [{"verdict": "A=B"}],
+                "extracted_answer": "42",
+            },
+            {
+                TASK_INDEX_KEY_NAME: 0,
+                ROLLOUT_INDEX_KEY_NAME: 1,
+                "reward": 0.0,
+                "library_reward": 0.0,
+                "judge_evaluations": [{"verdict": "A!=B"}],
+                "extracted_answer": "43",
+            },
+            {
+                TASK_INDEX_KEY_NAME: 1,
+                ROLLOUT_INDEX_KEY_NAME: 0,
+                "reward": 1.0,
+                "library_reward": 1.0,
+                "judge_evaluations": None,
+                "extracted_answer": "7",
+            },
+            {
+                TASK_INDEX_KEY_NAME: 1,
+                ROLLOUT_INDEX_KEY_NAME: 1,
+                "reward": 0.0,
+                "library_reward": 0.0,
+                "judge_evaluations": None,
+                "extracted_answer": "8",
+            },
+        ]
+        body = AggregateMetricsRequest(verify_responses=responses)
+        result = await server.aggregate_metrics(body)
+        am = result.agent_metrics
+
+        assert "pass@1/symbolic_accuracy" in am
+        assert "pass@1[avg-of-2]/symbolic_accuracy" in am
+        assert "majority@2/symbolic_accuracy" in am
+        assert "pass@1/judge_accuracy" in am
+        assert "pass@1[avg-of-2]/symbolic_accuracy/std_dev_across_runs" in am
+        assert "pass@2/symbolic_accuracy" in result.key_metrics
+        assert "majority@2/symbolic_accuracy" in result.key_metrics

@@ -19,6 +19,8 @@ from fastapi import Request, Response
 from pydantic import ConfigDict, ValidationError
 
 from nemo_gym.base_resources_server import (
+    AggregateMetrics,
+    AggregateMetricsRequest,
     BaseRunRequest,
     BaseVerifyRequest,
     BaseVerifyResponse,
@@ -104,8 +106,9 @@ class SimpleAgent(SimpleResponsesAPIAgent):
 
             if not usage:
                 usage = model_response.usage
+                model_response.usage = None
 
-            if usage:
+            if usage and model_response.usage:
                 usage.input_tokens += model_response.usage.input_tokens
                 usage.output_tokens += model_response.usage.output_tokens
                 usage.total_tokens += model_response.usage.total_tokens
@@ -114,7 +117,7 @@ class SimpleAgent(SimpleResponsesAPIAgent):
                 usage.input_tokens_details.cached_tokens = 0
                 usage.output_tokens_details.reasoning_tokens = 0
 
-            if model_response.incomplete_details and model_response.incomplete_details.reason == "max_output_tokens":
+            if model_response.incomplete_details:
                 break
 
             all_fn_calls: List[NeMoGymResponseFunctionToolCall] = [o for o in output if o.type == "function_call"]
@@ -125,10 +128,27 @@ class SimpleAgent(SimpleResponsesAPIAgent):
                 break
 
             for output_function_call in all_fn_calls:
+                try:
+                    parsed_arguments = json.loads(output_function_call.arguments)
+                except (json.JSONDecodeError, TypeError) as e:
+                    # Model produced malformed tool-call arguments. Surface the
+                    # error back as a tool response so the rollout can continue
+                    # (or terminate with a low reward) instead of crashing the
+                    # whole batch on json.loads.
+                    tool_response = NeMoGymFunctionCallOutput(
+                        type="function_call_output",
+                        call_id=output_function_call.call_id,
+                        # Use repr(e) so the exception type name is always
+                        # included even when str(e) would be empty.
+                        output=json.dumps({"error": f"Invalid tool call arguments: {e!r}"}),
+                    )
+                    new_outputs.append(tool_response)
+                    continue
+
                 api_response = await self.server_client.post(
                     server_name=self.config.resources_server.name,
                     url_path=f"/{output_function_call.name}",
-                    json=json.loads(output_function_call.arguments),
+                    json=parsed_arguments,
                     cookies=resources_server_cookies,
                 )
                 # We don't raise for status here since it's a valid return for the API to error e.g. if the model outputs an invalid call or something.
@@ -186,6 +206,16 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         )
         await raise_for_status(verify_response)
         return SimpleAgentVerifyResponse.model_validate(await get_response_json(verify_response))
+
+    async def aggregate_metrics(self, body: AggregateMetricsRequest = Body()) -> AggregateMetrics:
+        """Proxy aggregate_metrics to the resources server."""
+        response = await self.server_client.post(
+            server_name=self.config.resources_server.name,
+            url_path="/aggregate_metrics",
+            json=body,
+        )
+        await raise_for_status(response)
+        return AggregateMetrics.model_validate(await get_response_json(response))
 
 
 if __name__ == "__main__":
