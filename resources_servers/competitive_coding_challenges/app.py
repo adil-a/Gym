@@ -16,9 +16,8 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from ccc_eval import CCCEvaluator
 from fastapi import FastAPI
 from pydantic import ConfigDict, Field, PrivateAttr
 
@@ -28,6 +27,8 @@ from nemo_gym.base_resources_server import (
     BaseVerifyResponse,
     SimpleResourcesServer,
 )
+from nemo_gym.reward_profile import compute_pass_majority_metrics, highest_k_metrics
+from resources_servers.competitive_coding_challenges.ccc_eval import CCCEvaluator
 
 
 LOG = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class CompetitiveCodingChallengesResourcesServerConfig(BaseResourcesServerConfig
     num_parallel_requests: int = 16
     time_scale: float = 2.0
     shared_dir: str = "/tmp"
+    reward_mode: Literal["binary", "fraction"] = "binary"
 
 
 class CompetitiveCodingChallengesResourcesServer(SimpleResourcesServer):
@@ -114,6 +116,9 @@ class CompetitiveCodingChallengesResourcesServer(SimpleResourcesServer):
         body: CompetitiveCodingChallengesVerifyRequest,
         evaluation_result: dict[str, Any],
     ) -> float:
+        if self.config.reward_mode == "fraction":
+            return self._compute_fraction_reward(body, evaluation_result)
+
         test_case_results = evaluation_result.get("test_case_results") or {}
         if body.subtask and body.subtask in test_case_results:
             subtask_result = test_case_results[body.subtask]
@@ -144,6 +149,130 @@ class CompetitiveCodingChallengesResourcesServer(SimpleResourcesServer):
             return 1.0
         return 0.0
 
+    def _compute_fraction_reward(
+        self,
+        body: CompetitiveCodingChallengesVerifyRequest,
+        evaluation_result: dict[str, Any],
+    ) -> float:
+        test_case_results = evaluation_result.get("test_case_results") or {}
+        outputs = []
+        if body.subtask and body.subtask in test_case_results:
+            outputs = test_case_results[body.subtask].get("outputs", []) or []
+        else:
+            seen_test_names = set()
+            for subtask_name, subtask_result in test_case_results.items():
+                for output_idx, output in enumerate(subtask_result.get("outputs", []) or []):
+                    test_name = output.get("test_name")
+                    key = test_name if test_name is not None else (subtask_name, output_idx)
+                    if key in seen_test_names:
+                        continue
+                    seen_test_names.add(key)
+                    outputs.append(output)
+
+        if not outputs:
+            return 0.0
+        passed = sum(1 for output in outputs if float(output.get("score", 0.0) or 0.0) >= 1.0)
+        return float(passed / len(outputs))
+
+    # ---------------------------
+    # Aggregate metrics
+    # ---------------------------
+    def _lookup_subtask_cap(self, competition_id: Optional[str], problem_id: str, subtask: str) -> float:
+        """Max score a subtask can award, looked up via the loaded metadata.
+
+        Mirrors the metadata branch of ``_subtask_max_score(self, body)`` but
+        takes the three identifiers directly so it can be called from the
+        metrics aggregation path (where rows are dicts, not request bodies).
+        Returns 0.0 if the evaluator isn't initialized or the lookup fails —
+        callers should treat 0.0 as "cap unknown" rather than "subtask worth
+        zero".
+        """
+        if not self._evaluator:
+            return 0.0
+        try:
+            problem_meta = self._evaluator.get_problem_metadata(problem_id, competition_id)
+        except Exception:
+            return 0.0
+        subtask_meta = (problem_meta.get("subtasks") or {}).get(subtask, {})
+        if not subtask_meta:
+            return 0.0
+        if subtask_meta.get("aggregation") == "sum_tests":
+            return float(len(subtask_meta.get("test_names", [])))
+        score = subtask_meta.get("score")
+        return float(score) if score is not None else 0.0
+
+    @staticmethod
+    def _score_fn(result: dict) -> Dict[str, float]:
+        """Per-rollout accuracy: 1.0 iff every subtask the rollout covered scored > 0."""
+        details = result.get("details") or {}
+        tcr = details.get("test_case_results") or {}
+        if not tcr:
+            return {"accuracy": 0.0}
+        return {"accuracy": 1.0 if all((r.get("score", 0) or 0) > 0 for r in tcr.values()) else 0.0}
+
+    def compute_metrics(self, tasks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """Pass@k accuracy + competition-style ``total_score`` per problem.
+
+        For each problem (grouped by ``problem_id``), take the max per-subtask
+        score across ALL rollouts of ALL subtasks in that problem, sum across
+        subtasks for a per-problem total, then sum across problems for the
+        headline ``total_score``. ``per_problem_subtask_scores`` carries the
+        per-problem breakdown with per-subtask ``{score, max_score}`` and a
+        ``total`` summary.
+        """
+        metrics, _, _, _ = compute_pass_majority_metrics(
+            tasks,
+            score_fn=self._score_fn,
+            answer_key="extracted_code",
+        )
+
+        problem_subtask_max: Dict[str, Dict[str, float]] = {}
+        problem_subtask_cap: Dict[str, Dict[str, float]] = {}
+        for rollouts in tasks:
+            for r in rollouts:
+                problem_id = r.get("problem_id") or r.get("ioi_id")
+                if not problem_id:
+                    continue
+                competition_id = r.get("competition_id")
+                details = r.get("details") or {}
+                tcr = details.get("test_case_results") or {}
+                for st, sub in tcr.items():
+                    achieved = float((sub or {}).get("score", 0) or 0)
+                    problem_subtask_max.setdefault(problem_id, {})
+                    if achieved > problem_subtask_max[problem_id].get(st, 0):
+                        problem_subtask_max[problem_id][st] = achieved
+                    if st not in problem_subtask_cap.setdefault(problem_id, {}):
+                        problem_subtask_cap[problem_id][st] = self._lookup_subtask_cap(competition_id, problem_id, st)
+
+        total_score = 0.0
+        per_problem: Dict[str, Dict[str, Any]] = {}
+        for problem_id, subs in problem_subtask_max.items():
+            problem_total = sum(subs.values())
+            max_total = sum(problem_subtask_cap.get(problem_id, {}).values())
+            per_problem[problem_id] = {
+                "total": {"score": problem_total, "max_score": max_total},
+                "subtasks": {
+                    st: {
+                        "score": subs[st],
+                        "max_score": problem_subtask_cap.get(problem_id, {}).get(st, 0),
+                    }
+                    for st in subs
+                },
+            }
+            total_score += problem_total
+
+        metrics["total_score"] = int(total_score)
+        metrics["per_problem_subtask_scores"] = per_problem
+        return metrics
+
+    def get_key_metrics(self, agent_metrics: Dict[str, Any]) -> Dict[str, Any]:
+        key: Dict[str, Any] = {}
+        key.update(highest_k_metrics(agent_metrics, "pass@1[avg-of-{k}]", score_names=["accuracy"]))
+        key.update(highest_k_metrics(agent_metrics, "pass@{k}", score_names=["accuracy"]))
+        if "total_score" in agent_metrics:
+            key["total_score"] = agent_metrics["total_score"]
+        return key
+
     def setup_webserver(self) -> FastAPI:
         app = super().setup_webserver()
 
@@ -159,6 +288,7 @@ class CompetitiveCodingChallengesResourcesServer(SimpleResourcesServer):
                 "test_batch_size": self.config.test_batch_size,
                 "time_scale": self.config.time_scale,
                 "shared_dir": self.config.shared_dir,
+                "run_all_tests": self.config.reward_mode == "fraction",
             },
             num_parallel_requests=self.config.num_parallel_requests,
         )
@@ -185,15 +315,16 @@ class CompetitiveCodingChallengesResourcesServer(SimpleResourcesServer):
         reward = 0.0
         details: dict[str, Any] = {}
         try:
-            details = await self._evaluator.eval_single(
-                {
-                    "competition_id": body.competition_id,
-                    "name": payload["name"],
-                    "problem_id": body.problem_id,
-                    "subtask": body.subtask,
-                    "generation": _extract_last_assistant_text(body),
-                }
-            )
+            evaluation_entry = {
+                "competition_id": body.competition_id,
+                "name": payload["name"],
+                "problem_id": body.problem_id,
+                "subtask": body.subtask,
+                "generation": _extract_last_assistant_text(body),
+            }
+            if payload.get("total_time") is not None:
+                evaluation_entry["total_time"] = payload["total_time"]
+            details = await self._evaluator.eval_single(evaluation_entry)
             reward = self._compute_reward(body, details)
         except Exception as e:
             details = {"error": str(e)}

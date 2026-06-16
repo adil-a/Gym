@@ -17,6 +17,7 @@ import atexit
 import json
 import resource
 import sys
+import time
 from abc import abstractmethod
 from contextlib import asynccontextmanager
 from logging import Filter as LoggingFilter
@@ -170,24 +171,32 @@ async def request(
 
     client = get_global_aiohttp_client()
     num_tries = 1
+    retries = 0
+    retry_start = time.monotonic()
     while True:
         try:
             return await client.request(method=method, url=url, **kwargs)
         except ServerDisconnectedError:
             global _NUM_SERVER_DISCONNECTED_ERROR
             _NUM_SERVER_DISCONNECTED_ERROR += 1
+            retries += 1
             if _NUM_SERVER_DISCONNECTED_ERROR % DISCONNECTED_CLIENT_OS_PRINT_INTERVAL == 0:
                 print(
-                    f"Hit {_NUM_SERVER_DISCONNECTED_ERROR} global `ServerDisconnectedError` while querying {url}.\n{DISCONNECTED_CLIENT_OS_HELP_TEXT}"
+                    f"[request_retry url={url} error=ServerDisconnectedError retry={retries} elapsed_s={time.monotonic() - retry_start:.1f}] "
+                    f"Hit {_NUM_SERVER_DISCONNECTED_ERROR} global `ServerDisconnectedError` while querying {url}.\n{DISCONNECTED_CLIENT_OS_HELP_TEXT}",
+                    flush=True,
                 )
 
             await asyncio.sleep(0.5)
         except ClientOSError:
             global _NUM_CLIENT_OS_ERROR
             _NUM_CLIENT_OS_ERROR += 1
+            retries += 1
             if _NUM_CLIENT_OS_ERROR % DISCONNECTED_CLIENT_OS_PRINT_INTERVAL == 0:
                 print(
-                    f"Hit {_NUM_CLIENT_OS_ERROR} global `ClientOSError` while querying {url}.\n{DISCONNECTED_CLIENT_OS_HELP_TEXT}"
+                    f"[request_retry url={url} error=ClientOSError retry={retries} elapsed_s={time.monotonic() - retry_start:.1f}] "
+                    f"Hit {_NUM_CLIENT_OS_ERROR} global `ClientOSError` while querying {url}.\n{DISCONNECTED_CLIENT_OS_HELP_TEXT}",
+                    flush=True,
                 )
 
             await asyncio.sleep(0.5)
@@ -367,6 +376,11 @@ class BaseServer(BaseModel):
         )
 
         return server_config
+
+    def setup_liveness(self, app: FastAPI) -> None:
+        @app.get("/", include_in_schema=False)
+        async def _liveness():
+            return {"status": "ok"}
 
 
 class ProfilingMiddlewareInputConfig(BaseModel):
@@ -617,6 +631,7 @@ repr(e): {repr(e)}"""
             return
 
         app = server.setup_webserver()
+        server.setup_liveness(app)
         server.set_ulimit()
         server.prefix_server_logs()
         server.setup_exception_middleware(app)
@@ -689,6 +704,7 @@ class HeadServer(BaseServer):
     def setup_webserver(self) -> FastAPI:
         app = FastAPI()
 
+        self.setup_liveness(app)
         app.get("/global_config_dict_yaml")(self.global_config_dict_yaml)
         app.get("/server_instances")(self.get_server_instances)
 
