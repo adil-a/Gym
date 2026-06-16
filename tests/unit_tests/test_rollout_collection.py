@@ -282,6 +282,46 @@ class TestRolloutCollection:
             },
         ]
 
+    def test_preprocess_rows_stamps_skills_ref(self, tmp_path: Path) -> None:
+        """skills.path is a run-level knob: each row is stamped with skills_ref (path + hash +
+        metadata) without the source dataset carrying any skills field."""
+        skills_dir = tmp_path / "variant_a"
+        skill = skills_dir / "cot_enhanced"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: cot_enhanced\ndescription: Think step by step.\n---\n# Body\n")
+
+        fpath = tmp_path / "input.jsonl"
+        samples = [json.dumps({"responses_create_params": {"input": []}, "x": i}) for i in range(2)]
+        fpath.write_text("\n".join(samples) + "\n")
+
+        config = RolloutCollectionConfig(
+            agent_name="my_agent",
+            input_jsonl_fpath=str(fpath),
+            output_jsonl_fpath=str(tmp_path / "out.jsonl"),
+            skills={"path": str(skills_dir)},
+        )
+
+        rows = RolloutCollectionHelper._preprocess_rows_from_config(None, config)
+
+        assert len(rows) == 2
+        for row in rows:
+            skills_ref = row["skills_ref"]
+            assert skills_ref["path"] == str(skills_dir)
+            assert len(skills_ref["hash"]) == 12
+            assert [s["name"] for s in skills_ref["skills"]] == ["cot_enhanced"]
+            assert skills_ref["skills"][0]["description"] == "Think step by step."
+
+    def test_preprocess_rows_no_skills_leaves_rows_clean(self, tmp_path: Path) -> None:
+        fpath = tmp_path / "input.jsonl"
+        fpath.write_text(json.dumps({"responses_create_params": {"input": []}}) + "\n")
+        config = RolloutCollectionConfig(
+            agent_name="my_agent",
+            input_jsonl_fpath=str(fpath),
+            output_jsonl_fpath=str(tmp_path / "out.jsonl"),
+        )
+        rows = RolloutCollectionHelper._preprocess_rows_from_config(None, config)
+        assert "skills_ref" not in rows[0]
+
     def test_preprocess_rows_num_repeats_add_seed_passes_pydantic_validation(self, tmp_path: Path) -> None:
         """Rows emitted with num_repeats_add_seed=True must round-trip through the strict
         NeMoGymResponseCreateParamsNonStreaming schema (extra='forbid'). Seed is passed via

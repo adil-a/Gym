@@ -23,10 +23,12 @@ import yaml
 from nemo_gym.openai_utils import (
     NeMoGymEasyInputMessage,
     NeMoGymFunctionCallOutput,
+    NeMoGymResponseCreateParamsNonStreaming,
     NeMoGymResponseFunctionToolCall,
     NeMoGymResponseOutputMessage,
 )
 from nemo_gym.server_utils import ServerClient
+from nemo_gym.skills import SKILLS_PATH_METADATA_KEY
 from responses_api_agents.claude_code_agent.app import (
     ClaudeCodeAgent,
     ClaudeCodeAgentConfig,
@@ -34,6 +36,14 @@ from responses_api_agents.claude_code_agent.app import (
     _extract_instruction,
     parse_stream_json,
 )
+
+
+def _write_skill_dir(root: Path, name: str = "cot_enhanced") -> Path:
+    skills_dir = root / "variant_a"
+    skill = skills_dir / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(f"---\nname: {name}\ndescription: A skill.\n---\n# Body\n")
+    return skills_dir
 
 
 def _config(**kwargs) -> ClaudeCodeAgentConfig:
@@ -106,6 +116,17 @@ class TestBuildCommand:
         assert "--bare" in cmd
         assert cmd[cmd.index("--mcp-config") + 1] == "/path/to/mcp.json"
 
+    def test_skills_active_forces_bare_off(self) -> None:
+        # Default config has bare=True, but staged skills must be discoverable, so --bare is dropped.
+        agent = _make_agent()
+        cmd = agent._build_command("m", "x", skills_active=True)
+        assert "--bare" not in cmd
+
+    def test_skills_inactive_keeps_bare(self) -> None:
+        agent = _make_agent()
+        cmd = agent._build_command("m", "x", skills_active=False)
+        assert "--bare" in cmd
+
     def test_optional_flags_threaded_through(self) -> None:
         agent = _make_agent(
             allowed_tools="Bash,Read",
@@ -165,6 +186,40 @@ class TestSetupConfigDir:
 
             _shutil.rmtree(config_dir, ignore_errors=True)
 
+    def test_stages_skills_into_config_dir(self, tmp_path: Path) -> None:
+        skills_dir = _write_skill_dir(tmp_path)
+        home = tmp_path / "home"
+        home.mkdir()
+        agent = _make_agent()
+        with patch("responses_api_agents.claude_code_agent.app.Path.home", return_value=home):
+            config_dir = agent._setup_config_dir(skills_path=str(skills_dir))
+        try:
+            assert (config_dir / "skills" / "cot_enhanced" / "SKILL.md").is_file()
+        finally:
+            import shutil as _shutil
+
+            _shutil.rmtree(config_dir, ignore_errors=True)
+
+
+class TestInjectSkillsPath:
+    def _params(self, **kwargs) -> NeMoGymResponseCreateParamsNonStreaming:
+        return NeMoGymResponseCreateParamsNonStreaming(input=[], **kwargs)
+
+    def test_no_skills_path_returns_unchanged(self) -> None:
+        params = self._params()
+        assert ClaudeCodeAgent._inject_skills_path(params, None) is params
+
+    def test_injects_into_metadata(self) -> None:
+        params = self._params()
+        out = ClaudeCodeAgent._inject_skills_path(params, "skills/variant_a/")
+        assert out.metadata[SKILLS_PATH_METADATA_KEY] == "skills/variant_a/"
+
+    def test_preserves_existing_metadata(self) -> None:
+        params = self._params(metadata={"existing": "value"})
+        out = ClaudeCodeAgent._inject_skills_path(params, "skills/variant_a/")
+        assert out.metadata["existing"] == "value"
+        assert out.metadata[SKILLS_PATH_METADATA_KEY] == "skills/variant_a/"
+
 
 class TestRunClaudeCode:
     def test_wires_command_env_and_cleans_up(self, tmp_path: Path) -> None:
@@ -202,6 +257,35 @@ class TestRunClaudeCode:
         assert not Path(captured["config_dir"]).exists()
         assert "result" in stdout
         assert model == "claude-sonnet-4-6"
+
+    def test_skills_staged_and_bare_dropped(self, tmp_path: Path) -> None:
+        skills_dir = _write_skill_dir(tmp_path)
+        home = tmp_path / "home"
+        home.mkdir()
+        agent = _make_agent()  # bare defaults to True
+        captured: dict = {}
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return b'{"type":"result","usage":{"input_tokens":1,"output_tokens":1}}\n', b""
+
+        async def fake_exec(*cmd, **kwargs):
+            config_dir = Path(kwargs["env"]["CLAUDE_CONFIG_DIR"])
+            captured["cmd"] = list(cmd)
+            captured["skill_staged"] = (config_dir / "skills" / "cot_enhanced" / "SKILL.md").is_file()
+            return FakeProc()
+
+        with (
+            patch("responses_api_agents.claude_code_agent.app.Path.home", return_value=home),
+            patch("responses_api_agents.claude_code_agent.app.asyncio.create_subprocess_exec", fake_exec),
+        ):
+            asyncio.run(agent._run_claude_code("hello", skills_path=str(skills_dir)))
+
+        assert captured["skill_staged"] is True
+        # skills present => --bare must be dropped even though config.bare is True
+        assert "--bare" not in captured["cmd"]
 
     def test_timeout_returns_empty(self, tmp_path: Path) -> None:
         agent = _make_agent(timeout=1)

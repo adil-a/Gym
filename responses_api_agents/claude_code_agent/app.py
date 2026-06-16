@@ -35,7 +35,7 @@ from nemo_gym.base_responses_api_agent import (
     SimpleResponsesAPIAgent,
 )
 from nemo_gym.config_types import ModelServerRef, ResourcesServerRef
-from nemo_gym.global_config import get_first_server_config_dict
+from nemo_gym.global_config import SKILLS_REF_KEY_NAME, get_first_server_config_dict
 from nemo_gym.openai_utils import (
     NeMoGymEasyInputMessage,
     NeMoGymFunctionCallOutput,
@@ -49,6 +49,7 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseUsage,
 )
 from nemo_gym.server_utils import get_response_json, raise_for_status
+from nemo_gym.skills import SKILLS_PATH_METADATA_KEY, stage_skills
 from responses_api_agents.claude_code_agent.setup_claude_code import ensure_claude_code
 
 
@@ -282,24 +283,37 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
             settings = {**settings, **user_settings, "env": {**settings["env"], **user_env}}
         return settings
 
-    def _setup_config_dir(self) -> Path:
-        """Create a per-run CLAUDE_CONFIG_DIR and stage settings into it.
+    def _setup_config_dir(self, skills_path: Optional[str] = None) -> Path:
+        """Create a per-run CLAUDE_CONFIG_DIR and stage settings (and optionally skills) into it.
 
-        The directory lives for the duration of a single ``_run_claude_code`` call and is the
-        staging seam for capabilities discovered from CLAUDE_CONFIG_DIR (e.g. skills under
-        ``<dir>/skills/``). The caller is responsible for removing it.
+        The directory lives for the duration of a single ``_run_claude_code`` call. When
+        ``skills_path`` is provided, the directory of skills is copied into ``<dir>/skills/`` so
+        Claude Code's native discovery can pick them up. Each request gets its own ephemeral copy,
+        so concurrent requests with different skills do not contaminate one another. The caller is
+        responsible for removing the directory.
         """
         claude_config_dir = Path.home() / ".claude_code_agent" / uuid4().hex
         claude_config_dir.mkdir(parents=True)
         (claude_config_dir / "settings.json").write_text(json.dumps(self._build_settings()))
+        if skills_path:
+            stage_skills(skills_path, claude_config_dir / "skills")
         return claude_config_dir
 
-    def _build_command(self, model: str, instruction: str, system_prompt: Optional[str] = None) -> list[str]:
+    def _build_command(
+        self,
+        model: str,
+        instruction: str,
+        system_prompt: Optional[str] = None,
+        skills_active: bool = False,
+    ) -> list[str]:
         """Construct the ``claude`` CLI argv from config.
 
         ``--bare`` is only passed when ``config.bare`` is True; it disables auto-discovery of
         skills, hooks, plugins, MCP servers, auto memory, and CLAUDE.md. Explicit capabilities
         like ``--mcp-config`` are passed regardless of ``--bare`` since they are not auto-discovered.
+
+        When ``skills_active`` is True (skills were staged into CLAUDE_CONFIG_DIR for this request),
+        ``--bare`` is forced off so Claude Code's native filesystem discovery picks the skills up.
         """
         cmd = [
             "claude",
@@ -309,7 +323,9 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
             "--verbose",
             "--dangerously-skip-permissions",
         ]
-        if self.config.bare:
+        if self.config.bare and skills_active:
+            LOG.warning("skills are active for this request; ignoring bare=True so Claude Code can discover them")
+        if self.config.bare and not skills_active:
             cmd.append("--bare")
         cmd += ["--max-turns", str(self.config.max_turns), "--model", model]
         if self.config.mcp_config:
@@ -327,14 +343,19 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
         cmd += ["--", instruction]
         return cmd
 
-    async def _run_claude_code(self, instruction: str, system_prompt: Optional[str] = None) -> tuple[str, str]:
+    async def _run_claude_code(
+        self,
+        instruction: str,
+        system_prompt: Optional[str] = None,
+        skills_path: Optional[str] = None,
+    ) -> tuple[str, str]:
         """Run claude -p --output-format=stream-json and return (stdout, model_name)."""
         base_url = self._resolve_base_url()
         # Keep full model name for local/custom endpoints; strip provider prefix for real Anthropic API.
         model = self.config.model if base_url else self.config.model.split("/")[-1]
         api_key = self.config.anthropic_api_key
 
-        claude_config_dir = self._setup_config_dir()
+        claude_config_dir = self._setup_config_dir(skills_path=skills_path)
         try:
             env = {
                 **os.environ,
@@ -351,7 +372,7 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
                 env["ANTHROPIC_BASE_URL"] = base_url
                 env["ANTHROPIC_AUTH_TOKEN"] = api_key or "local"
 
-            cmd = self._build_command(model, instruction, system_prompt=system_prompt)
+            cmd = self._build_command(model, instruction, system_prompt=system_prompt, skills_active=bool(skills_path))
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -388,7 +409,11 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
         system_parts = [p for p in [self.config.system_prompt, input_system] if p]
         system_prompt = "\n\n".join(system_parts) if system_parts else None
 
-        stdout, model_name = await self._run_claude_code(user_message, system_prompt=system_prompt)
+        skills_path = (body.metadata or {}).get(SKILLS_PATH_METADATA_KEY)
+
+        stdout, model_name = await self._run_claude_code(
+            user_message, system_prompt=system_prompt, skills_path=skills_path
+        )
         output_items, usage = parse_stream_json(stdout)
 
         if not any(
@@ -427,6 +452,20 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
             ),
         )
 
+    @staticmethod
+    def _inject_skills_path(
+        responses_create_params: NeMoGymResponseCreateParamsNonStreaming, skills_path: Optional[str]
+    ) -> NeMoGymResponseCreateParamsNonStreaming:
+        """Return responses_create_params with the skills path stashed in metadata (if present).
+
+        Returns the input unchanged when there is no skills path.
+        """
+        if not skills_path:
+            return responses_create_params
+        metadata = dict(responses_create_params.metadata or {})
+        metadata[SKILLS_PATH_METADATA_KEY] = skills_path
+        return responses_create_params.model_copy(update={"metadata": metadata})
+
     async def run(self, request: Request, body: ClaudeCodeAgentRunRequest) -> ClaudeCodeAgentVerifyResponse:
         async with self.sem:
             cookies = request.cookies
@@ -440,10 +479,17 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
             await raise_for_status(seed_resp)
             cookies = seed_resp.cookies
 
+            # The run-level skills_ref (stamped by rollout collection) rides on the request body.
+            # Forward its path to /v1/responses via metadata so the CLI invocation can stage the
+            # skills into its per-request CLAUDE_CONFIG_DIR. responses_create_params forbids extra
+            # fields, so metadata is the sanctioned side-channel (same pattern as the seed knob).
+            skills_path = ((body.model_extra or {}).get(SKILLS_REF_KEY_NAME) or {}).get("path")
+            responses_create_params = self._inject_skills_path(body.responses_create_params, skills_path)
+
             agent_resp = await self.server_client.post(
                 server_name=self.config.name,
                 url_path="/v1/responses",
-                json=body.responses_create_params,
+                json=responses_create_params,
                 cookies=cookies,
             )
             await raise_for_status(agent_resp)
