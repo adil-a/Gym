@@ -44,11 +44,8 @@ DATA_DIR = BENCHMARK_DIR / "data"
 REPO_DIR = DATA_DIR / "skillsbench_repo"
 OUTPUT_FPATH = DATA_DIR / "skillsbench_benchmark.jsonl"
 
-# Pinned defaults for reproducibility. Override per-run via the CLI flags below when
-# running this script directly.
 DEFAULT_REPO_URL = "https://github.com/benchflow-ai/skillsbench.git"
 DEFAULT_COMMIT = "312d07e15e5398f6eda32ee1bb86e492ab18edd1"  # pragma: allowlist secret
-DEFAULT_EXCLUDED_TASKS = {"multilingual-video-dubbing"}
 
 # Top-level config key of the agent that serves these rows (see config.yaml). Used as
 # the `agent_ref.name` so `ng_collect_rollouts` routes each row to the right server.
@@ -57,10 +54,9 @@ AGENT_INSTANCE_NAME = "skillsbench_benchflow_agent"
 
 
 def _ensure_repo(repo_dir: Path, repo_url: str, commit: str) -> None:
-    """Clone SkillsBench at ``commit`` into ``repo_dir`` (idempotent).
-
-    Reuses an existing checkout already at ``commit``; otherwise (re)clones. The
-    checkout persists because it is the agent's runtime ``tasks_dir``.
+    """
+    Clones SkillsBench at `repo_url` and `commit` into `repo_dir`.
+    If `repo_dir` is already checked out to `commit`, reuses it, otherwise removes and clones again.
     """
     if repo_dir.exists():
         head = subprocess.run(
@@ -80,7 +76,7 @@ def _ensure_repo(repo_dir: Path, repo_url: str, commit: str) -> None:
 
 
 def _discover_task_names(repo_dir: Path, excluded_tasks: set[str]) -> list[str]:
-    """Return sorted SkillsBench task directory names (those with a task.toml)."""
+    """Returns sorted SkillsBench task directory names (those with a task.toml)."""
     tasks_root = repo_dir / "tasks"
     if not tasks_root.is_dir():
         raise FileNotFoundError(f"No tasks/ directory found in SkillsBench checkout at {tasks_root}")
@@ -92,18 +88,15 @@ def _discover_task_names(repo_dir: Path, excluded_tasks: set[str]) -> list[str]:
 
 
 def prepare(
-    repo_url: str = DEFAULT_REPO_URL,
+    repo: str = DEFAULT_REPO_URL,
     commit: str = DEFAULT_COMMIT,
     excluded_tasks: set[str] | None = None,
 ) -> Path:
-    """Clone SkillsBench and write one JSONL row per task. Returns the JSONL path."""
-    if excluded_tasks is None:
-        excluded_tasks = DEFAULT_EXCLUDED_TASKS
-
+    """Clones SkillsBench and creates a JSONL file with one row per task. Returns the JSONL path."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _ensure_repo(REPO_DIR, repo_url, commit)
+    _ensure_repo(REPO_DIR, repo, commit)
 
-    task_names = _discover_task_names(REPO_DIR, excluded_tasks)
+    task_names = _discover_task_names(REPO_DIR, excluded_tasks or {})
     if not task_names:
         raise RuntimeError(f"No SkillsBench tasks found under {REPO_DIR / 'tasks'}")
 
@@ -121,15 +114,15 @@ def prepare(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Prepare the SkillsBench benchmark dataset.")
-    parser.add_argument("--repo-url", default=DEFAULT_REPO_URL, help="SkillsBench git repo URL.")
+    parser = argparse.ArgumentParser(description="Prepares the SkillsBench benchmark dataset.")
+    parser.add_argument("--repo", default=DEFAULT_REPO_URL, help="SkillsBench git repo URL.")
     parser.add_argument("--commit", default=DEFAULT_COMMIT, help="SkillsBench commit to check out.")
     parser.add_argument(
         "--exclude", action="append", default=None, metavar="TASK", help="Task to exclude (repeatable)."
     )
     args = parser.parse_args()
     prepare(
-        repo_url=args.repo_url,
+        repo=args.repo,
         commit=args.commit,
         excluded_tasks=set(args.exclude) if args.exclude is not None else None,
     )
