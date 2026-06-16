@@ -65,6 +65,12 @@ from nemo_gym.server_utils import (
 from nemo_gym.train_data_utils import TrainDataProcessor
 
 
+# Grace period after SIGINT before escalating to SIGKILL. Kept short so Ctrl-C is responsive.
+_GRACEFUL_SHUTDOWN_TIMEOUT_SEC: int = 1
+# Grace period after SIGKILL for the kernel to reap the child and avoid <defunct> entries.
+_FORCE_KILL_REAP_TIMEOUT_SEC: int = 2
+
+
 class RunConfig(BaseNeMoGymCLIConfig):
     """
     Start NeMo Gym servers for agents, models, and resources.
@@ -322,20 +328,32 @@ Process `{process_name}` stderr:
 
         print("Waiting for processes to finish...")
         killed_process_names: List[str] = []
+        unreaped_process_names: List[str] = []
         for process_name, process in self._processes.items():
             try:
-                process.wait(timeout=1)
+                process.wait(timeout=_GRACEFUL_SHUTDOWN_TIMEOUT_SEC)
             except TimeoutExpired:
                 process.kill()
                 killed_process_names.append(process_name)
+                # Reap the child after SIGKILL to avoid leaving a <defunct> entry.
+                try:
+                    process.wait(timeout=_FORCE_KILL_REAP_TIMEOUT_SEC)
+                except TimeoutExpired:
+                    unreaped_process_names.append(process_name)
 
         if killed_process_names:
             print(
-                f"""Some processes ({", ".join(killed_process_names)}) didn't shutdown within the 5s timeout, killing instead. You may see messages like:
+                f"""Some processes ({", ".join(killed_process_names)}) didn't shutdown within the {_GRACEFUL_SHUTDOWN_TIMEOUT_SEC}s timeout, killing instead. You may see messages like:
 ```bash
 rpc_client.h:203: Failed to connect to GCS within 60 seconds. GCS may have been killed. It's either GCS is terminated by `ray stop` or is killed unexpectedly. If it is killed unexpectedly, see the log file gcs_server.out. https://docs.ray.io/en/master/ray-observability/user-guides/configure-logging.html#logging-directory-structure. The program will terminate.
 ```
 """
+            )
+        if unreaped_process_names:
+            print(
+                f"WARNING: processes ({', '.join(unreaped_process_names)}) did not exit "
+                f"within {_FORCE_KILL_REAP_TIMEOUT_SEC}s after SIGKILL; "
+                "they may remain as zombies until this process exits."
             )
         self._processes = dict()
 
@@ -600,6 +618,31 @@ class TestAllConfig(BaseNeMoGymCLIConfig):
         default=False,
         description="Delete each server venv after its tests have been run (default: False).",
     )
+    num_shards: int = Field(
+        default=1,
+        ge=1,
+        description="Total number of shards to split the server suite across (default: 1 = no sharding). "
+        "Used to parallelize the suite across CI runners.",
+    )
+    shard_index: int = Field(
+        default=0,
+        ge=0,
+        description="Which shard (0-based) this invocation runs; must be < num_shards (default: 0).",
+    )
+
+
+def _select_shard(dir_paths: List[Path], shard_index: int, num_shards: int) -> List[Path]:
+    """Deterministically select this shard's subset of modules.
+
+    Round-robin (stride) over a sorted list spreads heavy modules across shards more evenly than
+    contiguous chunks, which balances wall-time when the suite is parallelized across CI runners.
+    """
+    if num_shards <= 1:
+        return dir_paths
+    assert 0 <= shard_index < num_shards, (
+        f"shard_index ({shard_index}) must be in [0, num_shards) for num_shards={num_shards}"
+    )
+    return sorted(dir_paths, key=str)[shard_index::num_shards]
 
 
 def test_all():  # pragma: no cover
@@ -616,6 +659,15 @@ def test_all():  # pragma: no cover
     dir_paths: List[Path] = list(map(Path, candidate_dir_paths))
     dir_paths = [p for p in dir_paths if (p / "README.md").exists()]
     print(f"Found {len(dir_paths)} modules to test:{_display_list_of_paths(dir_paths)}\n")
+
+    # Keep the full list for the total-vs-tested mismatch check below, then narrow to this shard.
+    full_dir_paths = dir_paths
+    dir_paths = _select_shard(dir_paths, test_all_config.shard_index, test_all_config.num_shards)
+    if test_all_config.num_shards > 1:
+        print(
+            f"Shard {test_all_config.shard_index + 1}/{test_all_config.num_shards}: "
+            f"testing {len(dir_paths)} of {len(full_dir_paths)} modules:{_display_list_of_paths(dir_paths)}\n"
+        )
 
     tests_passed: List[Path] = []
     tests_failed: List[Path] = []
@@ -692,10 +744,12 @@ ng_test +entrypoint={data_validation_failed[0]} +should_validate_data=true
 """)
 
     if test_all_config.fail_on_total_and_test_mismatch:
-        extra_candidates = [p for p in candidate_dir_paths if Path(p) not in dir_paths]
+        # Compare against the full (unsharded) module list — every module must be testable
+        # regardless of how many shards we split the run into.
+        extra_candidates = [p for p in candidate_dir_paths if Path(p) not in full_dir_paths]
         assert (
-            len(candidate_dir_paths) == len(dir_paths)
-        ), f"""Mismatch on the number of total modules found ({len(candidate_dir_paths)}) and the number of actual modules tested ({len(dir_paths)})!
+            len(candidate_dir_paths) == len(full_dir_paths)
+        ), f"""Mismatch on the number of total modules found ({len(candidate_dir_paths)}) and the number of actual modules tested ({len(full_dir_paths)})!
 
 Extra candidate paths:{_display_list_of_paths(extra_candidates)}"""
 
