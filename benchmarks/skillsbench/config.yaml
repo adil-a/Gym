@@ -13,9 +13,9 @@ skillsbench_benchflow_agent:
       tasks_dir: benchmarks/skillsbench/data/skillsbench_repo/tasks
 
       # Directory of prebuilt per-task Singularity .sif images. Files must be named "<task_name>.sif".
-      images_dir: "/path/to/skillsbench/sif_images"
+      images_dir: null
 
-      # Overrides for every task's task.toml.
+      # Overrides to apply to every task's task.toml.
       task_config_overrides:
         environment:
           memory_mb: 131072

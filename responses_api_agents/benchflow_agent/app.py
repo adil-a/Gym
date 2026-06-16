@@ -49,7 +49,7 @@ from responses_api_agents.benchflow_agent.utils import BenchFlowAgentUtils
 
 
 class BenchFlowAgentConfig(BaseResponsesAPIAgentConfig):
-    # Max number of concurrent `/run` requests handled by NeMo Gym.
+    # Max number of concurrent `/run` requests handled by the NeMo Gym agent server process.
     concurrency: int
 
     # NeMo Gym model server reference.
@@ -61,14 +61,14 @@ class BenchFlowAgentConfig(BaseResponsesAPIAgentConfig):
     # Output directory for BenchFlow results/artifacts/logs.
     jobs_dir: str = "jobs"
 
-    # BenchFlow agent harness to install and run in the sandbox.
+    # BenchFlow agent harness.
     agent: str = "openhands"
 
     # Extra environment variables forwarded to the agent harness.
     # The LLM server base URL and API key are passed automatically.
     agent_env: dict[str, str] = Field(default_factory=dict)
 
-    # Sandbox user. None (or "none") runs as root; matches `--sandbox-user none`.
+    # Sandbox user. "none" or null runs as root.
     sandbox_user: Optional[str] = None
 
     # Abort a rollout if the agent makes no tool call for this many seconds.
@@ -77,7 +77,7 @@ class BenchFlowAgentConfig(BaseResponsesAPIAgentConfig):
     # Skills directory passed to BenchFlow ("auto" = use task-bundled skills, None = do not use skills).
     skills_dir: Optional[str] = "auto"
 
-    # BENCHFLOW_SKILL_NUDGE value (None disables it). "name" matches the current eval.
+    # BENCHFLOW_SKILL_NUDGE value ("name" is the recommended mode when using skills, None = do not use skills).
     skill_nudge: Optional[str] = "name"
 
     # BenchFlow usage/cost telemetry mode: "auto" | "required" | "off".
