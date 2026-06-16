@@ -147,7 +147,7 @@ Each rollout result is stamped with a `skills_ref` for provenance and grouping d
   "reward": 1.0,
   "skills_ref": {
     "path": "skills/variant_a/",
-    "hash": "a1b2c3d4e5f6",
+    "hash": "a1b2c3…",
     "skills": [{"name": "cot_enhanced", "description": "..."}]
   }
 }
