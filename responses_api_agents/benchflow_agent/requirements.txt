@@ -1,2 +1,2 @@
 -e nemo-gym[dev] @ ../../
-benchflow @ git+https://github.com/ludwig-n/benchflow@4936df96295bfc82ac867a175c198adb01eefa1e
+benchflow @ git+https://github.com/ludwig-n/benchflow@7153cd803dfc19ae349b4b167ea56a78948dda25

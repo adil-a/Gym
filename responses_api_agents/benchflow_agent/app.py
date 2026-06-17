@@ -26,7 +26,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import Body
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict
 
 from nemo_gym.base_resources_server import (
     BaseRunRequest,
@@ -59,7 +59,7 @@ class BenchFlowAgentConfig(BaseResponsesAPIAgentConfig):
     tasks_dir: str
 
     # Output directory for BenchFlow results/artifacts/logs.
-    jobs_dir: str = "responses_api_agents/benchflow_agent/jobs"
+    jobs_dir: str = "jobs"
 
     # BenchFlow agent harness.
     agent: str = "openhands"
@@ -68,31 +68,28 @@ class BenchFlowAgentConfig(BaseResponsesAPIAgentConfig):
     # The LLM server base URL and API key are passed automatically.
     agent_env: Optional[dict[str, str]] = None
 
+    # BenchFlow sandbox/environment type.
+    environment: str = "singularity"
+
     # Sandbox user. "none" or null runs as root.
     sandbox_user: Optional[str] = None
 
     # Abort a rollout if the agent makes no tool call for this many seconds.
     agent_idle_timeout: Optional[int] = 1200
 
-    # Skills directory passed to BenchFlow ("auto" = use task-bundled skills, None = do not use skills).
+    # Skill mode: "with-skill" | "no-skill" | "self-gen".
+    skill_mode: str = "with-skill"
+
+    # Skills directory ("auto" = use task-bundled skills, None = do not use skills).
     skills_dir: Optional[str] = "auto"
 
-    # BENCHFLOW_SKILL_NUDGE value ("name" is the recommended mode when using skills, None = do not use skills).
-    skill_nudge: Optional[str] = "name"
-
-    # BenchFlow usage/cost telemetry mode: "auto" | "required" | "off".
-    usage_tracking: str = "off"
-
-    # API key for the LLM server.
-    provider_api_key: str = "EMPTY"
-
-    # How many times BenchFlow should retry a task on error.
+    # How many times BenchFlow should retry a task when an error occurs.
     max_retries: int = 2
 
     # Overrides to apply to every task's task.toml.
     task_config_overrides: Optional[dict[str, Any]] = None
 
-    # Directory of prebuilt per-task Singularity .sif images. Files must be named "<task_name>.sif".
+    # Directory of prebuilt per-task Singularity .sif images. Files inside must be named "<task_name>.sif".
     images_dir: Optional[str] = None
 
 
@@ -119,8 +116,7 @@ class BenchFlowAgent(SimpleResponsesAPIAgent):
     async def run(self, body: BenchFlowRunRequest) -> BenchFlowVerifyResponse:
         async with self.sem:
             global_config_dict = get_global_config_dict()
-            policy_model_name = global_config_dict["policy_model_name"]
-            base_url = self._resolve_model_base_url(global_config_dict)
+            model_name = global_config_dict["policy_model_name"]
 
             task_name = self._parse_task_name(body.instance_id)
             params = body.responses_create_params.model_dump(exclude_unset=True, exclude_none=True)
@@ -128,7 +124,7 @@ class BenchFlowAgent(SimpleResponsesAPIAgent):
             result = None
             error_message = None
             try:
-                result = await self._run_benchflow_task(task_name, policy_model_name, base_url)
+                result = await self._run_benchflow_task(task_name, model_name)
             except Exception as e:
                 error_message = f"{type(e).__name__}: {e}"
                 print(f"Error running BenchFlow evaluation for task {task_name!r}: {error_message}")
@@ -143,7 +139,7 @@ class BenchFlowAgent(SimpleResponsesAPIAgent):
                 usage = None
 
             response = BenchFlowAgentUtils.get_default_response_object()
-            response["model"] = policy_model_name
+            response["model"] = model_name
             response["temperature"] = params.get("temperature")
             response["top_p"] = params.get("top_p")
             response["output"] = output_items
@@ -166,21 +162,21 @@ class BenchFlowAgent(SimpleResponsesAPIAgent):
                 },
             )
 
-    async def _run_benchflow_task(self, task_name: str, policy_model_name: str, base_url: str) -> Any:
+    async def _run_benchflow_task(self, task_name: str, model_name: str) -> Any:
         """Runs a single BenchFlow task. Returns its RolloutResult or None if unavailable."""
         from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 
         eval_config = EvaluationConfig(
             agent=self.config.agent,
-            model=f"hosted_vllm/{policy_model_name}",
-            environment="singularity",
+            model=f"hosted_vllm/{model_name}",
+            environment=self.config.environment,
             concurrency=1,
-            agent_env=self._build_agent_env(base_url),
+            agent_env=self._build_agent_env(),
             sandbox_user=self.config.sandbox_user,
             agent_idle_timeout=self.config.agent_idle_timeout,
+            skill_mode=self.config.skill_mode,
             skills_dir=self.config.skills_dir,
             include_tasks={task_name},
-            usage_tracking=self.config.usage_tracking,
             retry=RetryConfig(max_retries=self.config.max_retries),
             task_config_overrides=self._build_task_config_overrides(task_name) or None,
         )
@@ -202,13 +198,12 @@ class BenchFlowAgent(SimpleResponsesAPIAgent):
         await evaluation.run()
         return captured.get("result")
 
-    def _build_agent_env(self, base_url: str) -> dict[str, str]:
+    def _build_agent_env(self) -> dict[str, str]:
         """Builds the environment variables to forward to the agent harness."""
         agent_env = dict(self.config.agent_env or {})
-        agent_env["BENCHFLOW_PROVIDER_BASE_URL"] = base_url
-        agent_env["BENCHFLOW_PROVIDER_API_KEY"] = self.config.provider_api_key
-        if self.config.skill_nudge:
-            agent_env["BENCHFLOW_SKILL_NUDGE"] = self.config.skill_nudge
+        global_config_dict = get_global_config_dict()
+        agent_env["BENCHFLOW_PROVIDER_BASE_URL"] = self._resolve_model_base_url(global_config_dict)
+        agent_env["BENCHFLOW_PROVIDER_API_KEY"] = global_config_dict["policy_api_key"]
         return agent_env
 
     def _build_task_config_overrides(self, task_name: str) -> dict[str, Any]:

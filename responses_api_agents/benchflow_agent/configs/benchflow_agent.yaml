@@ -11,27 +11,16 @@ benchflow_agent:
       concurrency: 10
 
       # Local directory of BenchFlow task definitions (e.g. a SkillsBench `tasks/` dir).
-      tasks_dir: "responses_api_agents/benchflow_agent/data/tasks"
+      tasks_dir: "data/tasks"
       # Output directory for BenchFlow results/artifacts/logs.
-      jobs_dir: "responses_api_agents/benchflow_agent/jobs"
+      jobs_dir: "jobs"
 
       # BenchFlow agent harness.
       agent: openhands
-      # Sandbox user. "none" or null runs as root.
-      sandbox_user: "none"
-      # Abort a rollout if the agent makes no tool call for this many seconds.
-      agent_idle_timeout: 1200
+      # Skill mode: "with-skill" | "no-skill" | "self-gen".
+      skill_mode: with-skill
       # Skills directory passed to BenchFlow ("auto" = use task-bundled skills, None = do not use skills).
       skills_dir: auto
-      # BENCHFLOW_SKILL_NUDGE value ("name" is the recommended mode when using skills, None = do not use skills).
-      skill_nudge: name
-      # BenchFlow usage/cost telemetry mode: "auto" | "required" | "off".
-      # Quoted so YAML does not parse `off` as the boolean False.
-      usage_tracking: "off"
-      # API key for the LLM server.
-      provider_api_key: EMPTY
-      # How many times BenchFlow should retry a task on error.
-      max_retries: 2
 
       # Overrides to apply to every task's task.toml. Example:
       #   task_config_overrides:
