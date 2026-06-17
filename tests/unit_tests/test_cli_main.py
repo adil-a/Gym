@@ -462,3 +462,10 @@ class TestEnvPackagesFlags:
             "+entrypoint=resources_servers/gpqa",
             "+outdated=true",
         }
+
+
+class TestListEnvironmentsRouting:
+    def test_list_environments_dispatches(self, monkeypatch: MonkeyPatch) -> None:
+        target, overrides = _dispatch_for(monkeypatch, ["list", "environments"])
+        assert target == "nemo_gym.cli.env:list_environments"
+        assert overrides == []
