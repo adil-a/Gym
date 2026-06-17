@@ -18,6 +18,8 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from nemo_gym import WORKING_DIR
+
 
 VERSION_TARGET = "nemo_gym.cli.general:version"
 
@@ -101,6 +103,65 @@ RESOURCE_SERVER = Flag(
         [f"+entrypoint=resources_servers/{args.resource_server}"] if args.resource_server else []
     ),
 )
+
+
+# Asset selector flag -> (parent dir, configs subdir, default config flavor). All accept `name` or `name/flavor`,
+# resolving to `<parent>/<server>/[<subdir>/]<flavor>.yaml`. A None default flavor falls back to the server name.
+_ASSETS = {
+    "benchmark": ("benchmarks", "", "config"),
+    "resource-server": ("resources_servers", "configs", None),
+    "model-type": ("responses_api_models", "configs", None),
+}
+
+
+def _asset_config_path(flag: str, value: str) -> str:
+    """Map a named asset (`name` or `name/flavor`) to its config path, verifying the file exists under WORKING_DIR."""
+    parent, subdir, default_flavor = _ASSETS[flag]
+    server_name, _, config_flavor = value.partition("/")
+    config_flavor = config_flavor or default_flavor or server_name
+    config_dir = f"{parent}/{server_name}/{subdir}".rstrip("/")
+    path = f"{config_dir}/{config_flavor}.yaml"
+
+    if (WORKING_DIR / path).exists():
+        return path
+
+    if (WORKING_DIR / parent / server_name).exists():
+        available = f"{config_dir}/"
+    else:
+        available = f"{parent}/"
+    raise ValueError(
+        f"`--{flag} {value}` was specified which implies config `{path}`, which does not exist. "
+        f"See available {flag} configs in `{available}`."
+    )
+
+
+def _asset_selector(flag: str) -> Flag:
+    """A `--<flag> NAME` selector that resolves the named asset to a config and adds it to +config_paths."""
+    dest = flag.replace("-", "_")
+    return Flag(
+        register=lambda p: p.add_argument(f"--{flag}", metavar="NAME", help=f"Load the named {flag} config."),
+        translate_to_hydra=lambda args: (
+            [f"+config_paths=[{_asset_config_path(flag, getattr(args, dest))}]"] if getattr(args, dest) else []
+        ),
+    )
+
+
+BENCHMARK = _asset_selector("benchmark")
+RESOURCE_SERVER_CONFIG = _asset_selector("resource-server")
+MODEL_TYPE = _asset_selector("model-type")
+
+
+def _merge_config_paths(overrides: list[str]) -> list[str]:
+    """Coalesce all `+config_paths=[...]` tokens (from --config and asset selectors) into one (Hydra rejects dupes)."""
+    prefix = "+config_paths=["
+    paths: list[str] = []
+    rest: list[str] = []
+    for token in overrides:
+        if token.startswith(prefix) and token.endswith("]"):
+            paths.extend(p for p in token[len(prefix) : -1].split(",") if p)
+        else:
+            rest.append(token)
+    return ([f"+config_paths=[{','.join(paths)}]"] if paths else []) + rest
 
 
 def _eval_run(args: argparse.Namespace, overrides: list[str]) -> None:
@@ -214,6 +275,7 @@ COMMANDS = {
         summary="Validate and collate the dataset.",
         flags=(
             CONFIG,
+            RESOURCE_SERVER_CONFIG,
             _value_flag("mode", "mode", "Data preparation mode.", choices=("train_preparation", "example_validation")),
             _value_flag("output-dir", "output_dirpath", "Output directory for the prepared data."),
             _bool_flag("download", "should_download", "Download source datasets before collating."),
@@ -245,19 +307,22 @@ COMMANDS = {
     "env run": Command(
         target="nemo_gym.cli.env:run",
         summary="Start the servers.",
-        flags=(CONFIG, MODEL_NAME, MODEL_URL, MODEL_API_KEY),
+        flags=(CONFIG, RESOURCE_SERVER_CONFIG, MODEL_TYPE, MODEL_NAME, MODEL_URL, MODEL_API_KEY),
     ),
     "env status": Command(target="nemo_gym.cli.env:status", summary="Print the server status."),
     "eval prepare": Command(
         target="nemo_gym.cli.eval:prepare_benchmark",
         summary="Prepare benchmark data and dump it to disk.",
-        flags=(CONFIG,),
+        flags=(CONFIG, BENCHMARK),
     ),
     "eval run": Command(
         target=_eval_run,
         summary="Collate data, start servers, and collect rollouts.",
         flags=(
             CONFIG,
+            BENCHMARK,
+            RESOURCE_SERVER_CONFIG,
+            MODEL_TYPE,
             Flag(
                 register=lambda p: p.add_argument(
                     "--no-serve",
@@ -361,7 +426,14 @@ def main() -> None:
         args._parser.print_help()
         sys.exit(1)
 
-    overrides = [token for flag in command.flags for token in flag.translate_to_hydra(args)] + overrides
+    try:
+        translated = [token for flag in command.flags for token in flag.translate_to_hydra(args)]
+    except ValueError as exc:
+        sys.stderr.write(f"{getattr(args, '_parser', parser).prog}: error: {exc}\n")
+        sys.exit(2)
+
+    # --config and the asset selectors all emit +config_paths; coalesce them into one token.
+    overrides = _merge_config_paths(translated + overrides)
     # --verbose flows through the config (as +verbose=true) so it reaches spun-up servers, not just this process.
     if getattr(args, "verbose", False):
         overrides = ["+verbose=true", *overrides]

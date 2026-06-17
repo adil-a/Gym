@@ -38,6 +38,16 @@ def _dispatch_for(monkeypatch: MonkeyPatch, argv: list[str]) -> tuple[str, list[
     return captured["target"], captured["overrides"]
 
 
+def _split_overrides(overrides: list[str]) -> tuple[set[str], set[str]]:
+    """Split overrides into (config paths, other overrides) as sets, so tests never assert ordering."""
+    prefix = "+config_paths=["
+    config_tokens = [o for o in overrides if o.startswith(prefix) and o.endswith("]")]
+    assert len(config_tokens) <= 1  # --config and the asset selectors coalesce into a single token
+    paths = set(config_tokens[0][len(prefix) : -1].split(",")) if config_tokens else set()
+    others = {o for o in overrides if o not in config_tokens}
+    return paths, others
+
+
 # `gym <command>` -> the legacy ng_<command> function it dispatches to, for the config-accepting commands.
 CONFIG_COMMANDS = [
     (["env", "run"], "nemo_gym.cli.env:run"),
@@ -362,7 +372,11 @@ class TestDatasetFlags:
             monkeypatch, ["dataset", "render", "-i", "raw.jsonl", "--prompt-config", "p.yaml", "-o", "out.jsonl"]
         )
         assert target == "nemo_gym.cli.dataset:materialize_prompts_cli"
-        assert overrides == ["+input_jsonl_fpath=raw.jsonl", "+prompt_config=p.yaml", "+output_jsonl_fpath=out.jsonl"]
+        assert set(overrides) == {
+            "+input_jsonl_fpath=raw.jsonl",
+            "+prompt_config=p.yaml",
+            "+output_jsonl_fpath=out.jsonl",
+        }
 
     def test_collate(self, monkeypatch: MonkeyPatch) -> None:
         target, overrides = _dispatch_for(
@@ -508,3 +522,170 @@ class TestVerboseFlag:
             assert root.level == logging.WARNING
         finally:
             root.setLevel(original)
+
+
+class TestAssetSelectors:
+    """Named selectors (--benchmark, --resource-server, --model-type) that resolve a name to a default config path.
+
+    Each example mirrors a real invocation from the docs/READMEs, so the sugar stays faithful to the documented
+    config paths it replaces. The legacy `+config_paths=[...]` form each one is derived from is cited inline.
+    """
+
+    @pytest.mark.parametrize(
+        "argv, expected_config",
+        [
+            # benchmarks/gsm8k/README.md: ng_prepare_benchmark "+config_paths=[benchmarks/gsm8k/config.yaml]"
+            (["eval", "prepare", "--benchmark", "gsm8k"], "benchmarks/gsm8k/config.yaml"),
+            # benchmarks/aime25-x/README.md: ng_prepare_benchmark "+config_paths=[benchmarks/aime25-x/config.yaml]"
+            (["eval", "prepare", "--benchmark", "aime25-x"], "benchmarks/aime25-x/config.yaml"),
+            # README.md / quickstart.mdx: resources_servers/mcqa/configs/mcqa.yaml
+            (["env", "run", "--resource-server", "mcqa"], "resources_servers/mcqa/configs/mcqa.yaml"),
+            # model-server/vllm.mdx: resources_servers/example_multi_step/configs/example_multi_step.yaml
+            (
+                ["env", "run", "--resource-server", "example_multi_step"],
+                "resources_servers/example_multi_step/configs/example_multi_step.yaml",
+            ),
+            # README.md / quickstart.mdx: responses_api_models/openai_model/configs/openai_model.yaml
+            (
+                ["env", "run", "--model-type", "openai_model"],
+                "responses_api_models/openai_model/configs/openai_model.yaml",
+            ),
+            # model-server/vllm.mdx: responses_api_models/vllm_model/configs/vllm_model.yaml
+            (["env", "run", "--model-type", "vllm_model"], "responses_api_models/vllm_model/configs/vllm_model.yaml"),
+        ],
+    )
+    def test_name_resolves_to_config_path(self, monkeypatch: MonkeyPatch, argv, expected_config) -> None:
+        _, overrides = _dispatch_for(monkeypatch, argv)
+        assert overrides == [f"+config_paths=[{expected_config}]"]
+
+    def test_quickstart_resource_server_plus_model(self, monkeypatch: MonkeyPatch) -> None:
+        # README.md / quickstart.mdx:
+        #   ng_run "+config_paths=[resources_servers/mcqa/configs/mcqa.yaml,
+        #                          responses_api_models/openai_model/configs/openai_model.yaml]"
+        target, overrides = _dispatch_for(
+            monkeypatch, ["env", "run", "--resource-server", "mcqa", "--model-type", "openai_model"]
+        )
+        assert target == "nemo_gym.cli.env:run"
+        paths, others = _split_overrides(overrides)
+        assert paths == {
+            "resources_servers/mcqa/configs/mcqa.yaml",
+            "responses_api_models/openai_model/configs/openai_model.yaml",
+        }
+        assert others == set()
+
+    def test_gpqa_benchmark_plus_model(self, monkeypatch: MonkeyPatch) -> None:
+        # benchmarks/gpqa/README.md:
+        #   ng_run "+config_paths=[benchmarks/gpqa/config.yaml,responses_api_models/vllm_model/configs/vllm_model.yaml]"
+        _, overrides = _dispatch_for(monkeypatch, ["eval", "run", "--benchmark", "gpqa", "--model-type", "vllm_model"])
+        paths, others = _split_overrides(overrides)
+        assert paths == {
+            "benchmarks/gpqa/config.yaml",
+            "responses_api_models/vllm_model/configs/vllm_model.yaml",
+        }
+        assert others == set()
+
+    def test_cli_reference_e2e_rollout_example(self, monkeypatch: MonkeyPatch) -> None:
+        # fern .../reference/cli-commands.mdx ng_e2e_collect_rollouts example:
+        #   config_paths="responses_api_models/openai_model/configs/openai_model.yaml,
+        #                 resources_servers/math_with_judge/configs/math_with_judge.yaml"
+        #   ng_e2e_collect_rollouts "+config_paths=[$config_paths]"
+        #       ++output_jsonl_fpath=results/test_e2e_rollout_collection/aime24.jsonl ++split=validation
+        target, overrides = _dispatch_for(
+            monkeypatch,
+            [
+                "eval",
+                "run",
+                "--resource-server",
+                "math_with_judge",
+                "--model-type",
+                "openai_model",
+                "--output",
+                "results/test_e2e_rollout_collection/aime24.jsonl",
+                "--split",
+                "validation",
+            ],
+        )
+        assert target == "nemo_gym.cli.eval:e2e_rollout_collection"
+        paths, others = _split_overrides(overrides)
+        assert paths == {
+            "resources_servers/math_with_judge/configs/math_with_judge.yaml",
+            "responses_api_models/openai_model/configs/openai_model.yaml",
+        }
+        assert others == {
+            "+output_jsonl_fpath=results/test_e2e_rollout_collection/aime24.jsonl",
+            "+split=validation",
+        }
+
+    def test_cli_reference_prepare_data_example(self, monkeypatch: MonkeyPatch) -> None:
+        # fern .../reference/cli-commands.mdx ng_prepare_data example:
+        #   config_paths includes resources_servers/example_multi_step/configs/example_multi_step.yaml
+        #   ng_prepare_data "+config_paths=[...]" +output_dirpath=data/example_multi_step +mode=example_validation
+        target, overrides = _dispatch_for(
+            monkeypatch,
+            [
+                "dataset",
+                "collate",
+                "--resource-server",
+                "example_multi_step",
+                "--mode",
+                "example_validation",
+                "--output-dir",
+                "data/example_multi_step",
+            ],
+        )
+        assert target == "nemo_gym.cli.dataset:prepare_data"
+        paths, others = _split_overrides(overrides)
+        assert paths == {"resources_servers/example_multi_step/configs/example_multi_step.yaml"}
+        assert others == {
+            "+mode=example_validation",
+            "+output_dirpath=data/example_multi_step",
+        }
+
+    def test_resource_server_flavor_syntax(self, monkeypatch: MonkeyPatch) -> None:
+        # `<server>/<flavor>` picks a named config inside the server's configs/ dir; math_with_judge ships several
+        # flavoured configs (see reference/faq.mdx, which pairs a math_with_judge dataset flavour for profiling).
+        _, overrides = _dispatch_for(monkeypatch, ["eval", "run", "--resource-server", "math_with_judge/dapo17k"])
+        assert overrides == ["+config_paths=[resources_servers/math_with_judge/configs/dapo17k.yaml]"]
+
+    def test_benchmark_flavor_syntax(self, monkeypatch: MonkeyPatch) -> None:
+        # Benchmarks are flavoured too: flavor is a sibling `<flavor>.yaml` (no configs/ dir), default `config`.
+        # e.g. benchmarks/finance_sec_search ships config_web_search.yaml alongside the default config.yaml.
+        _, overrides = _dispatch_for(
+            monkeypatch, ["eval", "prepare", "--benchmark", "finance_sec_search/config_web_search"]
+        )
+        assert overrides == ["+config_paths=[benchmarks/finance_sec_search/config_web_search.yaml]"]
+
+    def test_selectors_merge_into_single_config_paths(self, monkeypatch: MonkeyPatch) -> None:
+        # --config and multiple asset selectors all feed one +config_paths list (Hydra rejects duplicates).
+        # _split_overrides asserts they coalesce into a single token.
+        _, overrides = _dispatch_for(
+            monkeypatch,
+            ["eval", "run", "--config", "extra.yaml", "--resource-server", "mcqa", "--model-type", "openai_model"],
+        )
+        paths, others = _split_overrides(overrides)
+        assert paths == {
+            "extra.yaml",
+            "resources_servers/mcqa/configs/mcqa.yaml",
+            "responses_api_models/openai_model/configs/openai_model.yaml",
+        }
+        assert others == set()
+
+    def test_unknown_benchmark_errors_with_available_hint(self, monkeypatch: MonkeyPatch, capsys) -> None:
+        monkeypatch.setattr(cli_main, "dispatch", lambda target, overrides: None)
+        monkeypatch.setattr(sys, "argv", ["gym", "eval", "prepare", "--benchmark", "does_not_exist"])
+        with pytest.raises(SystemExit):
+            main()
+        err = capsys.readouterr().err
+        assert "benchmarks/does_not_exist/config.yaml" in err
+        assert "does not exist" in err
+        assert "benchmarks/" in err
+
+    def test_unknown_flavor_error_points_at_configs_dir(self, monkeypatch: MonkeyPatch, capsys) -> None:
+        # For a known server with an unknown flavor, the hint should point at that server's configs/ dir.
+        monkeypatch.setattr(cli_main, "dispatch", lambda target, overrides: None)
+        monkeypatch.setattr(sys, "argv", ["gym", "env", "run", "--resource-server", "mcqa/nope"])
+        with pytest.raises(SystemExit):
+            main()
+        err = capsys.readouterr().err
+        assert "resources_servers/mcqa/configs/nope.yaml" in err
+        assert "resources_servers/mcqa/configs/" in err
