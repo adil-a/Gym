@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Tuple
 import rich
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, Field
+from rich.markup import escape
 from rich.table import Table
 from tqdm.auto import tqdm
 
@@ -98,7 +99,15 @@ def _load_benchmarks_from_config_paths(config_paths: List[Path]) -> Dict[str, Be
     for config_path in config_paths:
         config_path = Path(config_path)
 
-        maybe_bc = BenchmarkConfig.from_config_path(config_path)
+        # Listing is best-effort: a single benchmark whose config can't be loaded in the current
+        # environment (e.g. it references an interpolation/API key that isn't set right now) must
+        # not break listing the rest. Skip it with a warning instead of crashing.
+        try:
+            maybe_bc = BenchmarkConfig.from_config_path(config_path)
+        except Exception as e:
+            rich.print(f"[yellow]Skipping benchmark config {config_path}: {escape(str(e))}[/yellow]")
+            continue
+
         if not maybe_bc:
             continue
 

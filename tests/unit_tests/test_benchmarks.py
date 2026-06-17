@@ -19,7 +19,7 @@ import pytest
 from omegaconf import OmegaConf
 from yaml import safe_load
 
-from nemo_gym.benchmarks import list_benchmarks, prepare_benchmark
+from nemo_gym.benchmarks import BenchmarkConfig, _load_benchmarks_from_config_paths, list_benchmarks, prepare_benchmark
 
 
 def _mock_global_config(config: dict = None):
@@ -40,6 +40,20 @@ class TestListBenchmarks:
         ):
             list_benchmarks()
         assert "No benchmarks found" in capsys.readouterr().out
+
+    def test_load_benchmarks_skips_unloadable_config(self, capsys) -> None:
+        # A benchmark config that can't be loaded in the current environment (e.g. it references an
+        # interpolation/API key that isn't set) must be skipped with a warning, not crash listing.
+        from omegaconf.errors import InterpolationKeyError
+
+        def boom(cls, config_path):
+            raise InterpolationKeyError("Interpolation key 'some_api_key' not found")
+
+        with patch.object(BenchmarkConfig, "from_config_path", classmethod(boom)):
+            result = _load_benchmarks_from_config_paths([Path("benchmarks/needs_key/config.yaml")])
+
+        assert result == {}
+        assert "Skipping benchmark config" in capsys.readouterr().out
 
 
 class TestPrepareBenchmark:
