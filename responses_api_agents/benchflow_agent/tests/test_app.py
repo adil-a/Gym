@@ -14,11 +14,13 @@
 # limitations under the License.
 import json
 from asyncio import Semaphore
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
 from nemo_gym.openai_utils import NeMoGymResponseCreateParamsNonStreaming
 from responses_api_agents.benchflow_agent.app import (
@@ -27,7 +29,6 @@ from responses_api_agents.benchflow_agent.app import (
     BenchFlowRunRequest,
 )
 from responses_api_agents.benchflow_agent.utils import BenchFlowAgentUtils
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -100,6 +101,47 @@ def _fake_result(**overrides) -> SimpleNamespace:
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
+
+
+def _fake_benchflow_module(evaluation_cls, captured) -> MagicMock:
+    """Build a fake ``benchflow.evaluation`` module that records the args it receives."""
+
+    class _FakeEvaluationConfig:
+        def __init__(self, **kwargs):
+            captured["config_kwargs"] = kwargs
+
+    class _FakeRetryConfig:
+        def __init__(self, **kwargs):
+            captured["retry_kwargs"] = kwargs
+
+    module = MagicMock()
+    module.Evaluation = evaluation_cls
+    module.EvaluationConfig = _FakeEvaluationConfig
+    module.RetryConfig = _FakeRetryConfig
+    return module
+
+
+def _fake_evaluation_cls(captured, fake_result, read_task=None):
+    """A fake ``Evaluation`` that captures construction args and fires ``on_result``.
+
+    When ``read_task`` is set, it reads ``<tasks_dir>/<read_task>/task.md`` at construction
+    time (after the agent's copy+edit) so tests can assert on the edited file before the
+    temp dir is cleaned up.
+    """
+
+    class _FakeEvaluation:
+        def __init__(self, tasks_dir, jobs_dir, config, job_name, on_result):
+            captured["tasks_dir"] = tasks_dir
+            captured["jobs_dir"] = jobs_dir
+            captured["job_name"] = job_name
+            if read_task is not None:
+                captured["edited_task_md"] = (Path(tasks_dir) / read_task / "task.md").read_text()
+            self._on_result = on_result
+
+        async def run(self):
+            self._on_result("ignored", fake_result)
+
+    return _FakeEvaluation
 
 
 # ===========================================================================
@@ -176,59 +218,75 @@ class TestRun:
 
 
 # ===========================================================================
-#  _run_benchflow_task — benchflow wiring (benchflow module is faked)
+#  _run_benchflow_task — temp-copy + edit, then run Evaluation (benchflow faked)
 # ===========================================================================
 
 
 class TestRunBenchflowTask:
-    async def test_builds_config_and_returns_result(self):
+    async def test_overrides_copy_edit_and_run(self, tmp_path):
+        # Source task: a task.md with frontmatter we expect to be preserved + merged.
+        task_md = "---\nenvironment:\n  allow_internet: false\n---\n\n## prompt\n\nDo the thing.\n"
+        (tmp_path / "mytask").mkdir()
+        (tmp_path / "mytask" / "task.md").write_text(task_md, encoding="utf-8")
+
         server = _make_server(
+            tasks_dir=str(tmp_path),
             images_dir="/imgs",
             agent="openhands",
             max_retries=3,
-            task_config_overrides={"agent": {"timeout_sec": 9.0}},
+            task_config_overrides={"environment": {"memory_mb": 131072}, "agent": {"timeout_sec": 9.0}},
         )
         captured: Dict[str, Any] = {}
         fake_result = _fake_result()
+        fake_module = _fake_benchflow_module(_fake_evaluation_cls(captured, fake_result, read_task="mytask"), captured)
+        gc = {**_GLOBAL_CONFIG, "policy_api_key": "EMPTY"}
 
-        class _FakeEvaluationConfig:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-        class _FakeRetryConfig:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-
-        class _FakeEvaluation:
-            def __init__(self, tasks_dir, jobs_dir, config, job_name, on_result):
-                captured["tasks_dir"] = tasks_dir
-                captured["jobs_dir"] = jobs_dir
-                captured["job_name"] = job_name
-                self._on_result = on_result
-
-            async def run(self):
-                self._on_result("mytask", fake_result)
-
-        fake_module = MagicMock()
-        fake_module.Evaluation = _FakeEvaluation
-        fake_module.EvaluationConfig = _FakeEvaluationConfig
-        fake_module.RetryConfig = _FakeRetryConfig
-
-        with patch.dict("sys.modules", {"benchflow": MagicMock(), "benchflow.evaluation": fake_module}):
-            result = await server._run_benchflow_task("mytask", "test_model", "http://h:9000/v1")
+        with (
+            patch.dict("sys.modules", {"benchflow": MagicMock(), "benchflow.evaluation": fake_module}),
+            patch("responses_api_agents.benchflow_agent.app.get_global_config_dict", return_value=gc),
+        ):
+            result = await server._run_benchflow_task("mytask", "test_model")
 
         assert result is fake_result
-        assert captured["model"] == "hosted_vllm/test_model"
-        assert captured["environment"] == "singularity"
-        assert captured["agent"] == "openhands"
-        assert captured["concurrency"] == 1
-        assert captured["include_tasks"] == {"mytask"}
-        assert captured["agent_env"]["BENCHFLOW_PROVIDER_BASE_URL"] == "http://h:9000/v1"
-        assert captured["task_config_overrides"]["environment"]["docker_image"] == "/imgs/mytask.sif"
-        assert captured["task_config_overrides"]["agent"]["timeout_sec"] == 9.0
-        assert captured["tasks_dir"] == server.config.tasks_dir
-        assert captured["jobs_dir"] == server.config.jobs_dir
+        # Evaluation ran against a temp copy, not the source tasks_dir, and the copy is gone.
+        assert captured["tasks_dir"] != str(tmp_path)
+        assert not Path(captured["tasks_dir"]).exists()
+        # The overrides are applied to the copied task.md, NOT passed to EvaluationConfig.
+        assert "task_config_overrides" not in captured["config_kwargs"]
+        assert captured["config_kwargs"]["model"] == "hosted_vllm/test_model"
+        assert captured["config_kwargs"]["environment"] == "singularity"
+        assert captured["config_kwargs"]["agent"] == "openhands"
+        assert captured["config_kwargs"]["concurrency"] == 1
+        assert captured["config_kwargs"]["include_tasks"] == {"mytask"}
+        assert captured["config_kwargs"]["agent_env"]["BENCHFLOW_PROVIDER_BASE_URL"] == "http://policy-host:9000/v1"
+        assert captured["retry_kwargs"]["max_retries"] == 3
         assert captured["job_name"].startswith("mytask_")
+        # The edited frontmatter: overrides merged, original keys + markdown body preserved.
+        fm_text, body = BenchFlowAgentUtils._split_frontmatter(captured["edited_task_md"])
+        fm = yaml.safe_load(fm_text)
+        assert fm["environment"]["docker_image"] == "/imgs/mytask.sif"
+        assert fm["environment"]["memory_mb"] == 131072
+        assert fm["environment"]["allow_internet"] is False
+        assert fm["agent"]["timeout_sec"] == 9.0
+        assert "Do the thing." in body
+
+    async def test_no_overrides_uses_source_tasks_dir(self):
+        server = _make_server(images_dir=None, task_config_overrides=None)
+        captured: Dict[str, Any] = {}
+        fake_result = _fake_result()
+        fake_module = _fake_benchflow_module(_fake_evaluation_cls(captured, fake_result), captured)
+        gc = {**_GLOBAL_CONFIG, "policy_api_key": "EMPTY"}
+
+        with (
+            patch.dict("sys.modules", {"benchflow": MagicMock(), "benchflow.evaluation": fake_module}),
+            patch("responses_api_agents.benchflow_agent.app.get_global_config_dict", return_value=gc),
+        ):
+            result = await server._run_benchflow_task("mytask", "test_model")
+
+        assert result is fake_result
+        # No overrides => no temp copy; Evaluation points straight at the source dir.
+        assert captured["tasks_dir"] == server.config.tasks_dir
+        assert "task_config_overrides" not in captured["config_kwargs"]
 
 
 # ===========================================================================
@@ -258,6 +316,10 @@ class TestHelpers:
         overrides = server._build_task_config_overrides("mytask")
         assert overrides == {"environment": {"memory_mb": 42}}
 
+    def test_build_task_config_overrides_empty(self):
+        server = _make_server(images_dir=None, task_config_overrides=None)
+        assert server._build_task_config_overrides("mytask") == {}
+
     def test_build_task_config_overrides_images_dir_wins(self):
         server = _make_server(
             images_dir="/imgs", task_config_overrides={"environment": {"docker_image": "ubuntu:22.04"}}
@@ -271,17 +333,19 @@ class TestHelpers:
         assert "docker_image" not in server.config.task_config_overrides["environment"]
 
     def test_build_agent_env(self):
-        server = _make_server(agent_env={"DEBUG": "1"}, provider_api_key="KEY", skill_nudge="name")
-        env = server._build_agent_env("http://h:9000/v1")
-        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "http://h:9000/v1"
+        server = _make_server(agent_env={"DEBUG": "1"})
+        gc = {**_GLOBAL_CONFIG, "policy_api_key": "KEY"}
+        with patch("responses_api_agents.benchflow_agent.app.get_global_config_dict", return_value=gc):
+            env = server._build_agent_env()
+        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "http://policy-host:9000/v1"
         assert env["BENCHFLOW_PROVIDER_API_KEY"] == "KEY"
-        assert env["BENCHFLOW_SKILL_NUDGE"] == "name"
         assert env["DEBUG"] == "1"
 
-    def test_build_agent_env_no_skill_nudge(self):
-        server = _make_server(skill_nudge=None)
-        env = server._build_agent_env("http://h:9000/v1")
-        assert "BENCHFLOW_SKILL_NUDGE" not in env
+    def test_build_agent_env_default_api_key(self):
+        server = _make_server()
+        with patch("responses_api_agents.benchflow_agent.app.get_global_config_dict", return_value=_GLOBAL_CONFIG):
+            env = server._build_agent_env()
+        assert env["BENCHFLOW_PROVIDER_API_KEY"] == "EMPTY"
 
     def test_resolve_model_base_url(self):
         server = _make_server()
@@ -296,7 +360,75 @@ class TestHelpers:
 
 
 # ===========================================================================
-#  Utils
+#  Utils — task.md editing
+# ===========================================================================
+
+
+class TestApplyTaskConfigOverrides:
+    def test_merges_and_preserves_body(self, tmp_path):
+        (tmp_path / "task.md").write_text(
+            "---\nagent:\n  timeout_sec: 1\nenvironment:\n  allow_internet: false\n---\n\n# Title\n\nBody text.\n",
+            encoding="utf-8",
+        )
+        BenchFlowAgentUtils.apply_task_config_overrides(
+            tmp_path, {"environment": {"memory_mb": 99}, "agent": {"timeout_sec": 2}}
+        )
+        fm_text, body = BenchFlowAgentUtils._split_frontmatter((tmp_path / "task.md").read_text())
+        data = yaml.safe_load(fm_text)
+        assert data["agent"]["timeout_sec"] == 2  # overridden
+        assert data["environment"]["memory_mb"] == 99  # added
+        assert data["environment"]["allow_internet"] is False  # preserved
+        assert "Body text." in body  # body preserved
+
+    def test_creates_frontmatter_when_absent(self, tmp_path):
+        (tmp_path / "task.md").write_text("# Just a body\n\nNo frontmatter here.\n", encoding="utf-8")
+        BenchFlowAgentUtils.apply_task_config_overrides(tmp_path, {"environment": {"memory_mb": 7}})
+        fm_text, body = BenchFlowAgentUtils._split_frontmatter((tmp_path / "task.md").read_text())
+        assert yaml.safe_load(fm_text)["environment"]["memory_mb"] == 7
+        assert "No frontmatter here." in body
+
+    def test_empty_overrides_is_noop(self, tmp_path):
+        original = "---\nagent:\n  timeout_sec: 1\n---\n\nBody.\n"
+        (tmp_path / "task.md").write_text(original, encoding="utf-8")
+        BenchFlowAgentUtils.apply_task_config_overrides(tmp_path, {})
+        assert (tmp_path / "task.md").read_text() == original
+
+    def test_missing_task_md_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="task.md"):
+            BenchFlowAgentUtils.apply_task_config_overrides(tmp_path, {"agent": {"timeout_sec": 1}})
+
+
+class TestSplitFrontmatter:
+    def test_with_frontmatter(self):
+        fm, body = BenchFlowAgentUtils._split_frontmatter("---\na: 1\n---\nbody\n")
+        assert fm == "a: 1\n"
+        assert body == "body\n"
+
+    def test_no_frontmatter(self):
+        fm, body = BenchFlowAgentUtils._split_frontmatter("just body\n")
+        assert fm == ""
+        assert body == "just body\n"
+
+    def test_unclosed_fence(self):
+        text = "---\na: 1\nno close\n"
+        fm, body = BenchFlowAgentUtils._split_frontmatter(text)
+        assert fm == ""
+        assert body == text
+
+    def test_empty(self):
+        assert BenchFlowAgentUtils._split_frontmatter("") == ("", "")
+
+
+class TestDeepMerge:
+    def test_nested_merge_and_replace(self):
+        base = {"a": {"x": 1, "y": 2}, "b": 1, "lst": [1, 2]}
+        out = BenchFlowAgentUtils._deep_merge(base, {"a": {"y": 20, "z": 3}, "lst": [9]})
+        assert out == {"a": {"x": 1, "y": 20, "z": 3}, "b": 1, "lst": [9]}
+        assert base["a"] == {"x": 1, "y": 2}  # original not mutated
+
+
+# ===========================================================================
+#  Utils — response building
 # ===========================================================================
 
 
@@ -369,9 +501,7 @@ class TestTrajectoryToOutput:
 
 class TestExtractUsage:
     def test_with_tokens(self):
-        result = SimpleNamespace(
-            n_input_tokens=100, n_output_tokens=50, n_cache_read_tokens=5, total_tokens=155
-        )
+        result = SimpleNamespace(n_input_tokens=100, n_output_tokens=50, n_cache_read_tokens=5, total_tokens=155)
         usage = BenchFlowAgentUtils.extract_usage(result)
         assert usage["input_tokens"] == 100
         assert usage["output_tokens"] == 50
@@ -379,9 +509,7 @@ class TestExtractUsage:
         assert usage["input_tokens_details"]["cached_tokens"] == 5
 
     def test_with_none_tokens(self):
-        result = SimpleNamespace(
-            n_input_tokens=None, n_output_tokens=None, n_cache_read_tokens=None, total_tokens=None
-        )
+        result = SimpleNamespace(n_input_tokens=None, n_output_tokens=None, n_cache_read_tokens=None, total_tokens=None)
         usage = BenchFlowAgentUtils.extract_usage(result)
         assert usage["input_tokens"] == 0
         assert usage["output_tokens"] == 0

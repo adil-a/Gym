@@ -17,12 +17,16 @@ benchflow_agent:
 
       # BenchFlow agent harness.
       agent: openhands
+      # BenchFlow sandbox/environment type.
+      environment: singularity
+      # Sandbox user. null = root.
+      sandbox_user: null
       # Skill mode: "with-skill" | "no-skill" | "self-gen".
       skill_mode: with-skill
-      # Skills directory passed to BenchFlow ("auto" = use task-bundled skills, None = do not use skills).
+      # Skills directory passed to BenchFlow ("auto" = use task-bundled skills, null = do not use skills).
       skills_dir: auto
 
-      # Overrides to apply to every task's task.toml. Example:
+      # Overrides to apply to every task's task.md. Example:
       #   task_config_overrides:
       #     environment:
       #       memory_mb: 131072
@@ -30,8 +34,8 @@ benchflow_agent:
       #       timeout_sec: 1000000000.0
       task_config_overrides: null
 
-      # Directory of prebuilt per-task Singularity .sif images. Files must be named "<task_name>.sif".
-      images_dir: null
+      # Directory of prebuilt per-task Singularity .sif images. Files inside must be named "<task_name>.sif".
+      singularity_images_dir: null
 
       # List of datasets to evaluate on.
       datasets: null

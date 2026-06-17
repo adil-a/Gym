@@ -20,8 +20,11 @@ extracts the scalar reward, and returns a NeMo Gym response.
 """
 
 import re
+import shutil
+import tempfile
 from asyncio import Semaphore
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -86,11 +89,11 @@ class BenchFlowAgentConfig(BaseResponsesAPIAgentConfig):
     # How many times BenchFlow should retry a task when an error occurs.
     max_retries: int = 2
 
-    # Overrides to apply to every task's task.toml.
+    # Overrides to apply to every task's task.md.
     task_config_overrides: Optional[dict[str, Any]] = None
 
     # Directory of prebuilt per-task Singularity .sif images. Files inside must be named "<task_name>.sif".
-    images_dir: Optional[str] = None
+    singularity_images_dir: Optional[str] = None
 
 
 class BenchFlowRunRequest(BaseRunRequest):
@@ -115,16 +118,13 @@ class BenchFlowAgent(SimpleResponsesAPIAgent):
 
     async def run(self, body: BenchFlowRunRequest) -> BenchFlowVerifyResponse:
         async with self.sem:
-            global_config_dict = get_global_config_dict()
-            model_name = global_config_dict["policy_model_name"]
-
             task_name = self._parse_task_name(body.instance_id)
             params = body.responses_create_params.model_dump(exclude_unset=True, exclude_none=True)
 
             result = None
             error_message = None
             try:
-                result = await self._run_benchflow_task(task_name, model_name)
+                result = await self._run_benchflow_task(task_name)
             except Exception as e:
                 error_message = f"{type(e).__name__}: {e}"
                 print(f"Error running BenchFlow evaluation for task {task_name!r}: {error_message}")
@@ -139,7 +139,7 @@ class BenchFlowAgent(SimpleResponsesAPIAgent):
                 usage = None
 
             response = BenchFlowAgentUtils.get_default_response_object()
-            response["model"] = model_name
+            response["model"] = get_global_config_dict()["policy_model_name"]
             response["temperature"] = params.get("temperature")
             response["top_p"] = params.get("top_p")
             response["output"] = output_items
@@ -162,13 +162,29 @@ class BenchFlowAgent(SimpleResponsesAPIAgent):
                 },
             )
 
-    async def _run_benchflow_task(self, task_name: str, model_name: str) -> Any:
-        """Runs a single BenchFlow task. Returns its RolloutResult or None if unavailable."""
+    async def _run_benchflow_task(self, task_name: str) -> Any:
+        """
+        Runs a single BenchFlow task. Returns its RolloutResult or None if unavailable.
+        If any config overrides are passed, they are applied on a temporary copy of the task folder.
+        """
+        overrides = self._build_task_config_overrides(task_name)
+        if not overrides:
+            return await self._run_evaluation(task_name, self.config.tasks_dir)
+
+        with tempfile.TemporaryDirectory(prefix="benchflow-task-") as tmp_dir:
+            src = Path(self.config.tasks_dir) / task_name
+            dst = Path(tmp_dir) / task_name
+            shutil.copytree(src, dst)
+            BenchFlowAgentUtils.apply_task_config_overrides(dst, overrides)
+            return await self._run_evaluation(task_name, tmp_dir)
+
+    async def _run_evaluation(self, task_name: str, tasks_dir: str) -> Any:
+        """Builds and runs a single-task BenchFlow Evaluation against `tasks_dir`."""
         from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 
         eval_config = EvaluationConfig(
             agent=self.config.agent,
-            model=f"hosted_vllm/{model_name}",
+            model=f"hosted_vllm/{get_global_config_dict()['policy_model_name']}",
             environment=self.config.environment,
             concurrency=1,
             agent_env=self._build_agent_env(),
@@ -178,7 +194,6 @@ class BenchFlowAgent(SimpleResponsesAPIAgent):
             skills_dir=self.config.skills_dir,
             include_tasks={task_name},
             retry=RetryConfig(max_retries=self.config.max_retries),
-            task_config_overrides=self._build_task_config_overrides(task_name) or None,
         )
 
         # Each /run runs exactly one task; capture its single RolloutResult via on_result.
@@ -189,7 +204,7 @@ class BenchFlowAgent(SimpleResponsesAPIAgent):
             captured["result"] = result
 
         evaluation = Evaluation(
-            tasks_dir=self.config.tasks_dir,
+            tasks_dir=str(tasks_dir),
             jobs_dir=self.config.jobs_dir,
             config=eval_config,
             job_name=job_name,
@@ -207,10 +222,13 @@ class BenchFlowAgent(SimpleResponsesAPIAgent):
         return agent_env
 
     def _build_task_config_overrides(self, task_name: str) -> dict[str, Any]:
-        """Adds the per-task .sif image paths to `task_config_overrides`."""
+        """
+        Builds the task config overrides dict,
+        adding the task-specific .sif image path if `singularity_images_dir` is set.
+        """
         overrides = deepcopy(self.config.task_config_overrides or {})
-        if self.config.images_dir:
-            sif_path = f"{self.config.images_dir.rstrip('/')}/{task_name}.sif"
+        if self.config.singularity_images_dir:
+            sif_path = f"{self.config.singularity_images_dir.rstrip('/')}/{task_name}.sif"
             environment = overrides.get("environment")
             if not isinstance(environment, dict):
                 environment = {}

@@ -17,7 +17,8 @@
 import json
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from nemo_gym.openai_utils import (
@@ -86,11 +87,7 @@ class BenchFlowAgentUtils:
 
     @staticmethod
     def extract_usage(result: Any) -> Dict[str, Any]:
-        """Build the ``usage`` dict from a BenchFlow ``RolloutResult``'s token counts.
-
-        BenchFlow leaves these ``None`` when provider telemetry is unavailable
-        (e.g. ``usage_tracking="off"``), which we coerce to ``0``.
-        """
+        """Builds the `usage` dict from a BenchFlow `RolloutResult`'s token counts."""
         input_tokens = getattr(result, "n_input_tokens", None) or 0
         output_tokens = getattr(result, "n_output_tokens", None) or 0
         cached_tokens = getattr(result, "n_cache_read_tokens", None) or 0
@@ -105,21 +102,19 @@ class BenchFlowAgentUtils:
 
     @staticmethod
     def trajectory_to_output(trajectory: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-        """Convert BenchFlow's ACP trajectory events into NeMo Gym output items.
+        """Converts BenchFlow's ACP trajectory events into NeMo Gym output items.
 
-        BenchFlow captures a flat, ordered list of ACP events (see the fork's
-        ``trajectories/_capture.py``). Each event is one of:
-          - ``{"type": "agent_message"|"agent_thought"|"user_message", "text": str}``
-          - ``{"type": "tool_call", "tool_call_id", "kind", "title", "status", "content"}``
+        BenchFlow captures a flat, ordered list of ACP events (see the fork's `trajectories/_capture.py`).
+        Each event is one of:
+          - `{"type": "agent_message"|"agent_thought"|"user_message", "text": str}`
+          - `{"type": "tool_call", "tool_call_id", "kind", "title", "status", "content"}`
 
         This is a best-effort, eval-only conversion (no token ids / logprobs):
-          - ``agent_message``  -> assistant message
-          - ``agent_thought``  -> assistant message wrapped in ``<think>...</think>``
-          - ``tool_call``      -> ``function_call`` (+ ``function_call_output`` when
-                                  ``content`` is present)
-        ``user_message`` and unknown event types are skipped (the task instruction
-        lives inside the container, not in the request). Returns ``[]`` when there is
-        no usable trajectory.
+          - `agent_message`  -> assistant message
+          - `agent_thought`  -> assistant message wrapped in `<think>...</think>`
+          - `tool_call`      -> `function_call` (+ `function_call_output` when `content` is present)
+        `user_message` and unknown event types are skipped (the task instruction lives inside the container, not in the request).
+        Returns `[]` when there is no usable trajectory.
         """
         output_items: List[Dict[str, Any]] = []
         if not isinstance(trajectory, list):
@@ -177,3 +172,50 @@ class BenchFlowAgentUtils:
                     output_items.append(function_call_output.model_dump())
 
         return output_items
+
+    @staticmethod
+    def apply_task_config_overrides(task_dir: Path, overrides: Dict[str, Any]) -> None:
+        """Deep-merges `overrides` into the task's `task.md` YAML frontmatter, in place."""
+        if not overrides:
+            return
+        import yaml
+
+        md_path = Path(task_dir) / "task.md"
+        if not md_path.is_file():
+            raise FileNotFoundError(
+                f"apply_task_config_overrides supports only task.md, none found in {task_dir}"
+            )
+
+        frontmatter, body = BenchFlowAgentUtils._split_frontmatter(md_path.read_text(encoding="utf-8"))
+        merged = BenchFlowAgentUtils._deep_merge(yaml.safe_load(frontmatter) or {}, overrides)
+        new_frontmatter = yaml.safe_dump(merged, sort_keys=False, default_flow_style=False)
+        md_path.write_text(f"---\n{new_frontmatter}---\n{body}", encoding="utf-8")
+
+    @staticmethod
+    def _split_frontmatter(text: str) -> Tuple[str, str]:
+        """Splits a `task.md` document into `(frontmatter_yaml, body)`.
+        Returns `("", text)` when there is no leading `---` frontmatter fence.
+        """
+        lines = text.splitlines(keepends=True)
+        if not lines or lines[0].strip() != "---":
+            return "", text
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                return "".join(lines[1:i]), "".join(lines[i + 1 :])
+        return "", text
+
+    @staticmethod
+    def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively merges `overrides` into `base` and returns a new dict.
+
+        Nested dicts merge key-by-key; any non-dict value (including lists) in
+        `overrides` replaces the corresponding value in `base`.
+        """
+        merged = dict(base)
+        for key, value in overrides.items():
+            existing = merged.get(key)
+            if isinstance(existing, dict) and isinstance(value, dict):
+                merged[key] = BenchFlowAgentUtils._deep_merge(existing, value)
+            else:
+                merged[key] = value
+        return merged
