@@ -378,6 +378,8 @@ ng_delete_dataset_from_gitlab = "nemo_gym.cli.dataset:delete_jsonl_dataset_from_
 # Configuration utils
 nemo_gym_dump_config = "nemo_gym.cli.env:dump_config"
 ng_dump_config = "nemo_gym.cli.env:dump_config"
+nemo_gym_validate = "nemo_gym.cli.env:validate"
+ng_validate = "nemo_gym.cli.env:validate"
 
 # Display help
 nemo_gym_help = "nemo_gym.cli.general:display_help_legacy"

@@ -39,6 +39,7 @@ def _dispatch_for(monkeypatch: MonkeyPatch, argv: list[str]) -> tuple[str, list[
 CONFIG_COMMANDS = [
     (["env", "run"], "nemo_gym.cli.env:run"),
     (["env", "resolve"], "nemo_gym.cli.env:dump_config"),
+    (["env", "validate"], "nemo_gym.cli.env:validate"),
     (["eval", "prepare"], "nemo_gym.cli.eval:prepare_benchmark"),
     (["eval", "aggregate"], "nemo_gym.cli.eval:aggregate_rollouts"),
     (["eval", "run"], "nemo_gym.cli.eval:e2e_rollout_collection"),

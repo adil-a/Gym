@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 from omegaconf import OmegaConf
 from pytest import MonkeyPatch, raises
 
+import nemo_gym.cli.env
 import nemo_gym.global_config
 from nemo_gym import PARENT_DIR
 from nemo_gym.cli.env import (
@@ -33,6 +34,7 @@ from nemo_gym.cli.env import (
     RunHelper,
     _run_module_tests_all,
     init_resources_server,
+    validate,
 )
 from nemo_gym.cli.general import display_help_legacy
 from nemo_gym.config_types import ResourcesServerInstanceConfig
@@ -276,3 +278,26 @@ class TestRunModuleTestsAll:
         _run_module_tests_all(run_one, paths, max_concurrency=4)
         # With a pool of 4, multiple modules must have been in flight simultaneously.
         assert max_in_flight >= 2
+
+
+class TestValidate:
+    """ng_validate / `gym env validate` parses + validates the config and exits 0/1 without Ray."""
+
+    def test_validate_passes_on_valid_config(self, monkeypatch: MonkeyPatch) -> None:
+        cfg = OmegaConf.create(
+            {"my_server": {"resources_servers": {"x": {"entrypoint": "app.py", "domain": "other"}}}}
+        )
+        monkeypatch.setattr(nemo_gym.cli.env, "get_global_config_dict", lambda *a, **k: cfg)
+
+        # Should return normally (no SystemExit) on a valid config.
+        validate()
+
+    def test_validate_exits_nonzero_on_invalid_config(self, monkeypatch: MonkeyPatch) -> None:
+        def boom(*a, **k):
+            raise ValueError("references resources_servers/'typo' which is not defined")
+
+        monkeypatch.setattr(nemo_gym.cli.env, "get_global_config_dict", boom)
+
+        with raises(SystemExit) as exc_info:
+            validate()
+        assert exc_info.value.code == 1

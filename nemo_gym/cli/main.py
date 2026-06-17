@@ -229,6 +229,11 @@ COMMANDS = {
         summary="Resolve the final config from configs, flags, and overrides.",
         flags=(CONFIG,),
     ),
+    "env validate": Command(
+        target="nemo_gym.cli.env:validate",
+        summary="Validate a config without starting servers (no Ray); exits 0 if valid, 1 if not.",
+        flags=(CONFIG,),
+    ),
     "env packages": Command(
         target="nemo_gym.cli.env:pip_list",
         summary="Print pip packages for the selected resource server.",

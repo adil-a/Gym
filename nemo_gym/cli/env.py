@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import shlex
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from glob import glob
@@ -35,6 +36,7 @@ import uvicorn
 from devtools import pprint
 from omegaconf import DictConfig, OmegaConf
 from pydantic import Field
+from rich.markup import escape
 from rich.table import Table
 from tqdm.auto import tqdm
 
@@ -866,6 +868,34 @@ def dump_config():  # pragma: no cover
     BaseNeMoGymCLIConfig.model_validate(global_config_dict)
 
     print(OmegaConf.to_yaml(global_config_dict, resolve=True))
+
+
+def validate():
+    """
+    Validate a NeMo Gym configuration without starting any servers.
+
+    Runs the full config parse and validation pipeline — config_paths loading, key resolution,
+    cross-reference checks, and per-server validation — with no Ray initialization and no server
+    subprocesses. Exits 0 if the configuration is valid, 1 otherwise. Intended as a fast pre-flight
+    check before a run or a cluster submission.
+
+    Examples:
+
+    ```bash
+    gym env validate --config <config1> --config <config2>
+    ```
+    """
+    try:
+        global_config_dict = get_global_config_dict()
+        # Mirrors `run`/`dump_config`: handles the +h=true help path and final config validation.
+        BaseNeMoGymCLIConfig.model_validate(global_config_dict)
+    except Exception as e:
+        # escape() so '[...]' in the message (e.g. config_paths examples) isn't eaten as rich markup.
+        rich.print(f"[red]✗ Config validation failed:[/red] {escape(f'{type(e).__name__}: {e}')}")
+        sys.exit(1)
+
+    server_instances = [k for k in global_config_dict.keys() if k not in NEMO_GYM_RESERVED_TOP_LEVEL_KEYS]
+    rich.print(f"[green]✓ Config is valid[/green] — {len(server_instances)} server instance(s) configured.")
 
 
 def status():  # pragma: no cover
