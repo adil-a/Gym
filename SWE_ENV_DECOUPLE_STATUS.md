@@ -1,6 +1,6 @@
 # SWE Env Decoupling (#1249) — Live Status
 
-**Last updated:** session start (overnight autonomous run)
+**Last updated:** items 2–5 complete; **CI all-green** (Lint/Test/copyright/secrets) on PR head `7ca0a987`.
 **Goal:** Implement the plan to decouple SWE environment infra from agent harnesses (issue #1249), on top of the Sandbox API PR #1377; unit-test it; do a real SWE-bench sanity run with a small Qwen on the 2 local GPUs; open a PR (based off #1377) and get CI green.
 
 Plan file: `/home/adasif/.claude/plans/https-github-com-nvidia-nemo-gym-issues-lazy-donut.md`
@@ -13,7 +13,7 @@ Plan file: `/home/adasif/.claude/plans/https-github-com-nvidia-nemo-gym-issues-l
 What's done this session (on top of the earlier swe-bench-ext foundation):
 - **Item 2 — all 6 families:** relocated the 1606-line vendored parser into `swe_env/parsing/`; added `nv-internal-1` + `swe-rebench` (flat, docker-runnable) and `swe-bench` + `swe-bench-multilingual` + `r2e-gym` (nested, apptainer-only, fail-fast on exec-only providers). All registered.
 - **Item 3 — lifecycle/reaper/idempotency:** durable `SandboxRegistry`, `CreateAdmission`, always-teardown `acquire_sandbox`, `SandboxReaper` (ttl + owner-pid, never reaps a live sibling, atexit bulk-stop), and content-key idempotency in `verify_task` (coalesces unbounded ServerClient retries → one create) + per-call eval timeout.
-- **Item 4 — wire-ownership contract (§4a):** the full `verify()` HTTP path is proven end-to-end — an agent POSTs a standard `BaseVerifyRequest`, the verifier extracts the patch, grades in a fresh sandbox, returns a **non-nullable** `reward` (1.0/0.0-masked) + `mask_sample`. *(The actual cutover of the two existing agents is deferred — see blockers.)*
+- **Item 4 — wire-ownership + swe_agents cutover path:** the full `verify()` HTTP path is proven end-to-end (agent POSTs `BaseVerifyRequest` → non-nullable `reward` + `mask_sample`). Added `responses_api_agents/swe_agents/swe_env_adapter.py` — an **additive, tested SELF_DRIVING adapter** that provisions the OpenHands working container via `swe_env.lifecycle`, injects model-server egress, self-drives, extracts the patch, and scores it through the verifier (so `swe_agents` now *consumes* the decoupled env). It's additive (legacy `run()` untouched → test_app.py's 2010 mocked lines stay green); flipping `run()` to call it + deleting the legacy in-worker eval after a dual-run parity window is the final **apptainer/OpenHands-gated** step.
 - **Item 5 — cross-cutting:** `model_endpoint` egress primitive (§6), reaper wired into the verifier server, verifier config + data-gate fixtures so `ng_test_all` passes upstream.
 - Earlier-session proof still stands: **vLLM `Qwen2.5-Coder-3B-Instruct`** generated a patch → verifier scored `reward=1.0` in a real docker sandbox.
 
