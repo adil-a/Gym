@@ -28,18 +28,39 @@ from responses_api_agents.swe_env.harness import SweTask
 
 _GOLD = "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a + b\n"
 
+# Records the env of every spec a fake sandbox was created with (egress-injection assertions).
+_CREATED_ENVS: list[dict] = []
+
 
 class _FakeProvider:
     name = "fake-adapter"
 
-    def __init__(self, *, diff_output=_GOLD, test_output="PASSED test_calc.py::test_add\n", **_):
+    def __init__(
+        self,
+        *,
+        diff_output=_GOLD,
+        test_output="PASSED test_calc.py::test_add\n",
+        output_jsonl_patch=None,
+        **_,
+    ):
         self._diff = diff_output
         self._test_output = test_output
+        # When set, the agent emits its patch via an OpenHands-style output.jsonl (not git diff).
+        self._output_jsonl_patch = output_jsonl_patch
 
     async def create(self, spec):
+        _CREATED_ENVS.append(dict(spec.env or {}))
         return SandboxHandle(sandbox_id="h", provider_name=self.name, raw={"workdir": spec.workdir})
 
     async def exec(self, handle, command, *, cwd=None, env=None, timeout_s=None, user=None):
+        if self._output_jsonl_patch is not None:
+            if "find" in command and "output.jsonl" in command:
+                return SandboxExecResult(stdout="/root/eval/x/output.jsonl\n", stderr="", return_code=0)
+            if command.startswith("cat "):
+                import json
+
+                row = {"instance_id": "adapter-1", "test_result": {"git_patch": self._output_jsonl_patch}}
+                return SandboxExecResult(stdout=json.dumps(row) + "\n", stderr="", return_code=0)
         if "git diff" in command:
             return SandboxExecResult(stdout=self._diff, stderr="", return_code=0)
         if "pytest" in command:
@@ -101,6 +122,63 @@ def test_self_driving_no_patch_is_unresolved():
             _task(),
             provider={"fake-adapter": {"diff_output": ""}},
             agent_launch_command="bash /openhands_setup/run_infer.sh",
+        )
+    )
+    assert out["patch_exists"] is False
+    assert out["resolved"] is False
+    assert out["reward"] == 0.0
+
+
+def test_self_driving_extra_env_is_injected_into_sandbox():
+    """OpenHands-style egress: NEMO_GYM_* vars must reach the agent sandbox verbatim."""
+    clear_idempotency_cache()
+    _CREATED_ENVS.clear()
+    oh_env = {
+        "NEMO_GYM_CONFIG_DICT": '{"head_server": {"host": "127.0.0.1", "port": 9099}}',
+        "NEMO_GYM_MODEL_SERVER_NAME": "vllm_model",
+        "NEMO_GYM_METRICS_FPATH": "/root/metrics.json",
+    }
+    asyncio.run(
+        run_self_driving(
+            _task(),
+            provider={"fake-adapter": {}},
+            agent_launch_command="bash run_infer.sh",
+            extra_env=oh_env,
+        )
+    )
+    # The agent sandbox (first created) carries the injected egress env.
+    assert _CREATED_ENVS, "no sandbox created"
+    agent_env = _CREATED_ENVS[0]
+    for key, value in oh_env.items():
+        assert agent_env.get(key) == value
+
+
+def test_self_driving_patch_from_output_jsonl_is_verified():
+    """OpenHands emits its patch via output.jsonl[test_result][git_patch], not git diff."""
+    clear_idempotency_cache()
+    out = asyncio.run(
+        run_self_driving(
+            _task(),
+            provider={"fake-adapter": {"output_jsonl_patch": _GOLD}},
+            agent_launch_command="bash run_infer.sh",
+            patch_output_glob="/root/eval",
+        )
+    )
+    assert out["model_patch"].startswith("--- a/calc.py")
+    assert out["patch_exists"] is True
+    assert out["resolved"] is True
+    assert out["reward"] == 1.0
+
+
+def test_self_driving_output_jsonl_missing_yields_empty_patch():
+    clear_idempotency_cache()
+    out = asyncio.run(
+        run_self_driving(
+            _task(),
+            # output_jsonl_patch set but find returns a path; cat returns empty row patch
+            provider={"fake-adapter": {"output_jsonl_patch": ""}},
+            agent_launch_command="bash run_infer.sh",
+            patch_output_glob="/root/eval",
         )
     )
     assert out["patch_exists"] is False

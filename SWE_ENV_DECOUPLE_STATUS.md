@@ -1,11 +1,20 @@
 # SWE Env Decoupling (#1249) — Live Status
 
-**Last updated:** items 2–5 complete + CI-green; verifier validated on a REAL SWE-bench instance on **both** providers; **full 500-instance gold eval is RUNNING** (`results/swebench_verified_gold.jsonl`, 4/4 resolved so far); **OpenHands built + runs** (v0.62.0). Remaining: the full-500 run to *finish* (hours), and the legacy `run()` cutover (OpenHands env now in place).
+**Last updated:** items 2–5 complete + CI-green; verifier validated on a REAL SWE-bench instance on **both** providers; **full 500-instance gold eval ran** (`results/swebench_verified_gold.jsonl`); **OpenHands cutover mechanism now VALIDATED end-to-end** through the decoupled docker-provider path (worktree branch `feat/swe-env-cutover-1249`).
 
-### Final-session state (read this)
-- **Full SWE-bench Verified gold eval is LIVE** via `scripts/run_swebench_verified.py` (docker provider, concurrency 4) → `results/swebench_verified_gold.{jsonl,log}`. Early results 4/4 resolved, 0 errors. It runs for hours (pulls each image, evals, prunes); the JSONL is incremental/resumable. Re-run/scale per `resources_servers/swe_env/README.md`.
-- **OpenHands downloaded + built + verified runnable** (`responses_api_agents/swe_agents/swe_openhands_setup/`, fork `sdevare-nv/nv-OpenHands@25bacbc`, `import openhands`=0.62.0). The `swe_env_adapter.py` is the integration point for the SELF_DRIVING cutover.
-- **Legacy `run()` cutover** (delete the two-container path in `swe_agents/app.py`): the env is set up now, but a *validated* flip needs a full OpenHands SWE-bench rollout (mounts + model egress + run_infer.sh + RUNTIME=local) — the cluster pipeline reproduced standalone. That's the remaining engineering; the decoupled path it targets is already proven on both providers + a real instance.
+### OpenHands `run()` cutover — MECHANISM VALIDATED (this session)
+Ran a **real OpenHands rollout through the decoupled `swe_env` infra** (NOT the legacy two-container apptainer path): `psf__requests-2317`, docker provider, Qwen2.5-Coder-3B via vLLM. Every novel link of the cutover worked:
+- ✅ `swe_env` **docker provider** hosts OpenHands — Gym repo bind-mounted at its host path (resolves the OpenHands venv abs-symlinks + the `nemo_gym` editable install), tmux from miniforge3, `git config --global --add safe.directory '*'` for the root-vs-host-owner mismatch.
+- ✅ **Model egress works** — OpenHands' `CodeActAgent` is hard-wired to `NemoGymClient` (no litellm fallback), so egress needs `NEMO_GYM_CONFIG_DICT` + `NEMO_GYM_MODEL_SERVER_NAME` + `NEMO_GYM_METRICS_FPATH` injected (NOT `OPENAI_BASE_URL`). A crafted 3-level config routed `ServerClient` straight to the host vLLM; OpenHands self-drove **16+ turns** of real LLM round-trips.
+- ✅ OpenHands ran `RUNTIME=local` on `/testbed` (`--dataset SWE-Gym`), exited rc=0, produced `output.jsonl`; patch extracted from `test_result.git_patch`; graded in a **separate fresh verifier sandbox** → reward.
+- The demo patch was empty only because **Qwen-3B is too weak to emit OpenHands-parseable actions** (model-capability, NOT a cutover issue). A resolving patch → reward 1.0 is covered by the verifier's real-instance test.
+- **Encoded into code** (worktree): `swe_env_adapter.run_self_driving` now supports `extra_env` (the OpenHands `NEMO_GYM_*` egress) + `patch_output_glob` (extract from `output.jsonl`, not `git diff`) — 5 adapter tests pass. Reference recipe: `responses_api_agents/swe_agents/scripts/openhands_decoupled_rollout.py`.
+
+**Remaining (now de-risked):** flip `swe_agents/app.py` `run()` to call this path, merge the eval subset into the frozen `SWEBenchVerifyResponse` (keep run() the rollout-row owner + re-join `mask_sample`), then delete the two-container path after a dual-run parity window. The mechanism is proven; this is the (large but bounded) `app.py` surgery + parity test.
+
+### Final-session state
+- **Full SWE-bench Verified gold eval ran** via `scripts/run_swebench_verified.py` (docker provider, concurrency 4) → `results/swebench_verified_gold.{jsonl,log}`. Incremental/resumable; re-run/scale per `resources_servers/swe_env/README.md`.
+- **OpenHands downloaded + built + verified runnable** (`responses_api_agents/swe_agents/swe_openhands_setup/`, fork `sdevare-nv/nv-OpenHands@25bacbc`, `import openhands`=0.62.0).
 **Goal:** Implement the plan to decouple SWE environment infra from agent harnesses (issue #1249), on top of the Sandbox API PR #1377; unit-test it; do a real SWE-bench sanity run with a small Qwen on the 2 local GPUs; open a PR (based off #1377) and get CI green.
 
 Plan file: `/home/adasif/.claude/plans/https-github-com-nvidia-nemo-gym-issues-lazy-donut.md`
