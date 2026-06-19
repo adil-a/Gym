@@ -10,7 +10,20 @@ Ran a **real OpenHands rollout through the decoupled `swe_env` infra** (NOT the 
 - The demo patch was empty only because **Qwen-3B is too weak to emit OpenHands-parseable actions** (model-capability, NOT a cutover issue). A resolving patch → reward 1.0 is covered by the verifier's real-instance test.
 - **Encoded into code** (worktree): `swe_env_adapter.run_self_driving` now supports `extra_env` (the OpenHands `NEMO_GYM_*` egress) + `patch_output_glob` (extract from `output.jsonl`, not `git diff`) — 5 adapter tests pass. Reference recipe: `responses_api_agents/swe_agents/scripts/openhands_decoupled_rollout.py`.
 
-**Remaining (now de-risked):** flip `swe_agents/app.py` `run()` to call this path, merge the eval subset into the frozen `SWEBenchVerifyResponse` (keep run() the rollout-row owner + re-join `mask_sample`), then delete the two-container path after a dual-run parity window. The mechanism is proven; this is the (large but bounded) `app.py` surgery + parity test.
+### run() cutover IMPLEMENTED (A2–A5 + C10/C11/D12) — single PR, behind an opt-in flag
+The full cutover is now coded, tested, and integrated on `feat/swe-env-decouple-1249` (all DCO-signed, GPG pending). **252 passed / 4 skipped** across swe_env + swe_agents + mini_swe_agent_2 + resources_servers/swe_env.
+- **A1** opt-in `eval_via_verifier` flag (+ `verifier_server_name`, `sandbox_provider`); legacy two-container path stays the default until empirical dual-run parity → no CI risk.
+- **A2** decoupled worker `_run_decoupled_agent`: one sandbox via `acquire_sandbox` + OpenHands self-drive (`NEMO_GYM_*` egress, validated launch recipe) + `output.jsonl` patch extraction; no eval container.
+- **A3** `run()` POSTs the patch to the verifier; `resolved`/`eval_timed_out` flow through the SAME `metrics_fpath` → the frozen `SWEBenchVerifyResponse` row + `mask_sample` are preserved **by construction**.
+- **A4** gating tests: shared `_should_mask_sample` (all 4 combos) + verify-POST contract + infra-error→masked-row (HTTP 200, never drop the rollout).
+- **A5** GRADING PARITY empirically confirmed: gold patch on `pytest-dev__pytest-7982` → decoupled verifier `resolved=True` == official SWE-bench harness `resolved=True` (MATCH). Plus astropy (1.0 both providers) + the 500-gold run (491/500 matching official).
+- **C10** mini_swe_agent_2 gained an opt-in verifier-POST path (cross-agent reuse proof; 22 tests).
+- **C11** shared `swe_env_base.yaml` + per-leaf `${inherit_from:...}` (eval 900 / train 1200 preserved; leaf resolution validated via the real swap logic — definitive `ng_dump_config` confirmation deferred to CI).
+- **D12** opt-in flat-eval grading mode for the 3 nested families (docker/opensandbox), with a dependency-free log parser + fixture tests; real .sif equivalence remains infra-gated.
+
+**Deliberately NOT done (gated, by design):**
+- **A6 (delete the legacy two-container path):** kept intact. Deletion is gated on a full **live agent-driven dual-run** of both code paths producing byte-identical rows — that needs the multi-server `ng_run` stack + the legacy apptainer path on a real instance, not reproducible standalone here. Grading parity (the substantive half) IS confirmed; the live row-level dual-run is the remaining cluster step. Deleting before it would remove the only reference to diff against.
+- **GPG signing** (headless pinentry) and **PR base retarget to upstream `main`** (after #1377 merges) — human/infra-gated.
 
 ### Final-session state
 - **Full SWE-bench Verified gold eval ran** via `scripts/run_swebench_verified.py` (docker provider, concurrency 4) → `results/swebench_verified_gold.{jsonl,log}`. Incremental/resumable; re-run/scale per `resources_servers/swe_env/README.md`.
