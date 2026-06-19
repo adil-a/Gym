@@ -69,6 +69,79 @@ async def _extract_patch_from_output_jsonl(env, output_glob: str) -> str:
     return (row.get("test_result") or {}).get("git_patch", "") or ""
 
 
+# --- OpenHands SELF_DRIVING launch builders (validated against psf__requests-2317) ---------------
+# These mirror the legacy get_run_command env (app.py:1162-1245) but target a SINGLE swe_env
+# sandbox (no apptainer two-container handshake): the Gym repo is bind-mounted at its host path
+# (so OpenHands' venv abs-symlinks + the nemo_gym editable install resolve), OpenHands self-drives
+# RUNTIME=local on the family's workdir, and the patch is read from output.jsonl.
+
+_OH_OUTPUT_DIR = "/root/eval_results"
+_OH_CONFIG_FILE = "/root/config.toml"
+_OH_DATA_JSONL = "/root/dataset/data.jsonl"
+_OH_METRICS_FPATH = "/root/nemo_gym_metrics.json"
+
+
+def openhands_config_toml(model: str, *, temperature: float = 0.0, top_p: float = 1.0) -> str:
+    """OpenHands ``[llm.model]`` config. ``native_tool_calling=false`` is more robust for small
+    open models that don't emit a strict tool-call format (validated with Qwen2.5-Coder-3B)."""
+    return (
+        "[llm.model]\n"
+        f'model = "{model}"\n'
+        'api_key = "EMPTY"\n'
+        'custom_llm_provider = "openai"\n'
+        "native_tool_calling = false\n"
+        f"temperature = {float(temperature)}\n"
+        f"top_p = {float(top_p)}\n"
+        "log_completions = true\n"
+        'log_completions_folder = "/root/completions"\n'
+    )
+
+
+def build_openhands_launch_command(
+    *,
+    setup_dir: str,
+    instance_id: str,
+    dataset_name: str,
+    split: str,
+    ng_config_dict_quoted: str,
+    model_server_name: str,
+    agent_cls: str = "CodeActAgent",
+    max_iter: int = 100,
+    command_exec_timeout: int = 300,
+    tmux_memory_limit_mb: int = 8192,
+) -> str:
+    """Build the in-sandbox bash that runs OpenHands ``run_infer.sh`` (RUNTIME=local).
+
+    ``ng_config_dict_quoted`` is the already-shlex-quoted NeMo Gym global config dict
+    (``config.ng_global_config_dict_str``) — egress routes OpenHands' ``NemoGymClient`` back to
+    the real model server. ``dataset_name`` selects OpenHands' workspace via its DATASET_TYPE
+    (e.g. official SWE-bench images -> ``SWE-Gym`` -> ``/testbed``).
+    """
+    oh = f"{setup_dir}/OpenHands"
+    return (
+        "set -e && "
+        f"export PATH={setup_dir}/miniforge3/bin:$PATH && "
+        "git config --global --add safe.directory '*' && "
+        f"mkdir -p /root/completions /root/dataset {_OH_OUTPUT_DIR} && "
+        "uid=$(id -ru 2>/dev/null || id -u) && export TMUX_TMPDIR=/tmp && "
+        "export TMUX=/tmp/tmux-$uid/default && mkdir -p /tmp/tmux-$uid && chmod 700 /tmp/tmux-$uid && "
+        "tmux -S /tmp/tmux-$uid/default start-server || true && "
+        f"cd {oh} && export RUNTIME=local && "
+        "export LOG_LEVEL=CRITICAL && export LOG_TO_FILE=False && export DEBUG=False && "
+        f"export NEMO_GYM_METRICS_FPATH={_OH_METRICS_FPATH} && echo '{{}}' > $NEMO_GYM_METRICS_FPATH && "
+        f"export NEMO_GYM_CONFIG_DICT={ng_config_dict_quoted} && "
+        f"export NEMO_GYM_MODEL_SERVER_NAME={model_server_name} && "
+        f"export VIRTUAL_ENV={oh}/.venv && export PATH=$PATH:{oh}/.venv/bin && "
+        "export POETRY_VIRTUALENVS_IN_PROJECT=true && export POETRY_VIRTUALENVS_CREATE=false && "
+        f"export POETRY_VIRTUALENVS_PATH={oh} && "
+        f"export TMUX_MEMORY_LIMIT={tmux_memory_limit_mb} && export COMMAND_EXEC_TIMEOUT={command_exec_timeout} && "
+        "export PYTHONDONTWRITEBYTECODE=1 && "
+        "./evaluation/benchmarks/swe_bench/scripts/run_infer.sh "
+        f"llm.model '' {agent_cls} 0 {max_iter} 1 {dataset_name} {split} {_OH_OUTPUT_DIR} "
+        f"{instance_id} {_OH_DATA_JSONL} {_OH_CONFIG_FILE}"
+    )
+
+
 async def provision_and_extract_patch(
     task: SweTask,
     *,

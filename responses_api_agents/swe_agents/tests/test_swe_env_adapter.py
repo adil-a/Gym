@@ -22,7 +22,12 @@ import asyncio
 import responses_api_agents.swe_env.harnesses  # noqa: F401  (register harnesses)
 from nemo_gym.sandbox import SandboxExecResult, SandboxHandle, SandboxStatus, register_provider
 from resources_servers.swe_env.verify_task import clear_idempotency_cache
-from responses_api_agents.swe_agents.swe_env_adapter import provision_and_extract_patch, run_self_driving
+from responses_api_agents.swe_agents.swe_env_adapter import (
+    build_openhands_launch_command,
+    openhands_config_toml,
+    provision_and_extract_patch,
+    run_self_driving,
+)
 from responses_api_agents.swe_env.harness import SweTask
 
 
@@ -207,3 +212,36 @@ def test_provision_and_extract_patch_stages_files_and_returns_patch_without_veri
     # Both staged files were written into the sandbox before launch.
     assert "/root/config.toml" in _UPLOADED_PATHS
     assert "/root/dataset/data.jsonl" in _UPLOADED_PATHS
+
+
+def test_openhands_config_toml_uses_nonnative_fc():
+    toml = openhands_config_toml("Qwen/Qwen2.5-Coder-3B-Instruct", temperature=0.0, top_p=1.0)
+    assert "[llm.model]" in toml
+    assert 'model = "Qwen/Qwen2.5-Coder-3B-Instruct"' in toml
+    # non-native FC is the robust choice for small open models (validated)
+    assert "native_tool_calling = false" in toml
+    assert "log_completions_folder" in toml
+
+
+def test_build_openhands_launch_command_has_runtime_local_egress_and_dataset():
+    cmd = build_openhands_launch_command(
+        setup_dir="/gym/responses_api_agents/swe_agents/swe_openhands_setup",
+        instance_id="psf__requests-2317",
+        dataset_name="SWE-Gym",
+        split="test",
+        ng_config_dict_quoted="'<<cfg>>'",
+        model_server_name="vllm_model",
+        agent_cls="CodeActAgent",
+        max_iter=30,
+    )
+    # RUNTIME=local self-drive + the OpenHands runner
+    assert "export RUNTIME=local" in cmd
+    assert "run_infer.sh" in cmd
+    # egress routes OpenHands' NemoGymClient back to the real model server
+    assert "export NEMO_GYM_CONFIG_DICT='<<cfg>>'" in cmd
+    assert "export NEMO_GYM_MODEL_SERVER_NAME=vllm_model" in cmd
+    assert "NEMO_GYM_METRICS_FPATH" in cmd
+    # dataset name selects OpenHands' workspace; instance + output dir wired
+    assert "SWE-Gym test /root/eval_results psf__requests-2317" in cmd
+    # git dubious-ownership guard for the host-owned bind mount under a root container
+    assert "safe.directory '*'" in cmd
