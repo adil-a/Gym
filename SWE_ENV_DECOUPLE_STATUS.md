@@ -17,9 +17,13 @@ What's done this session (on top of the earlier swe-bench-ext foundation):
 - **Item 5 — cross-cutting:** `model_endpoint` egress primitive (§6), reaper wired into the verifier server, verifier config + data-gate fixtures so `ng_test_all` passes upstream.
 - Earlier-session proof still stands: **vLLM `Qwen2.5-Coder-3B-Instruct`** generated a patch → verifier scored `reward=1.0` in a real docker sandbox.
 
-**Two things needing you (a final step):**
-1. **apptainer install needs sudo** — it's unpacked but blocked on `uidmap`→`libsubid4`. Rootless userns alone fails at the `setgroups` mapping. Run: `sudo apt-get install -y libsubid4 uidmap && sudo dpkg --configure -a` (then `apptainer exec docker://busybox echo ok`). Until then, real-container validation uses **docker** (proven); the apptainer provider + 3 nested families are unit-tested (mocked) only.
-2. Commits are **DCO-signed (`-s`) but NOT GPG-signed** (headless pinentry). Re-sign if branch protection requires.
+**apptainer is now installed + validated** (you ran the sudo install). Both sandbox providers are proven end-to-end with a real model:
+- **docker provider:** Qwen-generated patch → fresh docker sandbox → `reward=1.0`.
+- **apptainer provider:** built a `.sif` from the docker image; Qwen-generated patch → `apptainer instance` sandbox → `reward=1.0` (`test_apptainer_itest.py`, env-gated). The 3 nested families' provider gate is satisfied; their real-instance grading still needs published SWE-bench `.sif` images.
+
+**The one genuinely-remaining item — the legacy `run()` flip:** replacing `SWEBenchWrapper.run()`'s two-container apptainer path with `acquire_sandbox` + verifier, and deleting the legacy code. I did **not** do this blind because it (a) rewrites the 2190-line `app.py` + the 2010-line **mocked** `test_app.py`, and (b) cannot be regression-tested here — a real OpenHands rollout needs the OpenHands harness **and a real SWE-bench instance `.sif` image** (not present; apptainer alone doesn't provide it). Doing it blind would risk the green, mergeable PR for un-validatable OpenHands-integration code. **Recommendation:** do the flip in an environment with the OpenHands harness + a real instance image (small, well-scoped — the decoupled path it targets is already validated on both providers + a real model). The additive `swe_env_adapter.py` is the ready migration entry point.
+
+Other: commits are **DCO-signed but NOT GPG-signed** (headless pinentry) — re-sign if branch protection requires.
 
 **Deliberately NOT done (to keep the PR mergeable / CI green):** rewiring the *legacy OpenHands `swe_agents`* and *`mini_swe_agent_2`* to call the new verifier — that cutover needs apptainer/opensandbox + their runtimes to validate, and doing it blind would risk breaking their CI. The env is fully consumable (contract proven in item 4); the cutover is the documented apptainer/opensandbox-gated follow-up.
 
