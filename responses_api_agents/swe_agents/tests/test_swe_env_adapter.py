@@ -22,7 +22,7 @@ import asyncio
 import responses_api_agents.swe_env.harnesses  # noqa: F401  (register harnesses)
 from nemo_gym.sandbox import SandboxExecResult, SandboxHandle, SandboxStatus, register_provider
 from resources_servers.swe_env.verify_task import clear_idempotency_cache
-from responses_api_agents.swe_agents.swe_env_adapter import run_self_driving
+from responses_api_agents.swe_agents.swe_env_adapter import provision_and_extract_patch, run_self_driving
 from responses_api_agents.swe_env.harness import SweTask
 
 
@@ -30,6 +30,8 @@ _GOLD = "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    re
 
 # Records the env of every spec a fake sandbox was created with (egress-injection assertions).
 _CREATED_ENVS: list[dict] = []
+# Records files staged into a fake sandbox (target paths) for stage_files assertions.
+_UPLOADED_PATHS: list[str] = []
 
 
 class _FakeProvider:
@@ -67,7 +69,8 @@ class _FakeProvider:
             return SandboxExecResult(stdout=self._test_output, stderr="", return_code=0)
         return SandboxExecResult(stdout="", stderr="", return_code=0)
 
-    async def upload_file(self, *a, **k):
+    async def upload_file(self, handle, source_path, target_path):
+        _UPLOADED_PATHS.append(target_path)
         return None
 
     async def download_file(self, *a, **k):
@@ -184,3 +187,23 @@ def test_self_driving_output_jsonl_missing_yields_empty_patch():
     assert out["patch_exists"] is False
     assert out["resolved"] is False
     assert out["reward"] == 0.0
+
+
+def test_provision_and_extract_patch_stages_files_and_returns_patch_without_verifying():
+    """Agent-side primitive the worker uses: stage files, self-drive, return patch (NO grading)."""
+    _UPLOADED_PATHS.clear()
+    patch = asyncio.run(
+        provision_and_extract_patch(
+            _task(),
+            provider={"fake-adapter": {"output_jsonl_patch": _GOLD}},
+            agent_launch_command="bash run_infer.sh",
+            extra_env={"NEMO_GYM_MODEL_SERVER_NAME": "vllm_model"},
+            stage_files={"/root/config.toml": "[llm.model]\n", "/root/dataset/data.jsonl": "{}\n"},
+            patch_output_glob="/root/eval",
+        )
+    )
+    # Returns the patch (a plain str), runs no verification.
+    assert isinstance(patch, str) and patch.startswith("--- a/calc.py")
+    # Both staged files were written into the sandbox before launch.
+    assert "/root/config.toml" in _UPLOADED_PATHS
+    assert "/root/dataset/data.jsonl" in _UPLOADED_PATHS

@@ -69,7 +69,7 @@ async def _extract_patch_from_output_jsonl(env, output_glob: str) -> str:
     return (row.get("test_result") or {}).get("git_patch", "") or ""
 
 
-async def run_self_driving(
+async def provision_and_extract_patch(
     task: SweTask,
     *,
     provider: Mapping[str, Any] | SandboxProvider,
@@ -77,12 +77,17 @@ async def run_self_driving(
     model_server: Mapping[str, Any] | None = None,
     opensandbox_service_url: str | None = None,
     extra_env: Mapping[str, str] | None = None,
+    stage_files: Mapping[str, str] | None = None,
     patch_output_glob: str | None = None,
     agent_timeout_s: int | float = 1800,
     registry: SandboxRegistry | None = None,
     admission: CreateAdmission | None = None,
-) -> dict[str, Any]:
-    """Run a SELF_DRIVING agent through swe_env, then score via the verifier.
+) -> str:
+    """Agent-side ONLY: provision a working sandbox, self-drive, return the unified-diff patch.
+
+    No verification happens here — grading is the verifier's job (over HTTP, §4a), so this is
+    the function the agent worker uses for the decoupled cutover. The patch crosses back to
+    ``run()``, which POSTs it to the verifier.
 
     Two egress styles (validated end-to-end against a docker-provider OpenHands rollout):
 
@@ -93,11 +98,9 @@ async def run_self_driving(
       ``NemoGymClient`` (no litellm fallback), so it needs ``NEMO_GYM_CONFIG_DICT`` +
       ``NEMO_GYM_MODEL_SERVER_NAME`` + ``NEMO_GYM_METRICS_FPATH`` — NOT ``OPENAI_BASE_URL``.
 
-    Patch source: ``git diff --cached`` on ``repo_workdir`` by default, or the OpenHands
-    ``output.jsonl`` when ``patch_output_glob`` is given.
-
-    Returns the agent-owned result fields (the legacy ``run()`` would merge these
-    into the frozen ``SWEBenchVerifyResponse`` it emits — §4a wire-ownership).
+    ``stage_files`` writes ``{remote_path: content}`` into the live sandbox before launch
+    (e.g. OpenHands ``config.toml`` + the instance ``data.jsonl``). Patch source: the OpenHands
+    ``output.jsonl`` when ``patch_output_glob`` is given, else ``git diff --cached`` on ``repo_workdir``.
     """
     harness = get_harness(task.benchmark)
     spec = harness.build_spec(task)
@@ -112,20 +115,53 @@ async def run_self_driving(
     if extra_env:
         spec = dataclasses.replace(spec, env={**spec.env, **dict(extra_env)})
 
-    # 1. Provision the agent's OWN working container and let it self-drive (one long exec).
+    # Provision the agent's OWN working container, stage files, and let it self-drive.
     async with acquire_sandbox(
         provider, spec, registry=registry, admission=admission, instance_id=task.instance_id
     ) as env:
+        for remote_path, content in (stage_files or {}).items():
+            await env.write_text(remote_path, content)
         await env.execute(agent_launch_command, cwd=task.repo_workdir, timeout_s=agent_timeout_s)
         if patch_output_glob:
-            patch = await _extract_patch_from_output_jsonl(env, patch_output_glob)
-        else:
-            diff = await env.execute(
-                f"cd {task.repo_workdir} && git add -A && git diff --cached", cwd=task.repo_workdir
-            )
-            patch = diff.get("stdout", "") or ""
+            return await _extract_patch_from_output_jsonl(env, patch_output_glob)
+        diff = await env.execute(f"cd {task.repo_workdir} && git add -A && git diff --cached", cwd=task.repo_workdir)
+        return diff.get("stdout", "") or ""
 
-    # 2. Score the patch in the verifier's OWN fresh sandbox (decoupled verification).
+
+async def run_self_driving(
+    task: SweTask,
+    *,
+    provider: Mapping[str, Any] | SandboxProvider,
+    agent_launch_command: str,
+    model_server: Mapping[str, Any] | None = None,
+    opensandbox_service_url: str | None = None,
+    extra_env: Mapping[str, str] | None = None,
+    stage_files: Mapping[str, str] | None = None,
+    patch_output_glob: str | None = None,
+    agent_timeout_s: int | float = 1800,
+    registry: SandboxRegistry | None = None,
+    admission: CreateAdmission | None = None,
+) -> dict[str, Any]:
+    """provision_and_extract_patch + in-process ``verify_task`` (standalone/test convenience).
+
+    The production cutover keeps verification over HTTP (the agent worker calls
+    ``provision_and_extract_patch`` and ``run()`` POSTs to the verifier); this bundled form
+    exists for standalone reproduction and tests where co-launching the verifier is overkill.
+    """
+    patch = await provision_and_extract_patch(
+        task,
+        provider=provider,
+        agent_launch_command=agent_launch_command,
+        model_server=model_server,
+        opensandbox_service_url=opensandbox_service_url,
+        extra_env=extra_env,
+        stage_files=stage_files,
+        patch_output_glob=patch_output_glob,
+        agent_timeout_s=agent_timeout_s,
+        registry=registry,
+        admission=admission,
+    )
+    # Score the patch in the verifier's OWN fresh sandbox (decoupled verification).
     report = await verify_task(provider, dataclasses.replace(task, model_patch=patch))
     masked = report.error_kind is not None
     return {
