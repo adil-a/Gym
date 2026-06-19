@@ -12,26 +12,46 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SWE dataset-family harnesses. Importing this package registers them.
+"""SWE dataset-family harnesses. Importing this package registers all 6 families.
 
-Phase 1 implements the ``swe-bench-ext`` reference family end-to-end (flat,
-host-graded). The other 5 families (swe-bench/multilingual/r2e-gym nested;
-nv-internal/swe-rebench flat) are scaffolded in the plan and tracked as TODOs
-in SWE_ENV_DECOUPLE_STATUS.md.
+Flat host-graded (run on any exec provider incl. docker): ``swe-bench-ext``,
+``nv-internal-1``, ``swe-rebench``. Nested-harness (apptainer-only; run the
+vendored ``run_local_evaluation`` in-container): ``swe-bench``,
+``swe-bench-multilingual``, ``r2e-gym`` — these fail-fast on exec-only providers
+and are validated on an apptainer/`.sif` cluster (see SWE_ENV_DECOUPLE_STATUS.md).
 """
 
+from responses_api_agents.swe_env.harnesses.nv_internal import NVInternalHarness
+from responses_api_agents.swe_env.harnesses.r2egym import R2EGymHarness
 from responses_api_agents.swe_env.harnesses.swe_bench_ext import SweBenchExtHarness
-from responses_api_agents.swe_env.registry import register_harness
+from responses_api_agents.swe_env.harnesses.swe_rebench import SweRebenchHarness
+from responses_api_agents.swe_env.harnesses.swebench import SweBenchHarness
+from responses_api_agents.swe_env.registry import list_harnesses, register_harness
 
 
 def register_builtin_harnesses() -> None:
-    from responses_api_agents.swe_env.registry import list_harnesses
-
-    if "swe-bench-ext" not in list_harnesses():
-        register_harness(SweBenchExtHarness())
+    builtins = [
+        SweBenchExtHarness(),
+        NVInternalHarness(),
+        SweRebenchHarness(),
+        SweBenchHarness("swe-bench"),
+        SweBenchHarness("swe-bench-multilingual"),
+        R2EGymHarness(),
+    ]
+    existing = set(list_harnesses())
+    for harness in builtins:
+        if harness.name not in existing:
+            register_harness(harness)
 
 
 register_builtin_harnesses()
 
 
-__all__ = ["SweBenchExtHarness", "register_builtin_harnesses"]
+__all__ = [
+    "NVInternalHarness",
+    "R2EGymHarness",
+    "SweBenchExtHarness",
+    "SweBenchHarness",
+    "SweRebenchHarness",
+    "register_builtin_harnesses",
+]

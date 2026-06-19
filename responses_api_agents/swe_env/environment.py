@@ -52,6 +52,16 @@ class AsyncSweEnvironment:
     def sandbox(self) -> AsyncSandbox:
         return self._sandbox
 
+    @property
+    def sandbox_id(self) -> str | None:
+        handle = getattr(self._sandbox, "_handle", None)
+        return handle.sandbox_id if handle is not None else None
+
+    @property
+    def provider_name(self) -> str | None:
+        handle = getattr(self._sandbox, "_handle", None)
+        return handle.provider_name if handle is not None else None
+
     async def execute(
         self,
         command: str,
