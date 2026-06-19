@@ -1,27 +1,33 @@
 # SWE-bench wrapper configuration for OpenHands
 
+# Co-load the shared SWE env constants (single source of truth). This is pulled
+# in transitively by load_extra_config_paths, so users still launch with just
+# this config. The shared leaves below are referenced from within the
+# &swe_agents_config anchor, so swe_agents_val (which merges the anchor via
+# `<<: *swe_agents_config`) inherits the same ${inherit_from:...} references.
+config_paths:
+  - responses_api_agents/swe_agents/configs/swe_env_base.yaml
 
-# SWE-bench wrapper configuration for OpenHands
 swe_agents:
   responses_api_agents:
     swe_agents: &swe_agents_config
       entrypoint: app.py
-      
+
       # Agent framework configuration
       agent_framework: openhands
       agent_config: responses_api_agents/swe_agents/configs/oh_config.toml
       agent_max_turns: 100
-      agent_framework_repo: https://github.com/sdevare-nv/nv-OpenHands.git
-      agent_framework_commit: 25bacbc60f7491e562022d6021e155af6b92fccb  # pragma: allowlist secret
-      
+      agent_framework_repo: ${inherit_from:swe_env_base.shared.openhands.agent_framework_repo}
+      agent_framework_commit: ${inherit_from:swe_env_base.shared.openhands.agent_framework_commit}  # pragma: allowlist secret
+
       # Container configuration
       container_formatter: ???
       container_folder_path: null
-      swebench_agent_timeout: 1800
-      swebench_tests_timeout: 900
-      apptainer_memory_limit_mb: 32768
-      command_exec_timeout: 300
-      
+      swebench_agent_timeout: ${inherit_from:swe_env_base.shared.swebench_agent_timeout}
+      swebench_tests_timeout: 900  # eval value; training uses 1200 (intentionally NOT shared)
+      apptainer_memory_limit_mb: ${inherit_from:swe_env_base.shared.apptainer_memory_limit_mb}
+      command_exec_timeout: ${inherit_from:swe_env_base.shared.command_exec_timeout}
+
       dataset_path: ???
 
       agent_prompt_overrides:
