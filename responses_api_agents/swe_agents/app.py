@@ -153,6 +153,27 @@ class SWEBenchWrapperConfig(BaseResponsesAPIAgentConfig):
     openhands_should_log: bool = False
     debug: bool = False
 
+    # --- #1249 decoupled-eval cutover (opt-in; legacy two-container path stays default
+    # until dual-run reward parity passes, then this flips to True and the legacy path is deleted) ---
+    eval_via_verifier: bool = Field(
+        default=False,
+        description=(
+            "If True, run OpenHands in a single working sandbox via the decoupled swe_env infra "
+            "(acquire_sandbox + self-drive + output.jsonl patch extraction) and score the patch by "
+            "POSTing to the swe_env verifier (verifier_server_name) — replacing the legacy "
+            "two-container apptainer + /trajectories_mount eval. Default False keeps the legacy path."
+        ),
+    )
+    verifier_server_name: Optional[str] = Field(
+        default=None,
+        description="Name of the resources_servers/swe_env verifier to POST /verify to when eval_via_verifier=True.",
+    )
+    sandbox_provider: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Single-key swe_env sandbox provider mapping for the decoupled path "
+        "(e.g. {'docker': {...}} or {'apptainer': {...}}). Defaults to apptainer when eval_via_verifier=True.",
+    )
+
 
 class SWEBenchWrapperServerConfig(BaseModel):
     ng_global_config_dict_str: str
