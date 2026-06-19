@@ -323,14 +323,14 @@ class TestApp:
             "opensandbox": {
                 "connection": {
                     "domain": "sandbox.example",
-                    "api_key": "fixture-value",
+                    "api_key": "fixture-value",  # pragma: allowlist secret
                 }
             }
         }
 
         provider_for_disk = _sandbox_provider_for_config_dump(provider)
         assert "api_key" not in provider_for_disk["opensandbox"]["connection"]
-        assert provider["opensandbox"]["connection"]["api_key"] == "fixture-value"
+        assert provider["opensandbox"]["connection"]["api_key"] == "fixture-value"  # pragma: allowlist secret
         assert _sandbox_runtime_env(provider)["env_vars"] == {OPENSANDBOX_API_KEY_ENV: "fixture-value"}
 
     def test_split_trajectory_and_resolution_helpers_cover_edge_cases(self) -> None:
@@ -590,7 +590,7 @@ class TestApp:
         env = holder["env"]
         assert env.cleaned is True
         assert env.config["environment_class"].endswith("MiniSWESandboxEnvironment")
-        assert env.config["provider"]["opensandbox"]["connection"]["api_key"] == "worker-value"
+        assert env.config["provider"]["opensandbox"]["connection"]["api_key"] == "worker-value"  # pragma: allowlist secret
         assert env.config["image"] == "docker.io/swebench/sweb.eval.x86_64.django_1776_django-123:latest"
         assert holder["model_config"]["model_class"] == "litellm"
         assert holder["model_config"]["model_name"] == "hosted/model"
@@ -718,7 +718,7 @@ class TestApp:
             "opensandbox": {
                 "connection": {
                     "domain": "sandbox.example",
-                    "api_key": "fixture-value",
+                    "api_key": "fixture-value",  # pragma: allowlist secret
                 }
             }
         }

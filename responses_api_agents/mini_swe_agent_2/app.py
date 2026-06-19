@@ -56,7 +56,7 @@ from nemo_gym.server_utils import (
 
 
 OPENSANDBOX_PROVIDER_NAME = "opensandbox"
-OPENSANDBOX_API_KEY_ENV = "OPENSANDBOX_API_KEY"
+OPENSANDBOX_API_KEY_ENV = "OPENSANDBOX_API_KEY"  # pragma: allowlist secret
 
 
 class MiniSWEAgentConfig(BaseResponsesAPIAgentConfig):
