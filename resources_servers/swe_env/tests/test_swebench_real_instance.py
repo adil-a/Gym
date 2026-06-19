@@ -72,8 +72,7 @@ def test_real_swebench_gold_patch_resolves():
     p2p = _as_list(row.get("PASS_TO_PASS"))
     nodeids = " ".join("'" + n + "'" for n in f2p + p2p)
     test_command = (
-        "source /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed && "
-        f"python -m pytest -rA {nodeids}"
+        f"source /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed && python -m pytest -rA {nodeids}"
     )
     task = SweTask(
         instance_id=_INSTANCE,

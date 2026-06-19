@@ -185,7 +185,9 @@ async def _main_async(args):
         out.close()
     resolved = sum(r["resolved"] for r in results)
     errors = sum(1 for r in results if r["error"])
-    print(f"\n=== RESULT: resolved {resolved}/{len(results)} ({100 * resolved / max(1, len(results)):.1f}%); errors {errors} ===")
+    print(
+        f"\n=== RESULT: resolved {resolved}/{len(results)} ({100 * resolved / max(1, len(results)):.1f}%); errors {errors} ==="
+    )
 
 
 def main():

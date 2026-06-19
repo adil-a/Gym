@@ -91,7 +91,7 @@ def openhands_config_toml(model: str, *, temperature: float = 0.0, top_p: float 
     return (
         "[llm.model]\n"
         f'model = "{model}"\n'
-        'api_key = "EMPTY"\n'
+        'api_key = "EMPTY"\n'  # pragma: allowlist secret
         'custom_llm_provider = "openai"\n'
         "native_tool_calling = false\n"
         f"temperature = {float(temperature)}\n"

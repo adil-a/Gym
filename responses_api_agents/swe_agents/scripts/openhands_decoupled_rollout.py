@@ -92,7 +92,7 @@ def _config_toml(model: str, model_host: str, model_port: int) -> str:
         "[llm.model]\n"
         f'model = "{model}"\n'
         f'base_url = "http://{model_host}:{model_port}/v1"\n'
-        'api_key = "EMPTY"\n'
+        'api_key = "EMPTY"\n'  # pragma: allowlist secret
         'custom_llm_provider = "openai"\n'
         "native_tool_calling = false\n"
         "temperature = 0.0\n"
