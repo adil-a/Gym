@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 
 from nemo_gym.sandbox import SandboxResources, SandboxSpec
 from responses_api_agents.swe_env.harness import EvalArtifacts, SweEvalReport, SweTask, SweTaskHarness
+from responses_api_agents.swe_env.harnesses import flat_eval
 
 
 if TYPE_CHECKING:
@@ -78,10 +79,17 @@ class SweBenchHarness(SweTaskHarness):
 
     grade_strategy = "nested-harness"
 
-    def __init__(self, name: str = "swe-bench") -> None:
+    def __init__(self, name: str = "swe-bench", *, flat_eval: bool = False) -> None:
         if name not in _FAMILY_CONFIG:
             raise ValueError(f"Unknown swe-bench family: {name!r} (expected one of {sorted(_FAMILY_CONFIG)})")
         self.name = name
+        # Opt-in flat (host-graded) mode — see harnesses/flat_eval.py. When True
+        # the harness runs the instance's eval script directly in the sandbox
+        # and parses the log host-side, lifting the apptainer-only gate so it can
+        # run on docker/opensandbox. Default False keeps the nested behavior.
+        self.flat_eval = flat_eval
+        if flat_eval:
+            self.grade_strategy = "flat-host-grade"
 
     # --- provisioning --------------------------------------------------------
 
@@ -106,6 +114,11 @@ class SweBenchHarness(SweTaskHarness):
         )
 
     def supports_provider(self, provider_name: str) -> bool:
+        # Flat mode is host-graded (no nested container), so it runs on any
+        # exec-capable provider. Only a flat-capable harness instance lifts the
+        # apptainer-only restriction (see harnesses/flat_eval.py gating notes).
+        if self.flat_eval:
+            return True
         # Nested family: the upstream harness manages its own container runtime.
         # Reject exec-only providers (docker/fake) and require apptainer.
         return provider_name == "apptainer"
@@ -123,6 +136,12 @@ class SweBenchHarness(SweTaskHarness):
     # --- server-private grading ----------------------------------------------
 
     async def run_eval(self, env: "AsyncSweEnvironment", task: SweTask) -> EvalArtifacts:
+        # Opt-in flat mode: run the instance's eval script in-sandbox and grade
+        # the log host-side (docker/opensandbox-capable). Default path below is
+        # the nested run_local_evaluation harness (apptainer-only).
+        if flat_eval.flat_eval_enabled(self.flat_eval, task):
+            return await flat_eval.flat_run_eval(env, task)
+
         host_setup_dir = task.metadata.get("setup_dir") or self._family_config(task)["setup_dir"]
         harness_subdir = self._family_config(task)["harness_subdir"]
         venv_python = f"{host_setup_dir}/{harness_subdir}/venv/bin/python"
@@ -166,6 +185,12 @@ class SweBenchHarness(SweTaskHarness):
         )
 
     def grade(self, task: SweTask, artifacts: EvalArtifacts) -> SweEvalReport:
+        # Flat mode: host-side parse of the eval-script log. Detected from either
+        # the harness flag/task opt-in OR the artifacts produced by flat_run_eval
+        # (so a flat run_eval is always graded flat, even on a shared instance).
+        if flat_eval.flat_eval_enabled(self.flat_eval, task) or artifacts.raw.get("flat"):
+            return flat_eval.flat_grade(task, artifacts)
+
         # Infra failure -> mask via error_kind (never scored as "unresolved").
         if artifacts.raw.get("error_type") in {"sandbox", "timeout"}:
             return SweEvalReport(
