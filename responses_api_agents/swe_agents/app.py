@@ -57,6 +57,7 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseCreateParamsNonStreaming,
 )
 from nemo_gym.profiling import Profiler
+from nemo_gym.server_utils import get_response_json, raise_for_status
 from responses_api_models.vllm_model.app import VLLMConverter, split_responses_input_output_items
 
 
@@ -1284,6 +1285,19 @@ def _classify_agent_error(err: Optional[str]) -> Optional[str]:
     return "other"
 
 
+def _resolve_image_name(container_formatter: "str | list[str]", instance_id: str) -> str:
+    """Resolve a sandbox image from ``container_formatter`` (#1249 decoupled path).
+
+    Validated for the default docker SWE-bench formatter
+    (``docker://swebench/sweb.eval.x86_64.{instance_id}`` -> Docker Hub name, ``__``->``_1776_``
+    lowercased); apptainer/.sif resolution is owned by the provider.
+    """
+    fmt = container_formatter[0] if isinstance(container_formatter, list) else container_formatter
+    if "{instance_id}" in fmt:
+        fmt = fmt.format(instance_id=instance_id.replace("__", "_1776_").lower())
+    return fmt[len("docker://") :] if fmt.startswith("docker://") else fmt
+
+
 @ray.remote(
     scheduling_strategy="SPREAD",
     runtime_env={
@@ -1583,21 +1597,6 @@ class RunOpenHandsAgent(BaseModel):
 
         return report_file
 
-    def _resolve_sandbox_image(self) -> str:
-        """Resolve the agent sandbox image from ``container_formatter``.
-
-        Validated for the default docker SWE-bench formatter
-        (``docker://swebench/sweb.eval.x86_64.{instance_id}`` -> Docker Hub name with
-        ``__``->``_1776_`` lowercased); apptainer/.sif resolution is owned by the provider.
-        """
-        fmt = self.config.container_formatter
-        if isinstance(fmt, list):
-            fmt = fmt[0]
-        if "{instance_id}" in fmt:
-            munged = self.config.instance_id.replace("__", "_1776_").lower()
-            fmt = fmt.format(instance_id=munged)
-        return fmt[len("docker://") :] if fmt.startswith("docker://") else fmt
-
     async def _run_decoupled_agent(self) -> Optional[Path]:
         """#1249 decoupled cutover (eval_via_verifier): provision ONE working sandbox via the
         swe_env infra, self-drive OpenHands (RUNTIME=local), and persist the extracted patch +
@@ -1636,7 +1635,7 @@ class RunOpenHandsAgent(BaseModel):
         }
         task = SweTask(
             instance_id=self.config.instance_id,
-            image=self._resolve_sandbox_image(),
+            image=_resolve_image_name(self.config.container_formatter, self.config.instance_id),
             base_commit=instance_dict.get("base_commit", "") or "",
             repo_workdir="/testbed",
             test_command="",
@@ -2234,13 +2233,84 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
 
             raise e
 
+    async def _verify_patch_via_server(self, params: SWEBenchWrapperInstanceConfig) -> Dict[str, Any]:
+        """POST the worker's patch to the swe_env verifier (#1249 §4a); return its eval subset.
+
+        Builds a ``BaseVerifyRequest`` carrying the per-task metadata the verifier's ``build_task``
+        reads + the patch in ``response.metadata.model_patch``. On ANY transport failure it returns
+        a masked subset (``resolved=False``, ``error_kind='sandbox'``) rather than raising — the
+        agent must always emit a present (masked) row, never drop the rollout.
+        """
+        persisted = SWEBenchMetrics.model_validate_json(params.metrics_fpath.read_text())
+        patch = persisted.model_patch or ""
+        instance_dict = json.loads(params.problem_info["instance_dict"])
+
+        def _as_list(v):
+            if isinstance(v, str):
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    return [v]
+            return v or []
+
+        f2p = _as_list(instance_dict.get("FAIL_TO_PASS"))
+        p2p = _as_list(instance_dict.get("PASS_TO_PASS"))
+        nodeids = " ".join("'" + n + "'" for n in f2p + p2p)
+        test_command = (
+            "source /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed && "
+            f"python -m pytest -rA {nodeids}"
+        )
+        task_metadata = {
+            "instance_id": params.instance_id,
+            "image": _resolve_image_name(params.container_formatter, params.instance_id),
+            "base_commit": instance_dict.get("base_commit", "") or "",
+            "repo_workdir": "/testbed",
+            "test_command": test_command,
+            "test_patch": instance_dict.get("test_patch", "") or "",
+            "fail_to_pass": f2p,
+            "pass_to_pass": p2p,
+            "benchmark": params.problem_info["dataset_name"],
+            "split": params.problem_info.get("split", "test"),
+        }
+        verify_request = {
+            "responses_create_params": params.body.model_dump() | {"metadata": task_metadata},
+            "response": {
+                "id": f"swebench-{params.instance_id}",
+                "created_at": int(time.time()),
+                "model": params.body.model,
+                "object": "response",
+                "output": [],
+                "metadata": {"model_patch": patch},
+            },
+        }
+        try:
+            verify_response = await self.server_client.post(
+                server_name=params.verifier_server_name,
+                url_path="/verify",
+                json=verify_request,
+            )
+            await raise_for_status(verify_response)
+            return await get_response_json(verify_response)
+        except Exception as e:  # noqa: BLE001
+            print(f"Verifier POST failed for {params.instance_id}: {e}", flush=True)
+            return {"resolved": False, "error_kind": "sandbox", "patch_exists": bool(patch)}
+
     async def _inner_responses(
         self, params: SWEBenchWrapperInstanceConfig, dataset_processor: BaseDatasetHarnessProcessor
     ) -> NeMoGymResponse:
         maybe_report_file = await runner_ray_remote.remote(params.model_dump())
         metrics_to_update = dict()
 
-        if maybe_report_file:
+        if params.eval_via_verifier:
+            # #1249 decoupled cutover: the worker persisted the patch (no in-worker eval); grade it
+            # by POSTing to the verifier (HTTP, §4a). resolved/eval signals feed the SAME metrics +
+            # mask logic below, so the emitted row stays byte-identical to the legacy path.
+            eval_subset = await self._verify_patch_via_server(params)
+            metrics_to_update["resolved"] = bool(eval_subset.get("resolved"))
+            metrics_to_update["eval_timed_out"] = eval_subset.get("error_kind") == "eval_timeout"
+            if eval_subset.get("patch_exists") is not None:
+                metrics_to_update["patch_exists"] = bool(eval_subset.get("patch_exists"))
+        elif maybe_report_file:
             dataset_processor.postprocess_after_run(maybe_report_file)
 
             report = json.loads(Path(maybe_report_file).read_text())
@@ -2260,7 +2330,9 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
         persisted_metrics = SWEBenchMetrics.model_validate_json(params.metrics_fpath.read_text())
         resolved_now = metrics_to_update.get("resolved", False)
         agent_error_kind = persisted_metrics.agent_error_kind
-        eval_timed_out = bool(persisted_metrics.eval_timed_out)
+        # eval_timed_out may come from the in-worker eval (legacy, persisted) or the verifier POST
+        # (decoupled, in metrics_to_update and not yet persisted) — prefer the latter when present.
+        eval_timed_out = bool(metrics_to_update.get("eval_timed_out", persisted_metrics.eval_timed_out))
         agent_timed_out = bool(persisted_metrics.agent_timed_out)
         if (
             (resolved_now and agent_error_kind in ("max_iteration", "context_window"))
