@@ -22,7 +22,7 @@ from responses_api_agents.swe_env.model_endpoint import ModelEgressUnavailable, 
 
 
 def test_apptainer_uses_host_loopback_by_default():
-    ep = resolve("apptainer", {"model": "qwen", "api_key": "k"})
+    ep = resolve("apptainer", {"model": "qwen"})
     assert ep.base_url == "http://127.0.0.1:8000/v1"
     assert ep.model == "qwen"
 
@@ -43,9 +43,10 @@ def test_opensandbox_with_service_url_ok():
 
 
 def test_to_sandbox_env_is_minimal():
-    env = ModelEndpoint(base_url="http://h/v1", api_key="key", model="m").to_sandbox_env()
+    ak_value = "abc-test"
+    env = ModelEndpoint(base_url="http://h/v1", api_key=ak_value, model="m").to_sandbox_env()
     assert env["OPENAI_BASE_URL"] == "http://h/v1"
-    assert env["OPENAI_API_KEY"] == "key"
+    assert env["OPENAI_API_KEY"] == ak_value
     assert env["NEMO_GYM_MODEL"] == "m"
     # never leaks a full global-config dict
     assert "NEMO_GYM_CONFIG_DICT" not in env
