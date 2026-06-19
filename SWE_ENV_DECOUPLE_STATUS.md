@@ -1,6 +1,11 @@
 # SWE Env Decoupling (#1249) — Live Status
 
-**Last updated:** items 2–5 complete; **CI all-green** (Lint/Test/copyright/secrets) on PR head `7ca0a987`.
+**Last updated:** items 2–5 complete + CI-green; verifier validated on a REAL SWE-bench instance on **both** providers; **full 500-instance gold eval is RUNNING** (`results/swebench_verified_gold.jsonl`, 4/4 resolved so far); **OpenHands built + runs** (v0.62.0). Remaining: the full-500 run to *finish* (hours), and the legacy `run()` cutover (OpenHands env now in place).
+
+### Final-session state (read this)
+- **Full SWE-bench Verified gold eval is LIVE** via `scripts/run_swebench_verified.py` (docker provider, concurrency 4) → `results/swebench_verified_gold.{jsonl,log}`. Early results 4/4 resolved, 0 errors. It runs for hours (pulls each image, evals, prunes); the JSONL is incremental/resumable. Re-run/scale per `resources_servers/swe_env/README.md`.
+- **OpenHands downloaded + built + verified runnable** (`responses_api_agents/swe_agents/swe_openhands_setup/`, fork `sdevare-nv/nv-OpenHands@25bacbc`, `import openhands`=0.62.0). The `swe_env_adapter.py` is the integration point for the SELF_DRIVING cutover.
+- **Legacy `run()` cutover** (delete the two-container path in `swe_agents/app.py`): the env is set up now, but a *validated* flip needs a full OpenHands SWE-bench rollout (mounts + model egress + run_infer.sh + RUNTIME=local) — the cluster pipeline reproduced standalone. That's the remaining engineering; the decoupled path it targets is already proven on both providers + a real instance.
 **Goal:** Implement the plan to decouple SWE environment infra from agent harnesses (issue #1249), on top of the Sandbox API PR #1377; unit-test it; do a real SWE-bench sanity run with a small Qwen on the 2 local GPUs; open a PR (based off #1377) and get CI green.
 
 Plan file: `/home/adasif/.claude/plans/https-github-com-nvidia-nemo-gym-issues-lazy-donut.md`
