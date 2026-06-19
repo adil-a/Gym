@@ -29,7 +29,7 @@ import ray
 import yaml
 from fastapi import Body, FastAPI
 from minisweagent.config import builtin_config_dir, get_config_path
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
 from nemo_gym.base_resources_server import (
     BaseRunRequest,
@@ -50,6 +50,8 @@ from nemo_gym.reward_profile import compute_pass_majority_metrics, highest_k_met
 from nemo_gym.server_utils import (
     ServerClient,
     get_first_server_config_dict,
+    get_response_json,
+    raise_for_status,
 )
 
 
@@ -71,6 +73,24 @@ class MiniSWEAgentConfig(BaseResponsesAPIAgentConfig):
     step_limit: int = 250
     tool_choice: Optional[str | dict[str, Any]] = None
     sandbox_resource_profiles: Optional[list[dict[str, str]]] = None
+
+    # --- #1249 C10 cross-agent reuse (opt-in; legacy in-process _run_eval_v2 stays the default) ---
+    eval_via_verifier: bool = Field(
+        default=False,
+        description=(
+            "If True, score the agent's patch by POSTing it to the shared swe_env verifier "
+            "(verifier_server_name) instead of grading in-process via the swebench harness "
+            "(_run_eval_v2). Default False keeps the legacy in-process eval path. Proves that any "
+            "agent can reuse the same swe_env verifier the OpenHands agent uses (#1249)."
+        ),
+    )
+    verifier_server_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Name of the resources_servers/swe_env verifier to POST /verify to when "
+            "eval_via_verifier=True. Required when eval_via_verifier is True."
+        ),
+    )
 
 
 class MiniSWEAgentRunRequest(BaseRunRequest):
@@ -549,16 +569,22 @@ def _run_mini_swe_v2(**params: Any) -> dict[str, Any]:
                 {"instance_id": instance_id},
             )
 
-        print(f"[EVAL]{instance_id} Running eval", flush=True)
-        eval_report = _run_eval_v2(
-            instance=instance,
-            env=env,
-            model_patch=model_patch,
-            instance_dir=instance_dir,
-            run_id=run_id,
-            is_golden=params["run_golden"],
-        )
-        print(f"[EVAL]{instance_id} Eval completed", flush=True)
+        if params.get("eval_via_verifier"):
+            # #1249 C10: skip the in-worker swebench harness; the patch is graded out-of-band by the
+            # shared swe_env verifier (run() POSTs it). Carry the patch so run() can forward it.
+            print(f"[EVAL]{instance_id} Skipping in-worker eval (eval_via_verifier)", flush=True)
+            eval_report = {"instance_id": instance_id, "model_patch": model_patch}
+        else:
+            print(f"[EVAL]{instance_id} Running eval", flush=True)
+            eval_report = _run_eval_v2(
+                instance=instance,
+                env=env,
+                model_patch=model_patch,
+                instance_dir=instance_dir,
+                run_id=run_id,
+                is_golden=params["run_golden"],
+            )
+            print(f"[EVAL]{instance_id} Eval completed", flush=True)
 
         input_messages, response_output, responses = _split_trajectory_for_responses(data.get("messages", []))
 
@@ -691,6 +717,80 @@ class MiniSWEAgent(SimpleResponsesAPIAgent):
                 key_metrics[key] = agent_metrics[key]
         return key_metrics
 
+    async def _verify_patch_via_server(
+        self,
+        *,
+        instance: dict[str, Any],
+        patch: str,
+        instance_id: str,
+        subset: str,
+        split: str,
+        responses_create_params: NeMoGymResponseCreateParamsNonStreaming,
+    ) -> dict[str, Any]:
+        """POST the agent's patch to the shared swe_env verifier (#1249 C10); return its eval subset.
+
+        Builds a ``BaseVerifyRequest`` carrying the per-task metadata the verifier's ``build_task``
+        reads (instance_id, image, base_commit, repo_workdir, test_command, test_patch, fail_to_pass,
+        pass_to_pass, benchmark, split) + the patch in ``response.metadata.model_patch``, and POSTs to
+        ``verifier_server_name`` via the server client — the SAME contract the OpenHands agent uses, so
+        any agent can reuse the swe_env verifier. On ANY transport failure it returns a masked subset
+        (``resolved=False``, ``error_kind='sandbox'``) rather than raising — the agent must always emit
+        a present (masked) row, never drop the rollout.
+        """
+
+        def _as_list(value: Any) -> list[str]:
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except json.JSONDecodeError:
+                    return [value]
+            return value or []
+
+        f2p = _as_list(instance.get("FAIL_TO_PASS"))
+        p2p = _as_list(instance.get("PASS_TO_PASS"))
+        nodeids = " ".join("'" + n + "'" for n in f2p + p2p)
+        test_command = (
+            "source /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed && "
+            f"python -m pytest -rA {nodeids}"
+        )
+        task_metadata = {
+            "instance_id": instance_id,
+            "image": _swebench_image_name(instance, subset),
+            "base_commit": instance.get("base_commit", "") or "",
+            "repo_workdir": "/testbed",
+            "test_command": test_command,
+            "test_patch": instance.get("test_patch", "") or "",
+            "fail_to_pass": f2p,
+            "pass_to_pass": p2p,
+            # swe-bench-ext is the flat host-graded harness the conda/pytest test_command above
+            # targets (it is the registered swe_env harness key, not the dataset subset).
+            "benchmark": "swe-bench-ext",
+            "split": split,
+        }
+        verify_request = {
+            "responses_create_params": responses_create_params.model_dump(exclude_none=True)
+            | {"metadata": task_metadata},
+            "response": {
+                "id": f"mini-swe-{instance_id}",
+                "created_at": int(time.time()),
+                "model": responses_create_params.model,
+                "object": "response",
+                "output": [],
+                "metadata": {"model_patch": patch},
+            },
+        }
+        try:
+            verify_response = await self.server_client.post(
+                server_name=self.config.verifier_server_name,
+                url_path="/verify",
+                json=verify_request,
+            )
+            await raise_for_status(verify_response)
+            return await get_response_json(verify_response)
+        except Exception as e:  # noqa: BLE001
+            print(f"Verifier POST failed for {instance_id}: {e}", flush=True)
+            return {"resolved": False, "error_kind": "sandbox", "patch_exists": bool(patch)}
+
     async def responses(self, body: NeMoGymResponseCreateParamsNonStreaming = Body()) -> NeMoGymResponse:
         raise NotImplementedError
 
@@ -789,6 +889,7 @@ class MiniSWEAgent(SimpleResponsesAPIAgent):
                     step_timeout=step_timeout,
                     eval_timeout=eval_timeout,
                     step_limit=step_limit,
+                    eval_via_verifier=self.config.eval_via_verifier,
                 )
                 runner = runner_ray_remote
                 runtime_env = _sandbox_runtime_env(self.config.sandbox_provider)
@@ -800,7 +901,26 @@ class MiniSWEAgent(SimpleResponsesAPIAgent):
                 input_messages = result["input_messages"]
                 response_output = result["response_output"]
                 responses = result["responses"]
-                reward = 1.0 if _is_resolved(instance_id, result["eval_report"]) else 0.0
+
+                if self.config.eval_via_verifier:
+                    # #1249 C10 cross-agent reuse: score the patch by POSTing to the shared swe_env
+                    # verifier instead of grading via the in-worker swebench harness (_run_eval_v2).
+                    # The Ray worker still produced the trajectory + patch; the verifier is now the
+                    # authoritative grader, exactly as the OpenHands agent uses it.
+                    in_worker_report = result.get("eval_report") or {}
+                    patch = in_worker_report.get("model_patch", "") or ""
+                    eval_subset = await self._verify_patch_via_server(
+                        instance=body.model_dump(),
+                        patch=patch,
+                        instance_id=instance_id,
+                        subset=subset,
+                        split=split,
+                        responses_create_params=body.responses_create_params,
+                    )
+                    reward = 1.0 if eval_subset.get("resolved") else 0.0
+                    result["eval_report"] = eval_subset
+                else:
+                    reward = 1.0 if _is_resolved(instance_id, result["eval_report"]) else 0.0
 
             except Exception as e:
                 error_info = {"error": str(e), "traceback": traceback.format_exc()}
