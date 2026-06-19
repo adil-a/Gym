@@ -37,9 +37,11 @@ from nemo_gym.base_resources_server import (
     SimpleResourcesServer,
 )
 from nemo_gym.openai_utils import NeMoGymResponse
-from resources_servers.swe_env.verify_task import verify_task
+from nemo_gym.sandbox import create_provider
+from resources_servers.swe_env.verify_task import get_registry, verify_task
 from responses_api_agents.swe_env.grading import reward_from_report
 from responses_api_agents.swe_env.harness import SweTask
+from responses_api_agents.swe_env.reaper import SandboxReaper
 
 
 _FENCED_DIFF = re.compile(r"```(?:diff|patch)?\s*\n(.*?)```", re.DOTALL)
@@ -66,6 +68,9 @@ class SweEnvVerifierConfig(BaseResourcesServerConfig):
 
     sandbox_provider: dict[str, Any] = {"docker": {}}
     model_patch_field: str = "model_patch"
+    reaper_enabled: bool = True
+    reaper_interval_s: float = 60.0
+    opensandbox_service_url: str | None = None
 
 
 class SweEnvVerifyResponse(BaseVerifyResponse):
@@ -97,6 +102,33 @@ class SweEnvVerifier(SimpleResourcesServer):
             mask_sample=masked,
             instance_id=report.instance_id,
         )
+
+    def setup_webserver(self):
+        """Start a sandbox reaper alongside the verifier (plan §9 backstop).
+
+        verify_task already tears down each sandbox in a finally; the reaper is
+        the crash/SIGTERM backstop that stops orphaned + TTL-expired sandboxes.
+        """
+        app = super().setup_webserver()
+        if getattr(self.config, "reaper_enabled", True):
+            reaper = SandboxReaper(get_registry(), lambda name: create_provider({name: {}}))
+
+            async def _start_reaper() -> None:
+                try:
+                    reaper.start(interval_s=self.config.reaper_interval_s)
+                except Exception:
+                    pass
+
+            async def _stop_reaper() -> None:
+                try:
+                    await reaper.stop()
+                    await reaper.stop_all_owned()
+                except Exception:
+                    pass
+
+            app.add_event_handler("startup", _start_reaper)
+            app.add_event_handler("shutdown", _stop_reaper)
+        return app
 
 
 def build_task(body: BaseVerifyRequest, patch_field: str) -> SweTask:
