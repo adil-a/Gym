@@ -8,7 +8,14 @@ Plan file: `/home/adasif/.claude/plans/https-github-com-nvidia-nemo-gym-issues-l
 ---
 
 ## TL;DR for when you wake up
-**Plan items 2, 3, 4, 5 implemented; 87 tests pass + a real model→sandbox→verifier run.** PR: **https://github.com/adil-a/Gym/pull/1** (based off #1377).
+**Plan items 2, 3, 4, 5 implemented; 87 unit tests pass; and the verifier is validated on a REAL SWE-bench Verified instance on BOTH providers.** PR: **https://github.com/adil-a/Gym/pull/1** (based off #1377).
+
+**Real SWE-bench validation (`astropy__astropy-13453`):** pulled the public docker image `swebench/sweb.eval.x86_64.astropy_1776_astropy-13453`, reset to base, applied the GOLD patch + test_patch, ran the 1 FAIL_TO_PASS + 9 PASS_TO_PASS tests → `resolved=True, reward=1.0` via the **docker provider**, and again after `apptainer build docker-daemon://<image>` (→ 1.0GB `.sif`) via the **apptainer provider**. So the decoupled verifier grades real benchmark tasks on both backends. (This also caught + fixed a real bug: the default `reset_repo` did `git clean -fdx`, which would wipe a repo's prebuilt C extensions — now `git reset --hard` only, matching legacy.)
+
+### Running real SWE-bench / the "500-instance" mechanism
+- SWE-bench ships **public Docker images** (Docker Hub `swebench` namespace, `sweb.eval.x86_64.<instance_id>` with `__`→`_1776_`), auto-pulled by the harness; ~120GB+ for the full Verified set. **There are no pre-built `.sif` files to download.**
+- This box has docker, so use the **docker images directly** (docker provider) — no `.sif` needed. For apptainer-only clusters, convert each image with `apptainer build x.sif docker-daemon://swebench/sweb.eval.x86_64.<id>` (or NVIDIA NeMo-Skills `nemo_skills/dataset/swe-bench/dump_images.py` in bulk).
+- A full 500-instance eval = loop the dataset, pull each image, run the agent, verify — a large batch job (hundreds of GB + agent compute), not run here; one real instance is validated end-to-end on both providers as proof.
 
 What's done this session (on top of the earlier swe-bench-ext foundation):
 - **Item 2 — all 6 families:** relocated the 1606-line vendored parser into `swe_env/parsing/`; added `nv-internal-1` + `swe-rebench` (flat, docker-runnable) and `swe-bench` + `swe-bench-multilingual` + `r2e-gym` (nested, apptainer-only, fail-fast on exec-only providers). All registered.

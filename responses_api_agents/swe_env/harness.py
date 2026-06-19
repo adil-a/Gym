@@ -120,12 +120,15 @@ class SweTaskHarness(ABC):
     # --- server-private grading (verifier only) ------------------------------
 
     async def reset_repo(self, env: "AsyncSweEnvironment", task: SweTask) -> None:
-        """Reset the in-sandbox checkout to ``base_commit`` for hermetic grading."""
+        """Reset the in-sandbox checkout to ``base_commit`` for hermetic grading.
+
+        Only ``git reset --hard`` (matches legacy swe-bench-ext, app.py:943). We do
+        NOT ``git clean -fdx``: verification runs in a FRESH sandbox (no agent edits
+        to scrub), and clean would delete the image's prebuilt artifacts (compiled
+        C extensions, installed env) and break the tests.
+        """
         if task.base_commit:
-            await env.execute(
-                f"git reset --hard {task.base_commit} && git clean -fdx",
-                cwd=task.repo_workdir,
-            )
+            await env.execute(f"git reset --hard {task.base_commit}", cwd=task.repo_workdir)
 
     @abstractmethod
     async def run_eval(self, env: "AsyncSweEnvironment", task: SweTask) -> EvalArtifacts:
