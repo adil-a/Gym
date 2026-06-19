@@ -331,7 +331,7 @@ class TestApp:
         provider_for_disk = _sandbox_provider_for_config_dump(provider)
         assert "api_key" not in provider_for_disk["opensandbox"]["connection"]
         assert provider["opensandbox"]["connection"]["api_key"] == "fixture-value"  # pragma: allowlist secret
-        assert _sandbox_runtime_env(provider)["env_vars"] == {OPENSANDBOX_API_KEY_ENV: "fixture-value"}
+        assert _sandbox_runtime_env(provider)["env_vars"] == {OPENSANDBOX_API_KEY_ENV: "fixture-value"}  # pragma: allowlist secret
 
     def test_split_trajectory_and_resolution_helpers_cover_edge_cases(self) -> None:
         input_messages, output_items, raw_responses = _split_trajectory_for_responses(
@@ -563,7 +563,7 @@ class TestApp:
         monkeypatch.setattr(mini_swe_app_module, "get_config_path", lambda _config: config_path)
         monkeypatch.setattr(mini_swe_app_module, "uuid4", lambda: "uuid")
         monkeypatch.setattr(mini_swe_app_module.time, "time", lambda: 1234)
-        monkeypatch.setenv(OPENSANDBOX_API_KEY_ENV, "worker-value")
+        monkeypatch.setenv(OPENSANDBOX_API_KEY_ENV, "worker-value")  # pragma: allowlist secret
 
         params = {
             "instance_dict": {
@@ -742,7 +742,7 @@ class TestApp:
         await server.run(run_request)
 
         runtime_env = mock_runner_ray_remote.options.call_args.kwargs["runtime_env"]
-        assert runtime_env["env_vars"] == {OPENSANDBOX_API_KEY_ENV: "fixture-value"}
+        assert runtime_env["env_vars"] == {OPENSANDBOX_API_KEY_ENV: "fixture-value"}  # pragma: allowlist secret
         call_args = mock_runner_ray_remote.options.return_value.remote.call_args
         params = call_args.args[1]
         generated_config = yaml.safe_load(Path(params["config"]).read_text())
