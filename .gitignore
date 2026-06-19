@@ -237,3 +237,6 @@ env.yaml
 
 # Backup files
 *.backup
+
+.venv-swe/
+.swe_env_model_dl.log
