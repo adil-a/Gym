@@ -49,23 +49,27 @@ def _provider_name(provider: Mapping[str, Any] | SandboxProvider) -> str:
     return getattr(provider, "name", "?")
 
 
-async def _extract_patch_from_output_jsonl(env, output_glob: str) -> str:
-    """Read the agent's unified diff from the newest OpenHands ``output.jsonl``.
+async def _read_output_jsonl_row(env, output_glob: str) -> dict[str, Any]:
+    """Return the last row of the newest OpenHands ``output.jsonl`` (or ``{}`` if absent).
 
     OpenHands (``RUNTIME=local``) writes its result row to
     ``{eval_output_dir}/.../output.jsonl`` with the patch at
-    ``row["test_result"]["git_patch"]`` — NOT to the working tree, so a plain
-    ``git diff`` would miss it. Validated against a real rollout (psf__requests-2317).
+    ``row["test_result"]["git_patch"]`` and any agent failure at ``row["error"]`` — NOT to the
+    working tree, so a plain ``git diff`` would miss the patch. Validated against a real rollout.
     """
     found = await env.execute(f"find {shlex.quote(output_glob)} -name output.jsonl 2>/dev/null | head -1")
     path = (found.get("stdout", "") or "").strip()
     if not path:
-        return ""
+        return {}
     catted = await env.execute(f"cat {shlex.quote(path)}")
     raw = (catted.get("stdout", "") or "").strip()
     if not raw:
-        return ""
-    row = json.loads(raw.splitlines()[-1])
+        return {}
+    return json.loads(raw.splitlines()[-1])
+
+
+async def _extract_patch_from_output_jsonl(env, output_glob: str) -> str:
+    row = await _read_output_jsonl_row(env, output_glob)
     return (row.get("test_result") or {}).get("git_patch", "") or ""
 
 
@@ -175,9 +179,26 @@ async def provision_and_extract_patch(
     (e.g. OpenHands ``config.toml`` + the instance ``data.jsonl``). Patch source: the OpenHands
     ``output.jsonl`` when ``patch_output_glob`` is given, else ``git diff --cached`` on ``repo_workdir``.
     """
+    result = await provision_and_collect(
+        task,
+        provider=provider,
+        agent_launch_command=agent_launch_command,
+        model_server=model_server,
+        opensandbox_service_url=opensandbox_service_url,
+        extra_env=extra_env,
+        stage_files=stage_files,
+        patch_output_glob=patch_output_glob,
+        agent_timeout_s=agent_timeout_s,
+        registry=registry,
+        admission=admission,
+    )
+    return result["patch"]
+
+
+def _build_agent_spec(task, provider, model_server, opensandbox_service_url, extra_env):
+    """Build the agent sandbox spec, injecting egress env (model_endpoint and/or extra_env)."""
     harness = get_harness(task.benchmark)
     spec = harness.build_spec(task)
-
     # Model-server egress: inject only a sandbox-reachable endpoint (never the global dict).
     if model_server is not None:
         endpoint = model_endpoint.resolve(
@@ -187,8 +208,29 @@ async def provision_and_extract_patch(
     # NeMo-Gym-client egress / any extra in-sandbox env (e.g. OpenHands NEMO_GYM_* vars).
     if extra_env:
         spec = dataclasses.replace(spec, env={**spec.env, **dict(extra_env)})
+    return spec
 
-    # Provision the agent's OWN working container, stage files, and let it self-drive.
+
+async def provision_and_collect(
+    task: SweTask,
+    *,
+    provider: Mapping[str, Any] | SandboxProvider,
+    agent_launch_command: str,
+    model_server: Mapping[str, Any] | None = None,
+    opensandbox_service_url: str | None = None,
+    extra_env: Mapping[str, str] | None = None,
+    stage_files: Mapping[str, str] | None = None,
+    patch_output_glob: str | None = None,
+    agent_timeout_s: int | float = 1800,
+    registry: SandboxRegistry | None = None,
+    admission: CreateAdmission | None = None,
+) -> dict[str, Any]:
+    """Agent-side: provision + self-drive, return ``{"patch", "agent_error"}``.
+
+    Superset of ``provision_and_extract_patch`` — also surfaces the OpenHands ``output.jsonl``
+    ``error`` field so the worker can classify ``agent_error_kind`` for mask_sample (parity).
+    """
+    spec = _build_agent_spec(task, provider, model_server, opensandbox_service_url, extra_env)
     async with acquire_sandbox(
         provider, spec, registry=registry, admission=admission, instance_id=task.instance_id
     ) as env:
@@ -196,9 +238,11 @@ async def provision_and_extract_patch(
             await env.write_text(remote_path, content)
         await env.execute(agent_launch_command, cwd=task.repo_workdir, timeout_s=agent_timeout_s)
         if patch_output_glob:
-            return await _extract_patch_from_output_jsonl(env, patch_output_glob)
+            row = await _read_output_jsonl_row(env, patch_output_glob)
+            patch = (row.get("test_result") or {}).get("git_patch", "") or ""
+            return {"patch": patch, "agent_error": row.get("error")}
         diff = await env.execute(f"cd {task.repo_workdir} && git add -A && git diff --cached", cwd=task.repo_workdir)
-        return diff.get("stdout", "") or ""
+        return {"patch": diff.get("stdout", "") or "", "agent_error": None}
 
 
 async def run_self_driving(

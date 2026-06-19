@@ -1445,6 +1445,11 @@ class RunOpenHandsAgent(BaseModel):
         if self.config.verify_golden_patch:
             return await self._run_golden_patch_verification()
 
+        if self.config.eval_via_verifier:
+            # #1249 decoupled cutover: one working sandbox via swe_env, self-drive, persist the
+            # patch + agent metrics. Eval/reward moves to run() (verifier POST). No report_file.
+            return await self._run_decoupled_agent()
+
         instance_id = self.config.instance_id
         if self.config.debug:
             profiler = Profiler(name=instance_id, base_profile_dir=self.config.profiling_mounted_dir)
@@ -1577,6 +1582,119 @@ class RunOpenHandsAgent(BaseModel):
             profiler.stop()
 
         return report_file
+
+    def _resolve_sandbox_image(self) -> str:
+        """Resolve the agent sandbox image from ``container_formatter``.
+
+        Validated for the default docker SWE-bench formatter
+        (``docker://swebench/sweb.eval.x86_64.{instance_id}`` -> Docker Hub name with
+        ``__``->``_1776_`` lowercased); apptainer/.sif resolution is owned by the provider.
+        """
+        fmt = self.config.container_formatter
+        if isinstance(fmt, list):
+            fmt = fmt[0]
+        if "{instance_id}" in fmt:
+            munged = self.config.instance_id.replace("__", "_1776_").lower()
+            fmt = fmt.format(instance_id=munged)
+        return fmt[len("docker://") :] if fmt.startswith("docker://") else fmt
+
+    async def _run_decoupled_agent(self) -> Optional[Path]:
+        """#1249 decoupled cutover (eval_via_verifier): provision ONE working sandbox via the
+        swe_env infra, self-drive OpenHands (RUNTIME=local), and persist the extracted patch +
+        agent-side metrics. The eval/reward happens in ``run()`` (POST to the verifier), so this
+        bypasses the legacy two-container path and returns ``None`` (no report_file).
+
+        Validated end-to-end standalone (psf__requests-2317, docker provider); the launch recipe
+        + egress live in ``swe_env_adapter`` (proven against a real OpenHands rollout)."""
+        from responses_api_agents.swe_agents.swe_env_adapter import (
+            build_openhands_launch_command,
+            openhands_config_toml,
+            provision_and_collect,
+        )
+        from responses_api_agents.swe_env.harness import SweTask
+
+        def _as_list(v):
+            if isinstance(v, str):
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    return [v]
+            return v or []
+
+        data_point = self.config.problem_info
+        instance_dict = json.loads(data_point["instance_dict"])
+        setup_dir = str(self.config.openhands_setup_dir)
+        gym_root = str(Path(setup_dir).resolve().parents[2])
+
+        metrics = SWEBenchMetrics(ray_queue_time=time.time() - self.config.ray_queue_timestamp)
+        metrics.openhands_run_time = -time.time()
+
+        # Provider: explicit config, else docker with the Gym repo bind-mounted at its host path
+        # (resolves OpenHands' venv abs-symlinks + the nemo_gym editable install) + host network.
+        provider = self.config.sandbox_provider or {
+            "docker": {"network": "host", "run_args": ["-v", f"{gym_root}:{gym_root}:ro"]}
+        }
+        task = SweTask(
+            instance_id=self.config.instance_id,
+            image=self._resolve_sandbox_image(),
+            base_commit=instance_dict.get("base_commit", "") or "",
+            repo_workdir="/testbed",
+            test_command="",
+            model_patch="",
+            test_patch=instance_dict.get("test_patch", "") or "",
+            fail_to_pass=_as_list(instance_dict.get("FAIL_TO_PASS")),
+            pass_to_pass=_as_list(instance_dict.get("PASS_TO_PASS")),
+            benchmark=data_point["dataset_name"],
+            split=data_point.get("split", "test"),
+            metadata={"ttl_s": self.config.swebench_agent_timeout + 600, "ready_timeout_s": 900},
+        )
+        launch = build_openhands_launch_command(
+            setup_dir=setup_dir,
+            instance_id=self.config.instance_id,
+            dataset_name=data_point["dataset_name"],
+            split=data_point.get("split", "test"),
+            ng_config_dict_quoted=self.config.ng_global_config_dict_str,
+            model_server_name=self.config.model_server_name,
+            agent_cls=self.config.resolved_agent_cls,
+            max_iter=self.config.agent_max_turns,
+            command_exec_timeout=self.config.command_exec_timeout,
+            tmux_memory_limit_mb=self.config.apptainer_memory_limit_mb,
+        )
+        stage_files = {
+            "/root/config.toml": openhands_config_toml(
+                self.config.body.model,
+                temperature=self.config.inference_params.get("temperature", 0.0),
+                top_p=self.config.inference_params.get("top_p", 1.0),
+            ),
+            "/root/dataset/data.jsonl": json.dumps(instance_dict),
+        }
+
+        try:
+            result = await provision_and_collect(
+                task,
+                provider=provider,
+                agent_launch_command=launch,
+                stage_files=stage_files,
+                patch_output_glob="/root/eval_results",
+                agent_timeout_s=self.config.swebench_agent_timeout,
+            )
+            patch = result.get("patch") or None
+            if patch and not patch.endswith("\n"):
+                patch += "\n"
+            metrics.openhands_run_time += time.time()
+            metrics.model_patch = patch
+            metrics.patch_exists = bool(patch)
+            metrics.agent_error_kind = _classify_agent_error(result.get("agent_error"))
+        except Exception as e:  # noqa: BLE001
+            print(f"Decoupled agent run failed for {self.config.instance_id}: {e}", flush=True)
+            metrics.openhands_run_time += time.time()
+            metrics.patch_exists = False
+            metrics.agent_timed_out = (
+                metrics.openhands_run_time is not None
+                and metrics.openhands_run_time >= self.config.swebench_agent_timeout
+            )
+        update_metrics(self.config.metrics_fpath, metrics.model_dump())
+        return None
 
     async def _run_golden_patch_verification(self) -> Optional[Path]:
         instance_id = self.config.instance_id
