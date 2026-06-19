@@ -8,14 +8,20 @@ Plan file: `/home/adasif/.claude/plans/https-github-com-nvidia-nemo-gym-issues-l
 ---
 
 ## TL;DR for when you wake up
-**Done + proven end-to-end with a REAL small model.** The decoupling is implemented (`swe_env` library + required `resources_servers/swe_env` verifier), **25 tests pass**, and I ran a genuine **model → sandbox → verifier** loop locally:
-- **vLLM served `Qwen2.5-Coder-3B-Instruct`** on GPU 0 (`http://localhost:8000`).
-- The model generated a patch for a buggy `calc.add`; the **verifier applied it in a real docker sandbox, ran pytest, and scored `resolved=True, reward=1.0`** (and `0.0` for an empty patch). This is a real SWE-bench-style task solved by a small model and graded by the new decoupled verifier.
-- **PR: https://github.com/adil-a/Gym/pull/1** (based off the #1377 branch; diff = only my changes).
+**Plan items 2, 3, 4, 5 implemented; 87 tests pass + a real model→sandbox→verifier run.** PR: **https://github.com/adil-a/Gym/pull/1** (based off #1377).
 
-**Why docker, not apptainer:** this box has **no apptainer** and **no opensandbox cluster**, so the legacy OpenHands/nested SWE-bench path can't run here. I implemented a **docker sandbox provider** to prove the architecture for real. The apptainer provider is written + mocked-tested but must be validated on a `.sif` cluster.
+What's done this session (on top of the earlier swe-bench-ext foundation):
+- **Item 2 — all 6 families:** relocated the 1606-line vendored parser into `swe_env/parsing/`; added `nv-internal-1` + `swe-rebench` (flat, docker-runnable) and `swe-bench` + `swe-bench-multilingual` + `r2e-gym` (nested, apptainer-only, fail-fast on exec-only providers). All registered.
+- **Item 3 — lifecycle/reaper/idempotency:** durable `SandboxRegistry`, `CreateAdmission`, always-teardown `acquire_sandbox`, `SandboxReaper` (ttl + owner-pid, never reaps a live sibling, atexit bulk-stop), and content-key idempotency in `verify_task` (coalesces unbounded ServerClient retries → one create) + per-call eval timeout.
+- **Item 4 — wire-ownership contract (§4a):** the full `verify()` HTTP path is proven end-to-end — an agent POSTs a standard `BaseVerifyRequest`, the verifier extracts the patch, grades in a fresh sandbox, returns a **non-nullable** `reward` (1.0/0.0-masked) + `mask_sample`. *(The actual cutover of the two existing agents is deferred — see blockers.)*
+- **Item 5 — cross-cutting:** `model_endpoint` egress primitive (§6), reaper wired into the verifier server, verifier config + data-gate fixtures so `ng_test_all` passes upstream.
+- Earlier-session proof still stands: **vLLM `Qwen2.5-Coder-3B-Instruct`** generated a patch → verifier scored `reward=1.0` in a real docker sandbox.
 
-**Caveat:** commits are **DCO-signed (`-s`) but NOT GPG-signed** — GPG needs an interactive pinentry I can't drive headlessly. If branch protection requires signatures, `git rebase --exec 'git commit --amend --no-edit -S'` (or re-commit) with your key.
+**Two things needing you (a final step):**
+1. **apptainer install needs sudo** — it's unpacked but blocked on `uidmap`→`libsubid4`. Rootless userns alone fails at the `setgroups` mapping. Run: `sudo apt-get install -y libsubid4 uidmap && sudo dpkg --configure -a` (then `apptainer exec docker://busybox echo ok`). Until then, real-container validation uses **docker** (proven); the apptainer provider + 3 nested families are unit-tested (mocked) only.
+2. Commits are **DCO-signed (`-s`) but NOT GPG-signed** (headless pinentry). Re-sign if branch protection requires.
+
+**Deliberately NOT done (to keep the PR mergeable / CI green):** rewiring the *legacy OpenHands `swe_agents`* and *`mini_swe_agent_2`* to call the new verifier — that cutover needs apptainer/opensandbox + their runtimes to validate, and doing it blind would risk breaking their CI. The env is fully consumable (contract proven in item 4); the cutover is the documented apptainer/opensandbox-gated follow-up.
 
 ---
 
