@@ -34,6 +34,7 @@ from resources_servers.swe_env.verify_task import clear_idempotency_cache, verif
 from responses_api_agents.swe_env.grading import reward_from_report
 from responses_api_agents.swe_env.harness import SweTask
 
+
 _RUN = os.environ.get("SWE_ENV_APPTAINER_ITEST") == "1" and shutil.which("apptainer") is not None
 _SIF = "/tmp/swe-env-itest.sif"
 _GOLD = "--- a/calc.py\n+++ b/calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a + b\n"

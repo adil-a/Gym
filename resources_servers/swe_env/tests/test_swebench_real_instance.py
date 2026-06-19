@@ -38,6 +38,7 @@ from resources_servers.swe_env.verify_task import clear_idempotency_cache, verif
 from responses_api_agents.swe_env.grading import reward_from_report
 from responses_api_agents.swe_env.harness import SweTask
 
+
 _RUN = os.environ.get("SWE_ENV_REAL_SWEBENCH") == "1" and shutil.which("docker") is not None
 _INSTANCE = "astropy__astropy-13453"
 _OFFSET = 4  # index of _INSTANCE in SWE-bench_Verified test split

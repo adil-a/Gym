@@ -46,6 +46,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 # Use a writable HF cache (the default ~/.cache/huggingface may be root-polluted by
 # docker containers that mount it). Override with HF_HOME in the environment.
