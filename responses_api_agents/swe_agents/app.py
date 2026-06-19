@@ -1298,6 +1298,24 @@ def _resolve_image_name(container_formatter: "str | list[str]", instance_id: str
     return fmt[len("docker://") :] if fmt.startswith("docker://") else fmt
 
 
+def _should_mask_sample(
+    resolved: bool,
+    agent_error_kind: Optional[str],
+    eval_timed_out: bool,
+    agent_timed_out: bool,
+) -> bool:
+    """Whether to mask this sample from the GRPO gradient (ports the legacy app.py logic).
+
+    Shared by BOTH the legacy in-worker eval path and the #1249 decoupled verifier path, so the
+    mask_sample re-join is identical regardless of where resolved/eval_timed_out came from:
+    1) patch passed eval but the agent did not actually submit (max-turns / context window) — the
+       reward is accidental; 2) the final eval timed out; 3) the agent itself timed out (wall-clock).
+    """
+    return bool(
+        (resolved and agent_error_kind in ("max_iteration", "context_window")) or eval_timed_out or agent_timed_out
+    )
+
+
 @ray.remote(
     scheduling_strategy="SPREAD",
     runtime_env={
@@ -2322,11 +2340,8 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
         else:
             metrics_to_update["resolved"] = False
 
-        # Decide whether to mask this sample from the GRPO gradient.
-        # 1) Patch passed eval but agent did not actually submit (hit max-turns
-        #    or blew the context window) — the reward is accidental.
-        # 2) Final eval step timed out — reward is unreliable.
-        # 3) Agent itself timed out (wall-clock) — mask regardless of resolved.
+        # Decide whether to mask this sample from the GRPO gradient (shared _should_mask_sample so
+        # the re-join is identical for the legacy and decoupled paths).
         persisted_metrics = SWEBenchMetrics.model_validate_json(params.metrics_fpath.read_text())
         resolved_now = metrics_to_update.get("resolved", False)
         agent_error_kind = persisted_metrics.agent_error_kind
@@ -2334,11 +2349,7 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
         # (decoupled, in metrics_to_update and not yet persisted) — prefer the latter when present.
         eval_timed_out = bool(metrics_to_update.get("eval_timed_out", persisted_metrics.eval_timed_out))
         agent_timed_out = bool(persisted_metrics.agent_timed_out)
-        if (
-            (resolved_now and agent_error_kind in ("max_iteration", "context_window"))
-            or eval_timed_out
-            or agent_timed_out
-        ):
+        if _should_mask_sample(resolved_now, agent_error_kind, eval_timed_out, agent_timed_out):
             params.mask_sample = True
 
         trajectories_dir = params.persistent_dir / "trajectories"

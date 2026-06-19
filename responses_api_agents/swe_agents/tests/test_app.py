@@ -2008,3 +2008,95 @@ class TestLoadRebenchLogParsers:
 
             mod = _load_rebench_log_parsers(rebench_dir)
             assert "lib_test" in mod.NAME_TO_PARSER
+
+
+class TestDecoupledCutover:
+    """#1249 run() cutover (eval_via_verifier): mask re-join parity + verifier POST contract."""
+
+    def test_should_mask_sample_all_combinations(self) -> None:
+        # resolved + clean agent finish -> NOT masked
+        assert swe_app._should_mask_sample(True, None, False, False) is False
+        # resolved but the agent hit max-turns / context window -> accidental reward, masked
+        assert swe_app._should_mask_sample(True, "max_iteration", False, False) is True
+        assert swe_app._should_mask_sample(True, "context_window", False, False) is True
+        # resolved + a different agent error (stuck_in_loop) -> NOT masked on that arm
+        assert swe_app._should_mask_sample(True, "stuck_in_loop", False, False) is False
+        # eval timed out -> masked regardless of resolved
+        assert swe_app._should_mask_sample(False, None, True, False) is True
+        # agent timed out (wall-clock) -> masked regardless
+        assert swe_app._should_mask_sample(False, None, False, True) is True
+        # unresolved, clean -> NOT masked
+        assert swe_app._should_mask_sample(False, None, False, False) is False
+
+    @pytest.mark.asyncio
+    async def test_verify_patch_via_server_builds_request_and_parses_subset(self, monkeypatch) -> None:
+        wrapper = _create_wrapper(monkeypatch)
+        monkeypatch.setattr(swe_app, "raise_for_status", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            swe_app,
+            "get_response_json",
+            AsyncMock(return_value={"resolved": True, "error_kind": None, "patch_exists": True, "reward": 1.0}),
+        )
+        wrapper.server_client.post = AsyncMock(return_value=MagicMock())
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            instance_dict = {
+                "base_commit": "abc123",
+                "test_patch": "TP",
+                "FAIL_TO_PASS": ["test_x.py::test_a"],
+                "PASS_TO_PASS": ["test_x.py::test_b"],
+            }
+            params = _make_instance_config(
+                tmpdir,
+                eval_via_verifier=True,
+                verifier_server_name="swe_verifier",
+                container_formatter="docker://swebench/sweb.eval.x86_64.{instance_id}",
+                problem_info={
+                    "instance_id": "psf__requests-2317",
+                    "base_commit": "abc123",
+                    "dataset_name": "swe-bench-ext",
+                    "split": "test",
+                    "instance_dict": json.dumps(instance_dict),
+                },
+            )
+            # the decoupled worker persists the patch into metrics before run() POSTs to the verifier
+            params.metrics_fpath.write_text(json.dumps({"model_patch": "<<DIFF>>"}))
+
+            subset = await wrapper._verify_patch_via_server(params)
+
+        assert subset["resolved"] is True
+        call = wrapper.server_client.post.call_args
+        assert call.kwargs["server_name"] == "swe_verifier"
+        assert call.kwargs["url_path"] == "/verify"
+        req = call.kwargs["json"]
+        assert req["response"]["metadata"]["model_patch"] == "<<DIFF>>"
+        md = req["responses_create_params"]["metadata"]
+        assert md["instance_id"] == "psf__requests-2317"
+        # image resolved from the docker formatter (id munged); test_command carries the F2P+P2P ids
+        assert md["image"] == "swebench/sweb.eval.x86_64.psf_1776_requests-2317"
+        assert "test_x.py::test_a" in md["test_command"] and "test_x.py::test_b" in md["test_command"]
+        assert md["benchmark"] == "swe-bench-ext"
+
+    @pytest.mark.asyncio
+    async def test_verify_patch_via_server_infra_error_is_masked_not_raised(self, monkeypatch) -> None:
+        wrapper = _create_wrapper(monkeypatch)
+        wrapper.server_client.post = AsyncMock(side_effect=RuntimeError("connreset"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            params = _make_instance_config(
+                tmpdir,
+                eval_via_verifier=True,
+                verifier_server_name="swe_verifier",
+                problem_info={
+                    "instance_id": "psf__requests-2317",
+                    "base_commit": "abc",
+                    "dataset_name": "swe-bench-ext",
+                    "split": "test",
+                    "instance_dict": json.dumps({"FAIL_TO_PASS": [], "PASS_TO_PASS": []}),
+                },
+            )
+            params.metrics_fpath.write_text(json.dumps({"model_patch": "<<DIFF>>"}))
+            subset = await wrapper._verify_patch_via_server(params)
+        # never raises; returns a masked subset so the agent still emits a present row (§4a)
+        assert subset["resolved"] is False
+        assert subset["error_kind"] == "sandbox"
+        assert subset["patch_exists"] is True
