@@ -96,6 +96,9 @@ def openhands_config_toml(model: str, *, temperature: float = 0.0, top_p: float 
         "native_tool_calling = false\n"
         f"temperature = {float(temperature)}\n"
         f"top_p = {float(top_p)}\n"
+        # cap output tokens so OpenHands' request never exceeds the model's context window
+        # (unknown models otherwise default max_tokens to the full window -> vLLM 400 as the convo grows)
+        "max_output_tokens = 8192\n"
         "log_completions = true\n"
         'log_completions_folder = "/root/completions"\n'
     )
