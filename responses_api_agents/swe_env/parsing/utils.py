@@ -19,7 +19,7 @@ logic is delegated to lighthouse — no custom parsers here.
 
 Usage from SweBenchExtDatasetProcessor.postprocess_after_run():
 
-    from responses_api_agents.swe_agents.swe_bench_ext.utils import parse_and_check_tests
+    from responses_api_agents.swe_env.parsing import parse_and_check_tests
 
     result = parse_and_check_tests(
         test_output=log_text,
@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from responses_api_agents.swe_agents.swe_bench_ext.parsing import (
+from responses_api_agents.swe_env.parsing.parsing import (
     normalize_test_id,
     parse_test_output,
 )

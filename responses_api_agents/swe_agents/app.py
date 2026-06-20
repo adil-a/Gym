@@ -626,7 +626,7 @@ class SweBenchExtDatasetProcessor(BaseDatasetHarnessProcessor):
 
     def postprocess_after_run(self, report_file: Path) -> None:
         """Parse test output on the host using lighthouse's parsing library."""
-        from responses_api_agents.swe_agents.swe_bench_ext.utils import parse_and_check_tests
+        from responses_api_agents.swe_env.parsing import parse_and_check_tests
 
         report_path = Path(report_file)
         test_output_path = report_path.parent / "test_output.log"

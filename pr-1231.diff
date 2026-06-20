@@ -1,0 +1,2280 @@
+diff --git a/.dockerignore b/.dockerignore
+index 14f5114d0..e9dc2af45 100644
+--- a/.dockerignore
++++ b/.dockerignore
+@@ -15,5 +15,14 @@ coverage.xml
+ *,cover
+ *.log
+ .git
++.github
+ **/*.nemo
+ **/*.ckpt
++.venv
++*.egg-info
++.ruff_cache
++.mypy_cache
++.pytest_cache
++docs
++wandb
++.hydra
+diff --git a/.github/workflows/build-k8s-images.yml b/.github/workflows/build-k8s-images.yml
+new file mode 100644
+index 000000000..18047a4fd
+--- /dev/null
++++ b/.github/workflows/build-k8s-images.yml
+@@ -0,0 +1,90 @@
++name: Build K8s Container Images
++
++on:
++  push:
++    branches: [main]
++    tags: ['v*']
++    paths:
++      - 'k8s/Dockerfile'
++      - 'k8s/head/Containerfile'
++      - 'k8s/entrypoint.sh'
++      - 'nemo_gym/**'
++      - 'resources_servers/**'
++      - 'responses_api_agents/**'
++      - 'responses_api_models/**'
++      - 'pyproject.toml'
++  pull_request:
++    branches: [main]
++    paths:
++      - 'k8s/Dockerfile'
++      - 'k8s/head/Containerfile'
++      - 'k8s/entrypoint.sh'
++      - 'nemo_gym/**'
++      - 'resources_servers/**'
++      - 'responses_api_agents/**'
++      - 'responses_api_models/**'
++      - 'pyproject.toml'
++
++env:
++  REGISTRY: ghcr.io
++
++jobs:
++  build:
++    runs-on: ubuntu-latest
++    strategy:
++      matrix:
++        include:
++          - target: resources
++            image-suffix: nemo-gym-resources
++            dockerfile: k8s/Dockerfile
++          - target: agent
++            image-suffix: nemo-gym-agent
++            dockerfile: k8s/Dockerfile
++          - target: model
++            image-suffix: nemo-gym-model
++            dockerfile: k8s/Dockerfile
++          - target: head
++            image-suffix: nemo-gym-head
++            dockerfile: k8s/head/Containerfile
++    permissions:
++      contents: read
++      packages: write
++
++    steps:
++      - name: Checkout repository
++        uses: actions/checkout@v4
++
++      - name: Set up Docker Buildx
++        uses: docker/setup-buildx-action@v3
++
++      - name: Log in to GHCR
++        if: github.event_name != 'pull_request'
++        uses: docker/login-action@v3
++        with:
++          registry: ${{ env.REGISTRY }}
++          username: ${{ github.actor }}
++          password: ${{ secrets.GITHUB_TOKEN }}
++
++      - name: Extract metadata
++        id: meta
++        uses: docker/metadata-action@v5
++        with:
++          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image-suffix }}
++          tags: |
++            type=ref,event=branch
++            type=semver,pattern={{version}}
++            type=semver,pattern={{major}}.{{minor}}
++            type=sha,prefix=
++            type=raw,value=latest,enable={{is_default_branch}}
++
++      - name: Build and push
++        uses: docker/build-push-action@v6
++        with:
++          context: .
++          file: ${{ matrix.dockerfile }}
++          target: ${{ matrix.target }}
++          push: ${{ github.event_name != 'pull_request' }}
++          tags: ${{ steps.meta.outputs.tags }}
++          labels: ${{ steps.meta.outputs.labels }}
++          cache-from: type=gha,scope=${{ matrix.target }}
++          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+diff --git a/.github/workflows/k8s-integration-test.yml b/.github/workflows/k8s-integration-test.yml
+new file mode 100644
+index 000000000..a89df99f1
+--- /dev/null
++++ b/.github/workflows/k8s-integration-test.yml
+@@ -0,0 +1,232 @@
++name: K8s Integration Test (kind)
++
++permissions:
++  contents: read
++
++on:
++  push:
++    branches: [main]
++    paths:
++      - 'k8s/**'
++      - 'nemo_gym/**'
++      - 'resources_servers/**'
++      - 'responses_api_agents/**'
++      - 'responses_api_models/**'
++      - 'pyproject.toml'
++  pull_request:
++    branches: [main]
++    paths:
++      - 'k8s/**'
++      - 'nemo_gym/**'
++      - 'resources_servers/**'
++      - 'responses_api_agents/**'
++      - 'responses_api_models/**'
++      - 'pyproject.toml'
++
++jobs:
++  kind-e2e:
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    steps:
++      - name: Checkout repository
++        uses: actions/checkout@v4
++
++      - name: Set up Docker Buildx
++        uses: docker/setup-buildx-action@v3
++
++      - name: Build resources image
++        uses: docker/build-push-action@v6
++        with:
++          context: .
++          file: k8s/Dockerfile
++          target: resources
++          tags: ghcr.io/nvidia-nemo/gym/nemo-gym-resources:latest
++          load: true
++          cache-from: type=gha,scope=resources
++          cache-to: type=gha,mode=max,scope=resources
++
++      - name: Build agent image
++        uses: docker/build-push-action@v6
++        with:
++          context: .
++          file: k8s/Dockerfile
++          target: agent
++          tags: ghcr.io/nvidia-nemo/gym/nemo-gym-agent:latest
++          load: true
++          cache-from: type=gha,scope=agent
++          cache-to: type=gha,mode=max,scope=agent
++
++      - name: Build model image
++        uses: docker/build-push-action@v6
++        with:
++          context: .
++          file: k8s/Dockerfile
++          target: model
++          tags: ghcr.io/nvidia-nemo/gym/nemo-gym-model:latest
++          load: true
++          cache-from: type=gha,scope=model
++          cache-to: type=gha,mode=max,scope=model
++
++      - name: Build head image
++        uses: docker/build-push-action@v6
++        with:
++          context: .
++          file: k8s/head/Containerfile
++          target: head
++          tags: ghcr.io/nvidia-nemo/gym/nemo-gym-head:latest
++          load: true
++          cache-from: type=gha,scope=head
++          cache-to: type=gha,mode=max,scope=head
++
++      - name: Create kind cluster
++        uses: helm/kind-action@v1
++        with:
++          cluster_name: gym-ci
++          wait: 120s
++
++      - name: Load images into kind
++        run: |
++          kind load docker-image \
++            ghcr.io/nvidia-nemo/gym/nemo-gym-resources:latest \
++            ghcr.io/nvidia-nemo/gym/nemo-gym-agent:latest \
++            ghcr.io/nvidia-nemo/gym/nemo-gym-model:latest \
++            ghcr.io/nvidia-nemo/gym/nemo-gym-head:latest \
++            --name gym-ci
++
++      - name: Install KubeRay operator
++        run: |
++          helm repo add kuberay https://ray-project.github.io/kuberay-helm/
++          helm repo update
++          helm install kuberay-operator kuberay/kuberay-operator \
++            --namespace kuberay-system \
++            --create-namespace \
++            --wait \
++            --timeout 120s
++
++      - name: Create namespace and test secrets
++        run: |
++          kubectl create namespace gym
++          for f in k8s/overlays/*/secret.yaml.example; do
++            cp "$f" "${f%.example}"
++          done
++
++      - name: Deploy NeMo-Gym stack with mock model
++        run: kubectl apply -k k8s/tests/
++
++      - name: Wait for deployments
++        run: |
++          kubectl -n gym rollout status deployment/estc-gym-head --timeout=120s
++          kubectl -n gym rollout status deployment/estc-gym-agent --timeout=300s
++          kubectl -n gym rollout status deployment/estc-gym-model --timeout=300s
++
++      - name: Wait for Ray cluster pods
++        run: |
++          echo "Waiting for Ray head pod..."
++          kubectl -n gym wait pod \
++            -l app.kubernetes.io/instance=estc,ray.io/node-type=head \
++            --for=condition=Ready \
++            --timeout=300s
++
++          echo "Waiting for resources server pod..."
++          kubectl -n gym wait pod \
++            -l app.kubernetes.io/instance=estc,app.kubernetes.io/name=gym-resources \
++            --for=condition=Ready \
++            --timeout=300s
++
++          echo "All pods ready:"
++          kubectl -n gym get pods
++
++      - name: Verify HeadServer serves config
++        run: |
++          kubectl -n gym port-forward svc/estc-gym-head-svc 11000:11000 &
++          PF_PID=$!
++          sleep 2
++
++          CONFIG=""
++          for i in $(seq 1 15); do
++            CONFIG=$(curl -sf http://localhost:11000/global_config_dict_yaml 2>/dev/null) && break
++            echo "Waiting for HeadServer port-forward... (attempt $i/15)"
++            sleep 2
++          done
++
++          if echo "$CONFIG" | grep -q "head_server"; then
++            echo "PASS: HeadServer returns valid config"
++          else
++            echo "FAIL: HeadServer config missing head_server key"
++            echo "Response: $CONFIG"
++            kill $PF_PID 2>/dev/null || true
++            exit 1
++          fi
++
++          kill $PF_PID 2>/dev/null || true
++
++      - name: Run e2e smoke test
++        run: |
++          kubectl -n gym port-forward svc/estc-gym-agent-svc 8080:8080 &
++          PF_PID=$!
++
++          for i in $(seq 1 30); do
++            if curl -sf http://localhost:8080/docs > /dev/null 2>&1; then
++              echo "Port-forward ready"
++              break
++            fi
++            echo "Waiting for port-forward... (attempt $i/30)"
++            sleep 2
++          done
++
++          RESPONSE=$(curl -sf -X POST http://localhost:8080/run \
++            -H "Content-Type: application/json" \
++            -d '{
++              "responses_create_params": {
++                "input": [
++                  {"content": "You are a helpful assistant.", "role": "developer"},
++                  {"content": "what is the weather in sf?", "role": "user"}
++                ],
++                "tools": [
++                  {
++                    "name": "get_weather",
++                    "parameters": {
++                      "type": "object",
++                      "properties": {"city": {"type": "string", "description": ""}},
++                      "required": ["city"],
++                      "additionalProperties": false
++                    },
++                    "strict": true,
++                    "type": "function",
++                    "description": ""
++                  }
++                ]
++              }
++            }')
++
++          echo "Response: $RESPONSE"
++
++          REWARD=$(echo "$RESPONSE" | jq -r '.reward')
++          if [ "$REWARD" = "1" ] || [ "$REWARD" = "1.0" ]; then
++            echo "PASS: reward=$REWARD"
++          else
++            echo "FAIL: expected reward=1.0, got reward=$REWARD"
++            echo "Full response: $RESPONSE"
++            kill $PF_PID 2>/dev/null || true
++            exit 1
++          fi
++
++          kill $PF_PID 2>/dev/null || true
++
++      - name: Dump diagnostics on failure
++        if: failure()
++        run: |
++          echo "=== Pod Status ==="
++          kubectl -n gym get pods -o wide
++          echo "=== Pod Events ==="
++          kubectl -n gym get events --sort-by='.lastTimestamp'
++          echo "=== Agent Logs ==="
++          kubectl -n gym logs deployment/estc-gym-agent --tail=100 || true
++          echo "=== Model Logs ==="
++          kubectl -n gym logs deployment/estc-gym-model --tail=100 || true
++          echo "=== Resources Logs ==="
++          kubectl -n gym logs -l app.kubernetes.io/instance=estc,app.kubernetes.io/name=gym-resources --tail=100 || true
++          echo "=== HeadServer Logs ==="
++          kubectl -n gym logs deployment/estc-gym-head --tail=100 || true
++          echo "=== Ray Head Logs ==="
++          kubectl -n gym logs -l ray.io/node-type=head --tail=100 || true
+diff --git a/.gitignore b/.gitignore
+index 522c150ba..b0d55747b 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -237,3 +237,6 @@ env.yaml
+ 
+ # Backup files
+ *.backup
++
++# Kubernetes secrets (use secret.yaml.example as template)
++k8s/overlays/*/secret.yaml
+diff --git a/README.md b/README.md
+index 217cabd58..6916830a4 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+ # NeMo Gym
+ 
+-**[Requirements](#-requirements)** • **[Quick Start](#-quick-start)** • **[Available Environments](#-available-environments)** • **[Documentation & Resources](#-documentation--resources)** • **[Community & Support](#-community--support)** • **[Citations](#-citations)**
++**[Requirements](#-requirements)** • **[Quick Start](#-quick-start)** • **[Available Environments](#-available-environments)** • **[Documentation & Resources](#-documentation--resources)** • **[Kubernetes Deployment](#-kubernetes-deployment)** • **[Community & Support](#-community--support)** • **[Citations](#-citations)**
+ 
+ NeMo Gym is a library for evaluating and improving models and agents using environments. NeMo Gym provides infrastructure to develop environments, scalably run evaluation and training, and a collection of popular benchmarks and training environments.
+ 
+@@ -306,6 +306,12 @@ The Dataset column links to publicly available datasets (e.g., on HuggingFace).
+ - **[API Reference](https://docs.nvidia.com/nemo/gym/latest/apidocs/index.html)** - Complete class and function reference
+  
+ 
++## ☁️ Kubernetes Deployment
++
++NeMo Gym can be deployed on Kubernetes or OpenShift with KubeRay for distributed benchmark execution. Each NeMo-Gym server type runs in its own pod, with the resources server embedded in the RayCluster for mTLS-authenticated distributed task execution.
++
++See **[`k8s/README.md`](k8s/README.md)** for setup instructions, architecture details, and how to add new benchmark overlays.
++
+ ## 🤝 Community & Support
+ 
+ We'd love your contributions! Here's how to get involved:
+diff --git a/k8s/Dockerfile b/k8s/Dockerfile
+new file mode 100644
+index 000000000..76febb3d8
+--- /dev/null
++++ b/k8s/Dockerfile
+@@ -0,0 +1,79 @@
++FROM registry.access.redhat.com/ubi9/python-312 AS base-build
++
++USER 0
++WORKDIR /opt/app-root/src
++
++COPY pyproject.toml README.md LICENSE ./
++COPY nemo_gym/ nemo_gym/
++
++RUN mkdir -p cache && pip install --no-cache-dir -e "."
++
++# --- Base runtime ---
++FROM registry.access.redhat.com/ubi9/python-312 AS base-runtime
++
++LABEL io.k8s.display-name="NeMo Gym" \
++      io.k8s.description="NeMo-Gym server for RL training environments" \
++      io.openshift.tags="python,fastapi,ray,nemo-gym" \
++      io.openshift.expose-services="8080:http"
++
++USER 0
++WORKDIR /opt/app-root/src
++
++COPY --from=base-build /opt/app-root/lib /opt/app-root/lib
++COPY --from=base-build /opt/app-root/bin /opt/app-root/bin
++
++COPY nemo_gym/ nemo_gym/
++COPY pyproject.toml README.md LICENSE ./
++COPY resources_servers/ resources_servers/
++COPY responses_api_agents/ responses_api_agents/
++COPY responses_api_models/ responses_api_models/
++
++RUN mkdir -p cache && pip install --no-cache-dir -e . && \
++    chgrp -R 0 /opt/app-root && \
++    chmod -R g=u /opt/app-root && \
++    chmod g=u /etc/passwd
++
++COPY k8s/entrypoint.sh /opt/app-root/entrypoint.sh
++RUN chmod +x /opt/app-root/entrypoint.sh
++
++ENV RAY_TMPDIR=/tmp \
++    PYTHONUNBUFFERED=1 \
++    HOME=/opt/app-root/src
++
++USER 1001
++ENTRYPOINT ["/opt/app-root/entrypoint.sh"]
++
++# --- Resources server (code_gen) ---
++FROM base-runtime AS resources
++
++USER 0
++RUN pip install --no-cache-dir "ray[default]" numpy==2.2.6 && \
++    chgrp -R 0 /opt/app-root/lib && \
++    chmod -R g=u /opt/app-root/lib
++USER 1001
++
++EXPOSE 9080
++CMD ["python", "resources_servers/code_gen/app.py"]
++
++# --- Agent server (simple_agent) ---
++FROM base-runtime AS agent
++
++EXPOSE 8080
++CMD ["python", "responses_api_agents/simple_agent/app.py"]
++
++# --- Model proxy (vllm_model) ---
++FROM base-runtime AS model
++
++EXPOSE 8080
++CMD ["python", "responses_api_models/vllm_model/app.py"]
++
++# --- All-in-one (testing) ---
++FROM base-runtime AS all-in-one
++
++USER 0
++RUN pip install --no-cache-dir "ray[default]" numpy==2.2.6 && \
++    chgrp -R 0 /opt/app-root/lib && \
++    chmod -R g=u /opt/app-root/lib
++USER 1001
++
++EXPOSE 8080
+diff --git a/k8s/README.md b/k8s/README.md
+new file mode 100644
+index 000000000..fd1c39246
+--- /dev/null
++++ b/k8s/README.md
+@@ -0,0 +1,376 @@
++# NeMo-Gym on Kubernetes
++
++Deploy NeMo-Gym benchmarks on any Kubernetes cluster using KubeRay for distributed Ray task execution. The base manifests are platform-agnostic — each benchmark gets its own Kustomize overlay with a unique `namePrefix`, and optional platform overlays (e.g. OpenShift) compose on top. Multiple benchmarks can run simultaneously in the same namespace without colliding.
++
++## Architecture
++
++```
++┌─ Namespace: gym ──────────────────────────────────────────────────┐
++│                                                                   │
++│  Instance: cg- (code-gen)         Instance: estc- (example)       │
++│  ┌─────────────────────────┐      ┌─────────────────────────┐     │
++│  │ cg-gym-ray (RayCluster) │      │ estc-gym-ray (RayClust) │     │
++│  │ cg-gym-agent (Deploy)   │      │ estc-gym-agent (Deploy) │     │
++│  │ cg-gym-model (Deploy)   │      │ estc-gym-model (Deploy) │     │
++│  │ cg-gym-head  (Deploy)   │      │ estc-gym-head  (Deploy) │     │
++│  └─────────────────────────┘      └─────────────────────────┘     │
++│                                                                   │
++│  Isolation: namePrefix + app.kubernetes.io/instance label         │
++└───────────────────────────────────────────────────────────────────┘
++        │
++        │ HTTPS
++        ▼
++  External LLM endpoint (OpenAI-compatible /v1/chat/completions)
++```
++
++**Data flow:** Client → agent `/run` → model `/v1/responses` → external LLM → agent extracts code → resources `/verify` → Ray workers execute unit tests → reward (0.0 or 1.0)
++
++## Directory Structure
++
++```
++k8s/
++├── Dockerfile                              # Multi-stage: resources, agent, model targets
++├── head/
++│   ├── Containerfile                       # HeadServer image (UBI 10, separate from main Dockerfile)
++│   └── entrypoint.py                       # Standalone HeadServer startup script
++├── entrypoint.sh                           # Arbitrary UID handler (harmless on standard K8s)
++├── README.md
++├── base/                                   # Works on ANY Kubernetes cluster with KubeRay
++│   ├── kustomization.yaml
++│   ├── configurations/
++│   │   └── name-reference.yaml             # CRD field mappings for namePrefix propagation
++│   ├── serviceaccount.yaml
++│   ├── configmap.yaml                      # Base Hydra config (agent + model)
++│   ├── raycluster.yaml                     # Ray head, workers, resources worker group
++│   ├── deployment-agent.yaml               # simple_agent (skips Ray)
++│   ├── deployment-model.yaml               # vllm_model proxy (skips Ray)
++│   ├── deployment-head.yaml                # HeadServer (config server for CLI tools)
++│   └── service-*.yaml                      # ClusterIP services
++└── overlays/
++    ├── openshift/                          # Platform: OpenShift (Kustomize Component)
++    ├── code-gen/                           # Benchmark: code generation (prefix: cg-)
++    ├── example-single-tool-call/           # Benchmark: minimal example (prefix: estc-)
++    ├── code-gen-openshift/                 # Composition: code-gen + OpenShift
++    └── example-single-tool-call-openshift/ # Composition: example + OpenShift
++```
++
++## Prerequisites
++
++| Component | Requirement | How to verify |
++|-----------|-------------|---------------|
++| Kubernetes | 1.27+ | `kubectl version` |
++| KubeRay operator | Installed via Helm | `kubectl get crd rayclusters.ray.io` |
++| kustomize | 5.x+ | `kustomize version` |
++
++**Install KubeRay:**
++
++```bash
++helm repo add kuberay https://ray-project.github.io/kuberay-helm/
++helm install kuberay-operator kuberay/kuberay-operator \
++  --version 1.3.0 --namespace kuberay-system --create-namespace
++```
++
++## Quick Start
++
++### 1. Build and push images (or use GHCR)
++
++Pre-built images are available from GitHub Container Registry:
++
++```
++ghcr.io/nvidia-nemo/gym/nemo-gym-resources:latest
++ghcr.io/nvidia-nemo/gym/nemo-gym-agent:latest
++ghcr.io/nvidia-nemo/gym/nemo-gym-model:latest
++ghcr.io/nvidia-nemo/gym/nemo-gym-head:latest
++```
++
++Or build from source:
++
++```bash
++docker build -f k8s/Dockerfile --target resources -t ghcr.io/nvidia-nemo/gym/nemo-gym-resources:latest .
++docker build -f k8s/Dockerfile --target agent -t ghcr.io/nvidia-nemo/gym/nemo-gym-agent:latest .
++docker build -f k8s/Dockerfile --target model -t ghcr.io/nvidia-nemo/gym/nemo-gym-model:latest .
++docker build -f k8s/head/Containerfile --target head -t ghcr.io/nvidia-nemo/gym/nemo-gym-head:latest .
++```
++
++### 2. Create namespace and configure LLM credentials
++
++```bash
++kubectl create namespace gym
++
++cp k8s/overlays/code-gen/secret.yaml.example k8s/overlays/code-gen/secret.yaml
++# Edit secret.yaml with your LLM endpoint details
++```
++
++| Field | What to set | Example |
++|-------|-------------|---------|
++| `POLICY_BASE_URL` | OpenAI-compatible API base URL (must end with `/v1`) | `https://my-vllm.example.com/v1` |
++| `POLICY_API_KEY` | API key or bearer token | `sk-abc123` |
++| `POLICY_MODEL_NAME` | Model identifier | `meta-llama/Llama-3.1-8B-Instruct` |
++
++### 3. Deploy
++
++```bash
++kustomize build k8s/overlays/code-gen | kubectl apply -f -
++```
++
++All resources are prefixed with the overlay's `namePrefix` (e.g. `cg-` for code-gen).
++
++### 4. Verify
++
++```bash
++kubectl get pods -n gym -l app.kubernetes.io/instance=cg -w
++```
++
++Expected state:
++
++| Pod | Ready | Description |
++|-----|-------|-------------|
++| `cg-gym-ray-head-*` | 3/3 | Ray head node |
++| `cg-gym-ray-gym-workers-worker-*` | 1/1 | Ray code execution worker |
++| `cg-gym-ray-gym-resources-worker-*` | 1/1 | Resources server + Ray node |
++| `cg-gym-agent-*` | 1/1 | Agent server |
++| `cg-gym-model-*` | 1/1 | Model proxy |
++| `cg-gym-head-*` | 1/1 | HeadServer (config for CLI tools) |
++
++### 5. Smoke test
++
++```bash
++kubectl port-forward -n gym svc/cg-gym-agent-svc 8080:8080 &
++curl -s http://localhost:8080/docs | head -5
++kill %1
++```
++
++### 6. Use CLI tools via port-forward
++
++The HeadServer enables standard NeMo Gym CLI tools (`ng_collect_rollouts`, `ng_status`, `ng_reward_profile`) to work against the cluster. Set the env vars locally to point at the port-forwarded services:
++
++```bash
++kubectl port-forward -n gym svc/cg-gym-head-svc 11000:11000 &
++kubectl port-forward -n gym svc/cg-gym-agent-svc 8080:8080 &
++
++AGENT_HOST=localhost MODEL_HOST=localhost RESOURCES_HOST=localhost \
++POLICY_BASE_URL=http://unused POLICY_API_KEY=unused POLICY_MODEL_NAME=unused \
++ng_collect_rollouts +agent_name=simple_agent_instance \
++  +input_jsonl_fpath=resources_servers/code_gen/data/example.jsonl \
++  +output_jsonl_fpath=/tmp/rollouts.jsonl \
++  +num_repeats=1 \
++  "+config_paths=[resources_servers/code_gen/configs/code_gen.yaml,responses_api_models/vllm_model/configs/vllm_model.yaml]" \
++  "+responses_create_params={max_output_tokens: 16384, temperature: 1.0}"
++```
++
++### 7. Ray dashboard
++
++```bash
++kubectl port-forward -n gym svc/cg-gym-ray-head-svc 8265:8265
++```
++
++No services are exposed externally — all access is via `kubectl port-forward`.
++
++## Multi-Instance Deployment
++
++Multiple benchmarks can run simultaneously in the same namespace. Each overlay has a unique `namePrefix` and `app.kubernetes.io/instance` label that ensures complete isolation — no resource name collisions, no service cross-selection, no data bleed.
++
++```bash
++# Deploy both benchmarks at once
++kustomize build k8s/overlays/code-gen | kubectl apply -f -
++kustomize build k8s/overlays/example-single-tool-call | kubectl apply -f -
++
++# View resources by instance
++kubectl get pods -n gym -l app.kubernetes.io/instance=cg
++kubectl get pods -n gym -l app.kubernetes.io/instance=estc
++```
++
++### How isolation works
++
++| Mechanism | What it does |
++|-----------|-------------|
++| `namePrefix` | Every resource gets a unique prefix (`cg-`, `estc-`, etc.) |
++| `labels` with `includeSelectors` | Instance label injected into all Service selectors and Deployment matchLabels |
++| `replacements` | Service DNS names in env vars (`AGENT_HOST`, `MODEL_HOST`, `RESOURCES_HOST`) updated to prefixed names |
++| `configurations/name-reference.yaml` | RayCluster CRD's ServiceAccount, ConfigMap, and Secret refs updated by namePrefix |
++
++Each instance is fully self-contained — separate ConfigMaps, Secrets, ServiceAccounts, RayClusters, Deployments, and Services.
++
++## Available Overlays
++
++Benchmark overlays are platform-agnostic. Platform overlays add cluster-specific resources. Composition overlays combine both.
++
++| Overlay | Type | Prefix | Description |
++|---------|------|--------|-------------|
++| `code-gen` | Benchmark | `cg-` | Code generation benchmark (`resources_servers/code_gen`) |
++| `example-single-tool-call` | Benchmark | `estc-` | Minimal single tool call example |
++| `openshift` | Platform | — | [Kustomize Component](https://kubectl.docs.kubernetes.io/guides/config_management/components/) — sets `imagePullPolicy: Always` |
++| `code-gen-openshift` | Composition | `cg-` | `code-gen` + `openshift` |
++| `example-single-tool-call-openshift` | Composition | `estc-` | `example-single-tool-call` + `openshift` |
++
++Deploy a composition overlay the same way:
++
++```bash
++kustomize build k8s/overlays/code-gen-openshift | kubectl apply -f -
++```
++
++## Using a Different Image Registry
++
++Override the default GHCR images in any overlay's `kustomization.yaml`:
++
++```yaml
++images:
++  - name: ghcr.io/nvidia-nemo/gym/nemo-gym-resources
++    newName: quay.io/myorg/nemo-gym-resources
++    newTag: v1.0.0
++  - name: ghcr.io/nvidia-nemo/gym/nemo-gym-agent
++    newName: quay.io/myorg/nemo-gym-agent
++    newTag: v1.0.0
++  - name: ghcr.io/nvidia-nemo/gym/nemo-gym-model
++    newName: quay.io/myorg/nemo-gym-model
++    newTag: v1.0.0
++  - name: ghcr.io/nvidia-nemo/gym/nemo-gym-head
++    newName: quay.io/myorg/nemo-gym-head
++    newTag: v1.0.0
++```
++
++## Adding a New Benchmark
++
++Copy an existing overlay as a starting point:
++
++```bash
++cp -r k8s/overlays/code-gen k8s/overlays/my-benchmark
++```
++
++Four things to customize:
++
++### `secret.yaml` — LLM credentials
++
++Copy from `secret.yaml.example` and fill in your endpoint details.
++
++### `configmap-patch.yaml` — Benchmark server config
++
++Update `resources_instance` with your server's config:
++
++```yaml
++    resources_instance:
++      resources_servers:
++        my_server:
++          entrypoint: app.py
++          host: "${oc.env:RESOURCES_HOST}"
++          port: 9080
++          domain: coding
++          # Server-specific fields:
++          num_processes: 4
++          timeout_secs: 30
++```
++
++### `kustomization.yaml` — Instance prefix and RayCluster env patches
++
++Set a unique `namePrefix` and `app.kubernetes.io/instance` value for your benchmark. The `labels`, `replacements`, and RayCluster patches can be copied as-is from the template — only update the prefix/instance values and the RayCluster env patches:
++
++```yaml
++namePrefix: mb-
++
++labels:
++  - includeSelectors: true
++    includeTemplates: true
++    pairs:
++      app.kubernetes.io/instance: mb
++    fields:
++      - path: spec/headGroupSpec/template/metadata/labels
++        kind: RayCluster
++        group: ray.io
++        create: true
++      - path: spec/workerGroupSpecs/template/metadata/labels
++        kind: RayCluster
++        group: ray.io
++        create: true
++
++patches:
++  - patch: |-
++      - op: replace
++        path: /spec/workerGroupSpecs/1/template/spec/containers/0/env/2/value
++        value: "python resources_servers/my_server/app.py"
++      - op: replace
++        path: /spec/workerGroupSpecs/1/template/spec/containers/0/env/4/value
++        value: "resources_instance"
++    target:
++      kind: RayCluster
++      name: gym-ray
++
++replacements:
++  # Copy the replacements block from code-gen/kustomization.yaml verbatim
++```
++
++**Env index warning:** The RayCluster env vars are patched by array index. `env[2]` is `NEMO_GYM_SERVER_ENTRYPOINT` and `env[4]` is `NEMO_GYM_CONFIG_PATH`. Do not reorder the env vars in `base/raycluster.yaml`.
++
++### Platform support for new benchmarks
++
++Create a composition overlay that layers the platform component onto your benchmark:
++
++```bash
++mkdir k8s/overlays/my-benchmark-openshift
++cat > k8s/overlays/my-benchmark-openshift/kustomization.yaml <<'EOF'
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++resources:
++  - ../my-benchmark
++
++components:
++  - ../openshift
++
++EOF
++```
++
++## Scaling Ray Workers
++
++Edit `k8s/base/raycluster.yaml`:
++
++```yaml
++workerGroupSpecs:
++  - groupName: gym-workers
++    replicas: 4
++    minReplicas: 2
++    maxReplicas: 8
++```
++
++Then reapply: `kustomize build k8s/overlays/code-gen | kubectl apply -f -`
++
++## Port Layout
++
++| Server | Port | Notes |
++|--------|------|-------|
++| Agent (simple_agent) | 8080 | Standard HTTP |
++| Model (vllm_model) | 8080 | Standard HTTP |
++| Resources (benchmark) | 9080 | Non-default to avoid conflict with Ray metrics on 8080 |
++| HeadServer | 11000 | Config server for CLI tools (`ng_collect_rollouts`, `ng_status`) |
++| Ray GCS | 6379 | Internal |
++| Ray Dashboard | 8265 | Access via `kubectl port-forward` or Ingress |
++
++## Teardown
++
++```bash
++kustomize build k8s/overlays/code-gen | kubectl delete -f -
++```
++
++## Troubleshooting
++
++**Check recent events:**
++```bash
++kubectl get events -n gym --sort-by='.lastTimestamp' | tail -20
++```
++
++**Resources pod not reaching Ready:**
++```bash
++# Replace INSTANCE with your instance label (cg, estc, etc.)
++kubectl exec $(kubectl get pod -n gym -l app.kubernetes.io/instance=cg,ray.io/group=gym-resources -o name) -n gym -- cat /tmp/nemo-gym-server.log
++```
++
++**Model returns connection errors:**
++Verify the LLM endpoint is reachable from inside the cluster:
++```bash
++kubectl exec deploy/cg-gym-model -n gym -- \
++  curl -s "$POLICY_BASE_URL/models" -H "Authorization: Bearer $POLICY_API_KEY"
++```
++
++**Ray dashboard:**
++```bash
++kubectl port-forward -n gym svc/cg-gym-ray-head-svc 8265:8265
++```
+diff --git a/k8s/base/configmap.yaml b/k8s/base/configmap.yaml
+new file mode 100644
+index 000000000..5553618ca
+--- /dev/null
++++ b/k8s/base/configmap.yaml
+@@ -0,0 +1,46 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: gym-config
++  namespace: gym
++  labels:
++    app.kubernetes.io/part-of: nemo-gym
++    app.kubernetes.io/managed-by: kustomize
++data:
++  config.yaml: |
++    ray_head_node_address: "auto"
++    default_host: "0.0.0.0"
++    use_absolute_ip: false
++    dry_run: false
++
++    head_server:
++      host: "0.0.0.0"
++      port: 11000
++
++    simple_agent_instance:
++      responses_api_agents:
++        simple_agent:
++          entrypoint: app.py
++          host: "${oc.env:AGENT_HOST}"
++          port: 8080
++          resources_server:
++            type: resources_servers
++            name: resources_instance
++          model_server:
++            type: responses_api_models
++            name: policy_model
++
++    policy_model:
++      responses_api_models:
++        vllm_model:
++          entrypoint: app.py
++          host: "${oc.env:MODEL_HOST}"
++          port: 8080
++          base_url: "${oc.env:POLICY_BASE_URL}"
++          api_key: "${oc.env:POLICY_API_KEY}"
++          model: "${oc.env:POLICY_MODEL_NAME}"
++          return_token_id_information: false
++          uses_reasoning_parser: true
++          uses_interleaved_reasoning: true
++          chat_template_kwargs: null
++          extra_body: null
+diff --git a/k8s/base/configurations/name-reference.yaml b/k8s/base/configurations/name-reference.yaml
+new file mode 100644
+index 000000000..157c3a42d
+--- /dev/null
++++ b/k8s/base/configurations/name-reference.yaml
+@@ -0,0 +1,19 @@
++nameReference:
++  - kind: ServiceAccount
++    fieldSpecs:
++      - kind: RayCluster
++        group: ray.io
++        path: spec/headGroupSpec/template/spec/serviceAccountName
++      - kind: RayCluster
++        group: ray.io
++        path: spec/workerGroupSpecs/template/spec/serviceAccountName
++  - kind: ConfigMap
++    fieldSpecs:
++      - kind: RayCluster
++        group: ray.io
++        path: spec/workerGroupSpecs/template/spec/containers/env/valueFrom/configMapKeyRef/name
++  - kind: Secret
++    fieldSpecs:
++      - kind: RayCluster
++        group: ray.io
++        path: spec/workerGroupSpecs/template/spec/containers/envFrom/secretRef/name
+diff --git a/k8s/base/deployment-agent.yaml b/k8s/base/deployment-agent.yaml
+new file mode 100644
+index 000000000..fdcc0a0fd
+--- /dev/null
++++ b/k8s/base/deployment-agent.yaml
+@@ -0,0 +1,109 @@
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: gym-agent
++  namespace: gym
++  labels:
++    app.kubernetes.io/name: gym-agent
++    app.kubernetes.io/component: agent-server
++    app.kubernetes.io/part-of: nemo-gym
++    app.kubernetes.io/managed-by: kustomize
++spec:
++  replicas: 1
++  minReadySeconds: 10
++  strategy:
++    type: RollingUpdate
++    rollingUpdate:
++      maxSurge: 1
++      maxUnavailable: 0
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: gym-agent
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: gym-agent
++        app.kubernetes.io/component: agent-server
++        app.kubernetes.io/part-of: nemo-gym
++    spec:
++      serviceAccountName: gym-sa
++      automountServiceAccountToken: false
++      terminationGracePeriodSeconds: 30
++      securityContext:
++        runAsNonRoot: true
++        seccompProfile:
++          type: RuntimeDefault
++      containers:
++        - name: agent
++          image: ghcr.io/nvidia-nemo/gym/nemo-gym-agent:latest
++          imagePullPolicy: IfNotPresent
++          workingDir: /opt/app-root/src
++          env:
++            - name: NEMO_GYM_CONFIG_DICT
++              valueFrom:
++                configMapKeyRef:
++                  name: gym-config
++                  key: config.yaml
++            - name: NEMO_GYM_CONFIG_PATH
++              value: simple_agent_instance
++            - name: RAY_TMPDIR
++              value: /tmp
++            - name: NEMO_GYM_SKIP_RAY_INIT
++              value: "1"
++            - name: RESOURCES_HOST
++              value: "gym-resources-svc"
++            - name: AGENT_HOST
++              value: "0.0.0.0"
++            - name: MODEL_HOST
++              value: "gym-model-svc"
++            - name: PYTHONPATH
++              value: /opt/app-root/src
++          envFrom:
++            - secretRef:
++                name: gym-secrets
++          ports:
++            - containerPort: 8080
++              name: http
++              protocol: TCP
++          resources:
++            requests:
++              cpu: "250m"
++              memory: 512Mi
++            limits:
++              memory: 1Gi
++          startupProbe:
++            httpGet:
++              path: /docs
++              port: 8080
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 60
++          readinessProbe:
++            httpGet:
++              path: /docs
++              port: 8080
++            periodSeconds: 10
++            failureThreshold: 3
++          livenessProbe:
++            httpGet:
++              path: /docs
++              port: 8080
++            periodSeconds: 30
++            failureThreshold: 5
++          lifecycle:
++            preStop:
++              exec:
++                command: ["/bin/sleep", "5"]
++          securityContext:
++            allowPrivilegeEscalation: false
++            readOnlyRootFilesystem: true
++            capabilities:
++              drop:
++                - ALL
++          volumeMounts:
++            - name: tmp
++              mountPath: /tmp
++      volumes:
++        - name: tmp
++          emptyDir:
++            sizeLimit: 1Gi
+diff --git a/k8s/base/deployment-head.yaml b/k8s/base/deployment-head.yaml
+new file mode 100644
+index 000000000..24a5248dc
+--- /dev/null
++++ b/k8s/base/deployment-head.yaml
+@@ -0,0 +1,107 @@
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: gym-head
++  namespace: gym
++  labels:
++    app.kubernetes.io/name: gym-head
++    app.kubernetes.io/component: head-server
++    app.kubernetes.io/part-of: nemo-gym
++    app.kubernetes.io/managed-by: kustomize
++spec:
++  replicas: 1
++  minReadySeconds: 10
++  strategy:
++    type: RollingUpdate
++    rollingUpdate:
++      maxSurge: 1
++      maxUnavailable: 0
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: gym-head
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: gym-head
++        app.kubernetes.io/component: head-server
++        app.kubernetes.io/part-of: nemo-gym
++    spec:
++      serviceAccountName: gym-sa
++      automountServiceAccountToken: false
++      terminationGracePeriodSeconds: 30
++      securityContext:
++        runAsNonRoot: true
++        seccompProfile:
++          type: RuntimeDefault
++
++      containers:
++        - name: head
++          image: ghcr.io/nvidia-nemo/gym/nemo-gym-head:latest
++          imagePullPolicy: IfNotPresent
++          workingDir: /opt/app-root/src
++
++          env:
++            - name: NEMO_GYM_CONFIG_DICT
++              valueFrom:
++                configMapKeyRef:
++                  name: gym-config
++                  key: config.yaml
++            - name: NEMO_GYM_SKIP_RAY_INIT
++              value: "1"
++            - name: PYTHONPATH
++              value: /opt/app-root/src
++
++          ports:
++            - containerPort: 11000
++              name: http
++              protocol: TCP
++
++          resources:
++            requests:
++              cpu: 100m
++              memory: 256Mi
++            limits:
++              memory: 512Mi
++
++          startupProbe:
++            httpGet:
++              path: /docs
++              port: 11000
++            initialDelaySeconds: 5
++            periodSeconds: 3
++            failureThreshold: 20
++
++          readinessProbe:
++            httpGet:
++              path: /docs
++              port: 11000
++            periodSeconds: 10
++            failureThreshold: 3
++
++          livenessProbe:
++            httpGet:
++              path: /docs
++              port: 11000
++            periodSeconds: 30
++            failureThreshold: 5
++
++          lifecycle:
++            preStop:
++              exec:
++                command: ["/bin/sleep", "5"]
++
++          securityContext:
++            allowPrivilegeEscalation: false
++            readOnlyRootFilesystem: true
++            capabilities:
++              drop:
++                - ALL
++
++          volumeMounts:
++            - name: tmp
++              mountPath: /tmp
++
++      volumes:
++        - name: tmp
++          emptyDir:
++            sizeLimit: 100Mi
+diff --git a/k8s/base/deployment-model.yaml b/k8s/base/deployment-model.yaml
+new file mode 100644
+index 000000000..3f246db71
+--- /dev/null
++++ b/k8s/base/deployment-model.yaml
+@@ -0,0 +1,109 @@
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: gym-model
++  namespace: gym
++  labels:
++    app.kubernetes.io/name: gym-model
++    app.kubernetes.io/component: model-server
++    app.kubernetes.io/part-of: nemo-gym
++    app.kubernetes.io/managed-by: kustomize
++spec:
++  replicas: 1
++  minReadySeconds: 10
++  strategy:
++    type: RollingUpdate
++    rollingUpdate:
++      maxSurge: 1
++      maxUnavailable: 0
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: gym-model
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: gym-model
++        app.kubernetes.io/component: model-server
++        app.kubernetes.io/part-of: nemo-gym
++    spec:
++      serviceAccountName: gym-sa
++      automountServiceAccountToken: false
++      terminationGracePeriodSeconds: 30
++      securityContext:
++        runAsNonRoot: true
++        seccompProfile:
++          type: RuntimeDefault
++      containers:
++        - name: model
++          image: ghcr.io/nvidia-nemo/gym/nemo-gym-model:latest
++          imagePullPolicy: IfNotPresent
++          workingDir: /opt/app-root/src
++          env:
++            - name: NEMO_GYM_CONFIG_DICT
++              valueFrom:
++                configMapKeyRef:
++                  name: gym-config
++                  key: config.yaml
++            - name: NEMO_GYM_CONFIG_PATH
++              value: policy_model
++            - name: RAY_TMPDIR
++              value: /tmp
++            - name: NEMO_GYM_SKIP_RAY_INIT
++              value: "1"
++            - name: RESOURCES_HOST
++              value: "gym-resources-svc"
++            - name: AGENT_HOST
++              value: "gym-agent-svc"
++            - name: MODEL_HOST
++              value: "0.0.0.0"
++            - name: PYTHONPATH
++              value: /opt/app-root/src
++          envFrom:
++            - secretRef:
++                name: gym-secrets
++          ports:
++            - containerPort: 8080
++              name: http
++              protocol: TCP
++          resources:
++            requests:
++              cpu: "250m"
++              memory: 512Mi
++            limits:
++              memory: 1Gi
++          startupProbe:
++            httpGet:
++              path: /docs
++              port: 8080
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            failureThreshold: 60
++          readinessProbe:
++            httpGet:
++              path: /docs
++              port: 8080
++            periodSeconds: 10
++            failureThreshold: 3
++          livenessProbe:
++            httpGet:
++              path: /docs
++              port: 8080
++            periodSeconds: 30
++            failureThreshold: 5
++          lifecycle:
++            preStop:
++              exec:
++                command: ["/bin/sleep", "5"]
++          securityContext:
++            allowPrivilegeEscalation: false
++            readOnlyRootFilesystem: true
++            capabilities:
++              drop:
++                - ALL
++          volumeMounts:
++            - name: tmp
++              mountPath: /tmp
++      volumes:
++        - name: tmp
++          emptyDir:
++            sizeLimit: 1Gi
+diff --git a/k8s/base/kustomization.yaml b/k8s/base/kustomization.yaml
+new file mode 100644
+index 000000000..3e718b63e
+--- /dev/null
++++ b/k8s/base/kustomization.yaml
+@@ -0,0 +1,19 @@
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++namespace: gym
++
++configurations:
++  - configurations/name-reference.yaml
++
++resources:
++  - serviceaccount.yaml
++  - configmap.yaml
++  - raycluster.yaml
++  - deployment-agent.yaml
++  - deployment-model.yaml
++  - deployment-head.yaml
++  - service-resources.yaml
++  - service-agent.yaml
++  - service-model.yaml
++  - service-head.yaml
+diff --git a/k8s/base/raycluster.yaml b/k8s/base/raycluster.yaml
+new file mode 100644
+index 000000000..40c087b34
+--- /dev/null
++++ b/k8s/base/raycluster.yaml
+@@ -0,0 +1,227 @@
++apiVersion: ray.io/v1
++kind: RayCluster
++metadata:
++  name: gym-ray
++  namespace: gym
++  labels:
++    app.kubernetes.io/part-of: nemo-gym
++    app.kubernetes.io/managed-by: kustomize
++spec:
++  rayVersion: "2.55.1"
++  enableInTreeAutoscaling: true
++  autoscalerOptions:
++    upscalingMode: Default
++    idleTimeoutSeconds: 300
++    resources:
++      requests:
++        cpu: "500m"
++        memory: "512Mi"
++      limits:
++        cpu: "500m"
++        memory: "512Mi"
++  headGroupSpec:
++    rayStartParams:
++      dashboard-host: "0.0.0.0"
++      num-cpus: "0"
++    template:
++      metadata:
++        labels:
++          app.kubernetes.io/part-of: nemo-gym
++      spec:
++        serviceAccountName: gym-sa
++        terminationGracePeriodSeconds: 60
++        securityContext:
++          runAsNonRoot: true
++          seccompProfile:
++            type: RuntimeDefault
++        containers:
++          - name: ray-head
++            image: ghcr.io/nvidia-nemo/gym/nemo-gym-resources:latest
++            imagePullPolicy: IfNotPresent
++            ports:
++              - containerPort: 6379
++                name: gcs
++                protocol: TCP
++              - containerPort: 8265
++                name: dashboard
++                protocol: TCP
++              - containerPort: 10001
++                name: client
++                protocol: TCP
++            env:
++              - name: RAY_TMPDIR
++                value: /tmp
++              - name: NVIDIA_VISIBLE_DEVICES
++                value: void
++            resources:
++              requests:
++                cpu: "500m"
++                memory: 2Gi
++              limits:
++                memory: 8Gi
++            securityContext:
++              allowPrivilegeEscalation: false
++              readOnlyRootFilesystem: true
++              capabilities:
++                drop:
++                  - ALL
++            volumeMounts:
++              - mountPath: /tmp
++                name: ray-tmp
++        volumes:
++          - name: ray-tmp
++            emptyDir:
++              sizeLimit: 4Gi
++  workerGroupSpecs:
++    - groupName: gym-workers
++      replicas: 1
++      minReplicas: 1
++      maxReplicas: 4
++      rayStartParams:
++        num-cpus: "2"
++      template:
++        metadata:
++          labels:
++            app.kubernetes.io/part-of: nemo-gym
++        spec:
++          serviceAccountName: gym-sa
++          terminationGracePeriodSeconds: 60
++          securityContext:
++            runAsNonRoot: true
++            seccompProfile:
++              type: RuntimeDefault
++          containers:
++            - name: ray-worker
++              image: ghcr.io/nvidia-nemo/gym/nemo-gym-resources:latest
++              imagePullPolicy: IfNotPresent
++              env:
++                - name: RAY_TMPDIR
++                  value: /tmp
++                - name: NVIDIA_VISIBLE_DEVICES
++                  value: void
++              resources:
++                requests:
++                  cpu: "2"
++                  memory: 4Gi
++                limits:
++                  cpu: "4"
++                  memory: 8Gi
++              securityContext:
++                allowPrivilegeEscalation: false
++                readOnlyRootFilesystem: true
++                capabilities:
++                  drop:
++                    - ALL
++              volumeMounts:
++                - mountPath: /tmp
++                  name: ray-tmp
++          volumes:
++            - name: ray-tmp
++              emptyDir:
++                sizeLimit: 4Gi
++    - groupName: gym-resources
++      replicas: 1
++      minReplicas: 1
++      maxReplicas: 1
++      rayStartParams:
++        num-cpus: "0"
++      template:
++        metadata:
++          labels:
++            app.kubernetes.io/name: gym-resources
++            app.kubernetes.io/component: resources-server
++            app.kubernetes.io/part-of: nemo-gym
++        spec:
++          serviceAccountName: gym-sa
++          terminationGracePeriodSeconds: 60
++          securityContext:
++            runAsNonRoot: true
++            seccompProfile:
++              type: RuntimeDefault
++          containers:
++            - name: ray-worker
++              image: ghcr.io/nvidia-nemo/gym/nemo-gym-resources:latest
++              imagePullPolicy: IfNotPresent
++              lifecycle:
++                postStart:
++                  exec:
++                    command:
++                      - /bin/bash
++                      - -c
++                      - |
++                        (
++                          until [ -S /tmp/ray/session_latest/sockets/raylet ]; do sleep 1; done
++                          sleep 3
++                          cd /opt/app-root/src
++                          exec $NEMO_GYM_SERVER_ENTRYPOINT >> /tmp/nemo-gym-server.log 2>&1
++                        ) &
++              # WARNING: Overlay JSON patches reference env vars by index.
++              # Do not reorder env[0]-env[4] without updating overlays.
++              # [0]=RAY_TMPDIR [1]=NVIDIA [2]=SERVER_ENTRYPOINT [3]=CONFIG_DICT [4]=CONFIG_PATH
++              env:
++                - name: RAY_TMPDIR
++                  value: /tmp
++                - name: NVIDIA_VISIBLE_DEVICES
++                  value: void
++                - name: NEMO_GYM_SERVER_ENTRYPOINT
++                  value: "python -m http.server 9080"
++                - name: NEMO_GYM_CONFIG_DICT
++                  valueFrom:
++                    configMapKeyRef:
++                      name: gym-config
++                      key: config.yaml
++                - name: NEMO_GYM_CONFIG_PATH
++                  value: "MUST_BE_SET_BY_OVERLAY"
++                - name: RESOURCES_HOST
++                  value: "0.0.0.0"
++                - name: AGENT_HOST
++                  value: "gym-agent-svc"
++                - name: MODEL_HOST
++                  value: "gym-model-svc"
++                - name: PYTHONPATH
++                  value: /opt/app-root/src
++              envFrom:
++                - secretRef:
++                    name: gym-secrets
++              ports:
++                - containerPort: 9080
++                  name: http
++                  protocol: TCP
++              resources:
++                requests:
++                  cpu: "500m"
++                  memory: 512Mi
++                limits:
++                  memory: 2Gi
++              startupProbe:
++                httpGet:
++                  path: /docs
++                  port: 9080
++                initialDelaySeconds: 30
++                periodSeconds: 5
++                failureThreshold: 60
++              readinessProbe:
++                httpGet:
++                  path: /docs
++                  port: 9080
++                periodSeconds: 10
++                failureThreshold: 3
++              livenessProbe:
++                httpGet:
++                  path: /docs
++                  port: 9080
++                periodSeconds: 30
++                failureThreshold: 5
++              securityContext:
++                allowPrivilegeEscalation: false
++                readOnlyRootFilesystem: true
++                capabilities:
++                  drop:
++                    - ALL
++              volumeMounts:
++                - mountPath: /tmp
++                  name: ray-tmp
++          volumes:
++            - name: ray-tmp
++              emptyDir:
++                sizeLimit: 4Gi
+diff --git a/k8s/base/service-agent.yaml b/k8s/base/service-agent.yaml
+new file mode 100644
+index 000000000..c1ab9819f
+--- /dev/null
++++ b/k8s/base/service-agent.yaml
+@@ -0,0 +1,17 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: gym-agent-svc
++  namespace: gym
++  labels:
++    app.kubernetes.io/name: gym-agent
++    app.kubernetes.io/part-of: nemo-gym
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: gym-agent
++  ports:
++    - port: 8080
++      targetPort: http
++      protocol: TCP
++      name: http
+diff --git a/k8s/base/service-head.yaml b/k8s/base/service-head.yaml
+new file mode 100644
+index 000000000..dc532613b
+--- /dev/null
++++ b/k8s/base/service-head.yaml
+@@ -0,0 +1,17 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: gym-head-svc
++  namespace: gym
++  labels:
++    app.kubernetes.io/name: gym-head
++    app.kubernetes.io/part-of: nemo-gym
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: gym-head
++  ports:
++    - port: 11000
++      targetPort: http
++      protocol: TCP
++      name: http
+diff --git a/k8s/base/service-model.yaml b/k8s/base/service-model.yaml
+new file mode 100644
+index 000000000..e6cdb4ab7
+--- /dev/null
++++ b/k8s/base/service-model.yaml
+@@ -0,0 +1,17 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: gym-model-svc
++  namespace: gym
++  labels:
++    app.kubernetes.io/name: gym-model
++    app.kubernetes.io/part-of: nemo-gym
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: gym-model
++  ports:
++    - port: 8080
++      targetPort: http
++      protocol: TCP
++      name: http
+diff --git a/k8s/base/service-resources.yaml b/k8s/base/service-resources.yaml
+new file mode 100644
+index 000000000..abfe7e64e
+--- /dev/null
++++ b/k8s/base/service-resources.yaml
+@@ -0,0 +1,17 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: gym-resources-svc
++  namespace: gym
++  labels:
++    app.kubernetes.io/name: gym-resources
++    app.kubernetes.io/part-of: nemo-gym
++spec:
++  type: ClusterIP
++  selector:
++    app.kubernetes.io/name: gym-resources
++  ports:
++    - port: 9080
++      targetPort: http
++      protocol: TCP
++      name: http
+diff --git a/k8s/base/serviceaccount.yaml b/k8s/base/serviceaccount.yaml
+new file mode 100644
+index 000000000..949c46a9d
+--- /dev/null
++++ b/k8s/base/serviceaccount.yaml
+@@ -0,0 +1,8 @@
++apiVersion: v1
++kind: ServiceAccount
++metadata:
++  name: gym-sa
++  namespace: gym
++  labels:
++    app.kubernetes.io/part-of: nemo-gym
++    app.kubernetes.io/managed-by: kustomize
+diff --git a/k8s/entrypoint.sh b/k8s/entrypoint.sh
+new file mode 100755
+index 000000000..520964f59
+--- /dev/null
++++ b/k8s/entrypoint.sh
+@@ -0,0 +1,7 @@
++#!/bin/bash
++if ! whoami &> /dev/null 2>&1; then
++  if [ -w /etc/passwd ]; then
++    echo "nemo:x:$(id -u):0:nemo user:${HOME}:/sbin/nologin" >> /etc/passwd
++  fi
++fi
++exec "$@"
+diff --git a/k8s/head/Containerfile b/k8s/head/Containerfile
+new file mode 100644
+index 000000000..17cc595d6
+--- /dev/null
++++ b/k8s/head/Containerfile
+@@ -0,0 +1,67 @@
++# HeadServer — lightweight config-serving sidecar for NeMo Gym on Kubernetes.
++# Serves the global config dict over HTTP so CLI tools (ng_collect_rollouts,
++# ng_status, ng_reward_profile) can discover server addresses via port-forward.
++#
++# Build:
++#   podman build --platform linux/amd64 -f k8s/head/Containerfile --target head -t ghcr.io/nvidia-nemo/gym/nemo-gym-head:latest .
++
++# --- Build stage ---
++FROM registry.access.redhat.com/ubi10/python-312-minimal AS build
++
++USER 0
++WORKDIR /opt/app-root/src
++
++COPY pyproject.toml README.md LICENSE ./
++COPY nemo_gym/ nemo_gym/
++
++RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
++        python3.12-pip && \
++    microdnf clean all && \
++    mkdir -p cache && \
++    pip3.12 install --no-cache-dir -e "." && \
++    rm -rf cache
++
++# --- Runtime stage ---
++FROM registry.access.redhat.com/ubi10/python-312-minimal AS head
++
++LABEL io.k8s.display-name="NeMo Gym HeadServer" \
++      io.k8s.description="Config-serving sidecar for NeMo Gym CLI tool access" \
++      io.openshift.tags="python,fastapi,nemo-gym" \
++      io.openshift.expose-services="11000:http" \
++      name="nemo-gym-head" \
++      summary="NeMo Gym HeadServer" \
++      maintainer="Red Hat ET <redhat-et@redhat.com>"
++
++USER 0
++WORKDIR /opt/app-root/src
++
++RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
++        shadow-utils && \
++    microdnf clean all && \
++    rm -rf /var/cache/yum /var/log/dnf* /var/log/yum*
++
++COPY --from=build /opt/app-root/lib /opt/app-root/lib
++COPY --from=build /opt/app-root/bin /opt/app-root/bin
++
++COPY nemo_gym/ nemo_gym/
++COPY pyproject.toml README.md LICENSE ./
++COPY k8s/head/entrypoint.py /opt/app-root/entrypoint.py
++COPY k8s/entrypoint.sh /opt/app-root/entrypoint.sh
++
++# egg_info requires the cache/ directory to exist (pyproject.toml build config)
++RUN mkdir -p cache && \
++    pip3.12 install --no-cache-dir -e . && \
++    rm -rf cache && \
++    chgrp -R 0 /opt/app-root && \
++    chmod -R g=u /opt/app-root && \
++    chmod g=u /etc/passwd && \
++    chmod +x /opt/app-root/entrypoint.sh
++
++ENV PYTHONUNBUFFERED=1 \
++    HOME=/opt/app-root/src
++
++USER 1001
++EXPOSE 11000
++
++ENTRYPOINT ["/opt/app-root/entrypoint.sh"]
++CMD ["python", "/opt/app-root/entrypoint.py"]
+diff --git a/k8s/head/entrypoint.py b/k8s/head/entrypoint.py
+new file mode 100644
+index 000000000..6d2b3ccf8
+--- /dev/null
++++ b/k8s/head/entrypoint.py
+@@ -0,0 +1,12 @@
++"""Standalone HeadServer entrypoint for Kubernetes deployment."""
++
++import uvicorn
++
++from nemo_gym.server_utils import HeadServer, ServerClient
++
++
++config = ServerClient.load_head_server_config()
++server = HeadServer(config=config)
++app = server.setup_webserver()
++
++uvicorn.run(app, host=config.host, port=config.port)
+diff --git a/k8s/overlays/code-gen-openshift/kustomization.yaml b/k8s/overlays/code-gen-openshift/kustomization.yaml
+new file mode 100644
+index 000000000..f20f05d9c
+--- /dev/null
++++ b/k8s/overlays/code-gen-openshift/kustomization.yaml
+@@ -0,0 +1,8 @@
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++resources:
++  - ../code-gen
++
++components:
++  - ../openshift
+diff --git a/k8s/overlays/code-gen/configmap-patch.yaml b/k8s/overlays/code-gen/configmap-patch.yaml
+new file mode 100644
+index 000000000..acf394d88
+--- /dev/null
++++ b/k8s/overlays/code-gen/configmap-patch.yaml
+@@ -0,0 +1,54 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: gym-config
++  namespace: gym
++data:
++  config.yaml: |
++    ray_head_node_address: "auto"
++    default_host: "0.0.0.0"
++    use_absolute_ip: false
++    dry_run: false
++
++    head_server:
++      host: "0.0.0.0"
++      port: 11000
++
++    resources_instance:
++      resources_servers:
++        code_gen:
++          entrypoint: app.py
++          host: "${oc.env:RESOURCES_HOST}"
++          port: 9080
++          domain: coding
++          num_processes: 4
++          unit_test_timeout_secs: 10
++          debug: false
++
++    simple_agent_instance:
++      responses_api_agents:
++        simple_agent:
++          entrypoint: app.py
++          host: "${oc.env:AGENT_HOST}"
++          port: 8080
++          resources_server:
++            type: resources_servers
++            name: resources_instance
++          model_server:
++            type: responses_api_models
++            name: policy_model
++
++    policy_model:
++      responses_api_models:
++        vllm_model:
++          entrypoint: app.py
++          host: "${oc.env:MODEL_HOST}"
++          port: 8080
++          base_url: "${oc.env:POLICY_BASE_URL}"
++          api_key: "${oc.env:POLICY_API_KEY}"
++          model: "${oc.env:POLICY_MODEL_NAME}"
++          return_token_id_information: false
++          uses_reasoning_parser: true
++          uses_interleaved_reasoning: true
++          chat_template_kwargs: null
++          extra_body: null
+diff --git a/k8s/overlays/code-gen/kustomization.yaml b/k8s/overlays/code-gen/kustomization.yaml
+new file mode 100644
+index 000000000..91b190a51
+--- /dev/null
++++ b/k8s/overlays/code-gen/kustomization.yaml
+@@ -0,0 +1,86 @@
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++resources:
++  - ../../base
++  - secret.yaml
++
++namePrefix: cg-
++
++labels:
++  - includeSelectors: true
++    includeTemplates: true
++    pairs:
++      app.kubernetes.io/instance: cg
++    fields:
++      - path: spec/headGroupSpec/template/metadata/labels
++        kind: RayCluster
++        group: ray.io
++        create: true
++      - path: spec/workerGroupSpecs/template/metadata/labels
++        kind: RayCluster
++        group: ray.io
++        create: true
++
++patches:
++  - path: configmap-patch.yaml
++    target:
++      kind: ConfigMap
++      name: gym-config
++  - patch: |-
++      - op: replace
++        path: /spec/workerGroupSpecs/1/template/spec/containers/0/env/2/value
++        value: "python resources_servers/code_gen/app.py"
++      - op: replace
++        path: /spec/workerGroupSpecs/1/template/spec/containers/0/env/4/value
++        value: "resources_instance"
++    target:
++      kind: RayCluster
++      name: gym-ray
++
++replacements:
++  - source:
++      kind: Service
++      name: gym-resources-svc
++      fieldPath: metadata.name
++    targets:
++      - select:
++          kind: Deployment
++          name: gym-agent
++        fieldPaths:
++          - spec.template.spec.containers.[name=agent].env.[name=RESOURCES_HOST].value
++      - select:
++          kind: Deployment
++          name: gym-model
++        fieldPaths:
++          - spec.template.spec.containers.[name=model].env.[name=RESOURCES_HOST].value
++  - source:
++      kind: Service
++      name: gym-agent-svc
++      fieldPath: metadata.name
++    targets:
++      - select:
++          kind: Deployment
++          name: gym-model
++        fieldPaths:
++          - spec.template.spec.containers.[name=model].env.[name=AGENT_HOST].value
++      - select:
++          kind: RayCluster
++          name: gym-ray
++        fieldPaths:
++          - spec.workerGroupSpecs.1.template.spec.containers.[name=ray-worker].env.[name=AGENT_HOST].value
++  - source:
++      kind: Service
++      name: gym-model-svc
++      fieldPath: metadata.name
++    targets:
++      - select:
++          kind: Deployment
++          name: gym-agent
++        fieldPaths:
++          - spec.template.spec.containers.[name=agent].env.[name=MODEL_HOST].value
++      - select:
++          kind: RayCluster
++          name: gym-ray
++        fieldPaths:
++          - spec.workerGroupSpecs.1.template.spec.containers.[name=ray-worker].env.[name=MODEL_HOST].value
+diff --git a/k8s/overlays/code-gen/secret.yaml.example b/k8s/overlays/code-gen/secret.yaml.example
+new file mode 100644
+index 000000000..8785e02f8
+--- /dev/null
++++ b/k8s/overlays/code-gen/secret.yaml.example
+@@ -0,0 +1,12 @@
++apiVersion: v1
++kind: Secret
++metadata:
++  name: gym-secrets
++  namespace: gym
++  labels:
++    app.kubernetes.io/part-of: nemo-gym
++type: Opaque
++stringData:
++  POLICY_BASE_URL: "https://your-llm-endpoint.example.com/v1"
++  POLICY_API_KEY: "your-api-key-here"  # pragma: allowlist secret
++  POLICY_MODEL_NAME: "your-model-name"
+diff --git a/k8s/overlays/example-single-tool-call-openshift/kustomization.yaml b/k8s/overlays/example-single-tool-call-openshift/kustomization.yaml
+new file mode 100644
+index 000000000..c359d0383
+--- /dev/null
++++ b/k8s/overlays/example-single-tool-call-openshift/kustomization.yaml
+@@ -0,0 +1,8 @@
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++resources:
++  - ../example-single-tool-call
++
++components:
++  - ../openshift
+diff --git a/k8s/overlays/example-single-tool-call/configmap-patch.yaml b/k8s/overlays/example-single-tool-call/configmap-patch.yaml
+new file mode 100644
+index 000000000..c194e80e0
+--- /dev/null
++++ b/k8s/overlays/example-single-tool-call/configmap-patch.yaml
+@@ -0,0 +1,51 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: gym-config
++  namespace: gym
++data:
++  config.yaml: |
++    ray_head_node_address: "auto"
++    default_host: "0.0.0.0"
++    use_absolute_ip: false
++    dry_run: false
++
++    head_server:
++      host: "0.0.0.0"
++      port: 11000
++
++    resources_instance:
++      resources_servers:
++        example_single_tool_call:
++          entrypoint: app.py
++          host: "${oc.env:RESOURCES_HOST}"
++          port: 9080
++          domain: agent
++
++    simple_agent_instance:
++      responses_api_agents:
++        simple_agent:
++          entrypoint: app.py
++          host: "${oc.env:AGENT_HOST}"
++          port: 8080
++          resources_server:
++            type: resources_servers
++            name: resources_instance
++          model_server:
++            type: responses_api_models
++            name: policy_model
++
++    policy_model:
++      responses_api_models:
++        vllm_model:
++          entrypoint: app.py
++          host: "${oc.env:MODEL_HOST}"
++          port: 8080
++          base_url: "${oc.env:POLICY_BASE_URL}"
++          api_key: "${oc.env:POLICY_API_KEY}"
++          model: "${oc.env:POLICY_MODEL_NAME}"
++          return_token_id_information: false
++          uses_reasoning_parser: true
++          uses_interleaved_reasoning: true
++          chat_template_kwargs: null
++          extra_body: null
+diff --git a/k8s/overlays/example-single-tool-call/kustomization.yaml b/k8s/overlays/example-single-tool-call/kustomization.yaml
+new file mode 100644
+index 000000000..3792647ca
+--- /dev/null
++++ b/k8s/overlays/example-single-tool-call/kustomization.yaml
+@@ -0,0 +1,86 @@
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++resources:
++  - ../../base
++  - secret.yaml
++
++namePrefix: estc-
++
++labels:
++  - includeSelectors: true
++    includeTemplates: true
++    pairs:
++      app.kubernetes.io/instance: estc
++    fields:
++      - path: spec/headGroupSpec/template/metadata/labels
++        kind: RayCluster
++        group: ray.io
++        create: true
++      - path: spec/workerGroupSpecs/template/metadata/labels
++        kind: RayCluster
++        group: ray.io
++        create: true
++
++patches:
++  - path: configmap-patch.yaml
++    target:
++      kind: ConfigMap
++      name: gym-config
++  - patch: |-
++      - op: replace
++        path: /spec/workerGroupSpecs/1/template/spec/containers/0/env/2/value
++        value: "python resources_servers/example_single_tool_call/app.py"
++      - op: replace
++        path: /spec/workerGroupSpecs/1/template/spec/containers/0/env/4/value
++        value: "resources_instance"
++    target:
++      kind: RayCluster
++      name: gym-ray
++
++replacements:
++  - source:
++      kind: Service
++      name: gym-resources-svc
++      fieldPath: metadata.name
++    targets:
++      - select:
++          kind: Deployment
++          name: gym-agent
++        fieldPaths:
++          - spec.template.spec.containers.[name=agent].env.[name=RESOURCES_HOST].value
++      - select:
++          kind: Deployment
++          name: gym-model
++        fieldPaths:
++          - spec.template.spec.containers.[name=model].env.[name=RESOURCES_HOST].value
++  - source:
++      kind: Service
++      name: gym-agent-svc
++      fieldPath: metadata.name
++    targets:
++      - select:
++          kind: Deployment
++          name: gym-model
++        fieldPaths:
++          - spec.template.spec.containers.[name=model].env.[name=AGENT_HOST].value
++      - select:
++          kind: RayCluster
++          name: gym-ray
++        fieldPaths:
++          - spec.workerGroupSpecs.1.template.spec.containers.[name=ray-worker].env.[name=AGENT_HOST].value
++  - source:
++      kind: Service
++      name: gym-model-svc
++      fieldPath: metadata.name
++    targets:
++      - select:
++          kind: Deployment
++          name: gym-agent
++        fieldPaths:
++          - spec.template.spec.containers.[name=agent].env.[name=MODEL_HOST].value
++      - select:
++          kind: RayCluster
++          name: gym-ray
++        fieldPaths:
++          - spec.workerGroupSpecs.1.template.spec.containers.[name=ray-worker].env.[name=MODEL_HOST].value
+diff --git a/k8s/overlays/example-single-tool-call/secret.yaml.example b/k8s/overlays/example-single-tool-call/secret.yaml.example
+new file mode 100644
+index 000000000..8785e02f8
+--- /dev/null
++++ b/k8s/overlays/example-single-tool-call/secret.yaml.example
+@@ -0,0 +1,12 @@
++apiVersion: v1
++kind: Secret
++metadata:
++  name: gym-secrets
++  namespace: gym
++  labels:
++    app.kubernetes.io/part-of: nemo-gym
++type: Opaque
++stringData:
++  POLICY_BASE_URL: "https://your-llm-endpoint.example.com/v1"
++  POLICY_API_KEY: "your-api-key-here"  # pragma: allowlist secret
++  POLICY_MODEL_NAME: "your-model-name"
+diff --git a/k8s/overlays/openshift/kustomization.yaml b/k8s/overlays/openshift/kustomization.yaml
+new file mode 100644
+index 000000000..0b4690564
+--- /dev/null
++++ b/k8s/overlays/openshift/kustomization.yaml
+@@ -0,0 +1,22 @@
++apiVersion: kustomize.config.k8s.io/v1alpha1
++kind: Component
++
++patches:
++  - patch: |-
++      - op: replace
++        path: /spec/template/spec/containers/0/imagePullPolicy
++        value: Always
++    target:
++      kind: Deployment
++  - patch: |-
++      - op: replace
++        path: /spec/headGroupSpec/template/spec/containers/0/imagePullPolicy
++        value: Always
++      - op: replace
++        path: /spec/workerGroupSpecs/0/template/spec/containers/0/imagePullPolicy
++        value: Always
++      - op: replace
++        path: /spec/workerGroupSpecs/1/template/spec/containers/0/imagePullPolicy
++        value: Always
++    target:
++      kind: RayCluster
+diff --git a/k8s/tests/deployment-model-patch.yaml b/k8s/tests/deployment-model-patch.yaml
+new file mode 100644
+index 000000000..28792a828
+--- /dev/null
++++ b/k8s/tests/deployment-model-patch.yaml
+@@ -0,0 +1,24 @@
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: gym-model
++  namespace: gym
++spec:
++  template:
++    spec:
++      containers:
++        - name: model
++          command: ["python", "/opt/mock/mock_model.py"]
++          volumeMounts:
++            - name: tmp
++              mountPath: /tmp
++            - name: mock-script
++              mountPath: /opt/mock
++              readOnly: true
++      volumes:
++        - name: tmp
++          emptyDir:
++            sizeLimit: 1Gi
++        - name: mock-script
++          configMap:
++            name: mock-model-script
+diff --git a/k8s/tests/kustomization.yaml b/k8s/tests/kustomization.yaml
+new file mode 100644
+index 000000000..f5da63039
+--- /dev/null
++++ b/k8s/tests/kustomization.yaml
+@@ -0,0 +1,17 @@
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++resources:
++  - ../overlays/example-single-tool-call
++
++configMapGenerator:
++  - name: mock-model-script
++    namespace: gym
++    files:
++      - mock_model.py
++
++patches:
++  - path: deployment-model-patch.yaml
++    target:
++      kind: Deployment
++      labelSelector: app.kubernetes.io/component=model-server
+diff --git a/k8s/tests/mock_model.py b/k8s/tests/mock_model.py
+new file mode 100644
+index 000000000..9c040ed76
+--- /dev/null
++++ b/k8s/tests/mock_model.py
+@@ -0,0 +1,69 @@
++# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++# SPDX-License-Identifier: Apache-2.0
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++# http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""Lightweight mock model server for K8s integration tests.
++
++Returns a canned NeMoGymResponse on POST /v1/responses.
++No nemo_gym imports — avoids heavy init (Ray, OmegaConf) and keeps
++the mock decoupled from internal schema evolution.
++"""
++
++import uvicorn
++from fastapi import FastAPI, Request
++
++
++app = FastAPI()
++
++CANNED_RESPONSE = {
++    "id": "resp_mock_001",
++    "created_at": 1700000000.0,
++    "model": "mock-model",
++    "object": "response",
++    "output": [
++        {
++            "id": "msg_mock_001",
++            "content": [
++                {
++                    "annotations": [],
++                    "text": "The weather is sunny.",
++                    "type": "output_text",
++                }
++            ],
++            "role": "assistant",
++            "status": "completed",
++            "type": "message",
++        }
++    ],
++    "parallel_tool_calls": True,
++    "tool_choice": "auto",
++    "tools": [],
++    "usage": {
++        "input_tokens": 10,
++        "input_tokens_details": {"cached_tokens": 0},
++        "output_tokens": 5,
++        "output_tokens_details": {"reasoning_tokens": 0},
++        "total_tokens": 15,
++    },
++}
++
++
++@app.post("/v1/responses")
++async def responses(request: Request):
++    await request.body()
++    return CANNED_RESPONSE
++
++
++if __name__ == "__main__":
++    uvicorn.run(app, host="0.0.0.0", port=8080)
+diff --git a/nemo_gym/server_utils.py b/nemo_gym/server_utils.py
+index 8da9cc027..1eabbd425 100644
+--- a/nemo_gym/server_utils.py
++++ b/nemo_gym/server_utils.py
+@@ -403,6 +403,10 @@ def initialize_ray() -> None:
+     Note: This function will modify the global config dict - update `ray_head_node_address`
+     """
+ 
++    if getenv("NEMO_GYM_SKIP_RAY_INIT") == "1":
++        print("Skipping Ray initialization (NEMO_GYM_SKIP_RAY_INIT=1)")
++        return
++
+     if ray.is_initialized():
+         print("Ray already initialized")
+         return
