@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, Dict, Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -323,15 +323,16 @@ class TestApp:
             "opensandbox": {
                 "connection": {
                     "domain": "sandbox.example",
-                    "api_key": "fixture-value",
+                    "api_key": "fixture-value",  # pragma: allowlist secret
                 }
             }
         }
 
         provider_for_disk = _sandbox_provider_for_config_dump(provider)
         assert "api_key" not in provider_for_disk["opensandbox"]["connection"]
-        assert provider["opensandbox"]["connection"]["api_key"] == "fixture-value"
-        assert _sandbox_runtime_env(provider)["env_vars"] == {OPENSANDBOX_API_KEY_ENV: "fixture-value"}
+        assert provider["opensandbox"]["connection"]["api_key"] == "fixture-value"  # pragma: allowlist secret
+        expected_env_vars = {OPENSANDBOX_API_KEY_ENV: "fixture-value"}  # pragma: allowlist secret
+        assert _sandbox_runtime_env(provider)["env_vars"] == expected_env_vars
 
     def test_split_trajectory_and_resolution_helpers_cover_edge_cases(self) -> None:
         input_messages, output_items, raw_responses = _split_trajectory_for_responses(
@@ -563,7 +564,7 @@ class TestApp:
         monkeypatch.setattr(mini_swe_app_module, "get_config_path", lambda _config: config_path)
         monkeypatch.setattr(mini_swe_app_module, "uuid4", lambda: "uuid")
         monkeypatch.setattr(mini_swe_app_module.time, "time", lambda: 1234)
-        monkeypatch.setenv(OPENSANDBOX_API_KEY_ENV, "worker-value")
+        monkeypatch.setenv(OPENSANDBOX_API_KEY_ENV, "worker-value")  # pragma: allowlist secret
 
         params = {
             "instance_dict": {
@@ -590,7 +591,8 @@ class TestApp:
         env = holder["env"]
         assert env.cleaned is True
         assert env.config["environment_class"].endswith("MiniSWESandboxEnvironment")
-        assert env.config["provider"]["opensandbox"]["connection"]["api_key"] == "worker-value"
+        expected_worker_key = "worker-value"  # pragma: allowlist secret
+        assert env.config["provider"]["opensandbox"]["connection"]["api_key"] == expected_worker_key
         assert env.config["image"] == "docker.io/swebench/sweb.eval.x86_64.django_1776_django-123:latest"
         assert holder["model_config"]["model_class"] == "litellm"
         assert holder["model_config"]["model_name"] == "hosted/model"
@@ -718,7 +720,7 @@ class TestApp:
             "opensandbox": {
                 "connection": {
                     "domain": "sandbox.example",
-                    "api_key": "fixture-value",
+                    "api_key": "fixture-value",  # pragma: allowlist secret
                 }
             }
         }
@@ -742,7 +744,7 @@ class TestApp:
         await server.run(run_request)
 
         runtime_env = mock_runner_ray_remote.options.call_args.kwargs["runtime_env"]
-        assert runtime_env["env_vars"] == {OPENSANDBOX_API_KEY_ENV: "fixture-value"}
+        assert runtime_env["env_vars"] == {OPENSANDBOX_API_KEY_ENV: "fixture-value"}  # pragma: allowlist secret
         call_args = mock_runner_ray_remote.options.return_value.remote.call_args
         params = call_args.args[1]
         generated_config = yaml.safe_load(Path(params["config"]).read_text())
@@ -946,3 +948,156 @@ class TestApp:
 
         aggregate_response = client.post("/aggregate_metrics", json={"verify_responses": []})
         assert aggregate_response.status_code == 200
+
+
+def _create_verifier_run_request(
+    instance_id: str = "psf__requests-2317",
+    subset: str = "verified",
+    split: str = "test",
+) -> MiniSWEAgentRunRequest:
+    """A run request carrying the extra SWE-bench instance fields the verifier metadata reads."""
+    return MiniSWEAgentRunRequest(
+        instance_id=instance_id,
+        subset=subset,
+        split=split,
+        base_commit="abc123",
+        test_patch="TP",
+        FAIL_TO_PASS=["test_x.py::test_a"],
+        PASS_TO_PASS=["test_x.py::test_b"],
+        responses_create_params=NeMoGymResponseCreateParamsNonStreaming(
+            input=[],
+            temperature=0.5,
+            top_p=0.8,
+        ),
+    )
+
+
+class TestCrossAgentVerifierReuse:
+    """#1249 C10: mini_swe_agent_2 scores its patch via the shared swe_env verifier (opt-in)."""
+
+    def _server(self, eval_via_verifier: bool = True) -> MiniSWEAgent:
+        config = create_test_config()
+        config.eval_via_verifier = eval_via_verifier
+        config.verifier_server_name = "swe_verifier"
+        config.sandbox_provider = {"opensandbox": {}}
+        return MiniSWEAgent(config=config, server_client=MagicMock(spec=ServerClient))
+
+    def test_config_defaults_keep_legacy_path(self) -> None:
+        config = create_test_config()
+        assert config.eval_via_verifier is False
+        assert config.verifier_server_name is None
+
+    async def test_verify_patch_via_server_builds_request_and_parses_subset(self, monkeypatch) -> None:
+        server = self._server()
+        monkeypatch.setattr(mini_swe_app_module, "raise_for_status", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            mini_swe_app_module,
+            "get_response_json",
+            AsyncMock(return_value={"resolved": True, "error_kind": None, "patch_exists": True, "reward": 1.0}),
+        )
+        server.server_client.post = AsyncMock(return_value=MagicMock())
+
+        body = _create_verifier_run_request()
+        subset = await server._verify_patch_via_server(
+            instance=body.model_dump(),
+            patch="<<DIFF>>",
+            instance_id="psf__requests-2317",
+            subset="verified",
+            split="test",
+            responses_create_params=body.responses_create_params,
+        )
+
+        assert subset["resolved"] is True
+        call = server.server_client.post.call_args
+        # POSTs to the shared swe_env verifier via the server client — same contract OpenHands uses.
+        assert call.kwargs["server_name"] == "swe_verifier"
+        assert call.kwargs["url_path"] == "/verify"
+        req = call.kwargs["json"]
+        # patch travels in response.metadata.model_patch (the field the verifier's extract_patch reads)
+        assert req["response"]["metadata"]["model_patch"] == "<<DIFF>>"
+        md = req["responses_create_params"]["metadata"]
+        assert md["instance_id"] == "psf__requests-2317"
+        # image resolved from instance_id + subset (swebench-verified munging __ -> _1776_)
+        assert md["image"] == "docker.io/swebench/sweb.eval.x86_64.psf_1776_requests-2317:latest"
+        # test_command carries the F2P + P2P node ids
+        assert "test_x.py::test_a" in md["test_command"]
+        assert "test_x.py::test_b" in md["test_command"]
+        assert md["fail_to_pass"] == ["test_x.py::test_a"]
+        assert md["pass_to_pass"] == ["test_x.py::test_b"]
+        assert md["base_commit"] == "abc123"
+        assert md["test_patch"] == "TP"
+        assert md["repo_workdir"] == "/testbed"
+        assert md["split"] == "test"
+        # benchmark is the registered swe_env harness key the test_command targets, not the subset
+        assert md["benchmark"] == "swe-bench-ext"
+
+    async def test_verify_patch_via_server_infra_error_is_masked_not_raised(self, monkeypatch) -> None:
+        server = self._server()
+        server.server_client.post = AsyncMock(side_effect=RuntimeError("connreset"))
+
+        body = _create_verifier_run_request()
+        subset = await server._verify_patch_via_server(
+            instance=body.model_dump(),
+            patch="<<DIFF>>",
+            instance_id="psf__requests-2317",
+            subset="verified",
+            split="test",
+            responses_create_params=body.responses_create_params,
+        )
+
+        # never raises; returns a masked subset so the agent still emits a present (resolved=False) row
+        assert subset["resolved"] is False
+        assert subset["error_kind"] == "sandbox"
+        assert subset["patch_exists"] is True
+
+    @patch("responses_api_agents.mini_swe_agent_2.app.ServerClient.load_from_global_config")
+    @patch("responses_api_agents.mini_swe_agent_2.app.get_first_server_config_dict")
+    @patch("responses_api_agents.mini_swe_agent_2.app.get_config_path")
+    @patch("responses_api_agents.mini_swe_agent_2.app.runner_ray_remote")
+    @patch("asyncio.to_thread")
+    async def test_run_scores_via_verifier_instead_of_in_process_eval(
+        self,
+        mock_to_thread,
+        mock_runner_ray_remote,
+        mock_get_config_path,
+        mock_get_first_server_config_dict,
+        mock_load_from_global_config,
+        monkeypatch,
+    ) -> None:
+        server = self._server()
+        setup_server_client_mocks(mock_load_from_global_config, mock_get_first_server_config_dict)
+        setup_config_path_mock(mock_get_config_path)
+        # in-worker eval is skipped; the worker returns only the trajectory + patch
+        worker_result = {
+            "test_instance_123": {
+                "input_messages": [
+                    {"type": "message", "role": "system", "content": "sys"},
+                    {"type": "message", "role": "user", "content": "Fix this bug."},
+                ],
+                "response_output": [],
+                "responses": [],
+                "eval_report": {"instance_id": "test_instance_123", "model_patch": "<<DIFF>>"},
+            }
+        }
+        setup_run_mini_swe_mock(mock_to_thread, mock_runner_ray_remote, run_mini_swe_result=worker_result)
+
+        # _is_resolved must NOT be consulted on the verifier path; the verifier is authoritative.
+        monkeypatch.setattr(
+            mini_swe_app_module,
+            "_is_resolved",
+            lambda *_a, **_k: pytest.fail("legacy _is_resolved must not run on the verifier path"),
+        )
+        verify_mock = AsyncMock(
+            return_value={"resolved": True, "error_kind": None, "patch_exists": True, "reward": 1.0}
+        )
+        monkeypatch.setattr(MiniSWEAgent, "_verify_patch_via_server", verify_mock)
+
+        response = await server.run(create_run_request())
+
+        # reward comes from the verifier subset, and the patch was forwarded to it
+        assert response.reward == 1.0
+        assert verify_mock.await_args.kwargs["patch"] == "<<DIFF>>"
+        assert verify_mock.await_args.kwargs["instance_id"] == "test_instance_123"
+        # the worker was told to skip in-process eval
+        worker_params = mock_runner_ray_remote.remote.call_args.args[1]
+        assert worker_params["eval_via_verifier"] is True
