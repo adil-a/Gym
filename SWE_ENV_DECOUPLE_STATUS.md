@@ -133,3 +133,20 @@ docker run -d --name swe-vllm --gpus '"device=0"' -v "$HOME/.cache/huggingface:/
 ## Cleanup notes
 - Local venv: `.venv-swe/` (owned by you; the repo `.venv`/`vllm_venv` are root-owned from your container and unusable here).
 - vLLM container `swe-vllm` (GPU 0) + image `swe-env-itest:local` were created for testing; stop/remove with `docker rm -f swe-vllm` and `docker rmi swe-env-itest:local` if you want the GPU/space back.
+
+## Maintainer handoff — finishing "B" (human/external only)
+All agent-executable work is done + CI-green. The three remaining items require a human or an external event — exact steps:
+
+1. **GPG-sign the commits** (key `842E8084DBB8C44A` needs an interactive passphrase, so run locally):
+   ```bash
+   git config commit.gpgsign true && git config user.signingkey 842E8084DBB8C44A
+   git rebase --exec 'git commit --amend --no-edit -n -S' 428238f9   # the PR base
+   git push --force-with-lease fork feat/swe-env-decouple-1249
+   ```
+2. **Retarget the PR base to upstream `main`** — only after #1377 merges (currently OPEN):
+   ```bash
+   gh api --method PATCH repos/adil-a/Gym/pulls/1 -f base=main
+   ```
+3. **`verified: true`** — flip `resources_servers/swe_env/configs/swe_env.yaml` after regenerating
+   `data/example_rollouts.jsonl` from a real `ng_collect_rollouts` baseline run (the flag means
+   "baselined + reviewed"; left `false` until then).
