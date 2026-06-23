@@ -19,6 +19,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 from asyncio import Semaphore
 from pathlib import Path
 from time import time
@@ -28,7 +29,7 @@ from uuid import uuid4
 from fastapi import Request
 from pydantic import ConfigDict
 
-from nemo_gym.base_resources_server import BaseRunRequest, BaseVerifyResponse
+from nemo_gym.base_resources_server import NEMO_GYM_MCP_METADATA_KEY, BaseRunRequest, BaseVerifyResponse
 from nemo_gym.base_responses_api_agent import (
     BaseResponsesAPIAgentConfig,
     Body,
@@ -294,7 +295,13 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
         (claude_config_dir / "settings.json").write_text(json.dumps(self._build_settings()))
         return claude_config_dir
 
-    def _build_command(self, model: str, instruction: str, system_prompt: Optional[str] = None) -> list[str]:
+    def _build_command(
+        self,
+        model: str,
+        instruction: str,
+        system_prompt: Optional[str] = None,
+        mcp_config: Optional[str] = None,
+    ) -> list[str]:
         """Construct the ``claude`` CLI argv from config.
 
         ``--bare`` is only passed when ``config.bare`` is True; it disables auto-discovery of
@@ -312,8 +319,9 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
         if self.config.bare:
             cmd.append("--bare")
         cmd += ["--max-turns", str(self.config.max_turns), "--model", model]
-        if self.config.mcp_config:
-            cmd += ["--mcp-config", self.config.mcp_config]
+        effective_mcp_config = mcp_config if mcp_config is not None else self.config.mcp_config
+        if effective_mcp_config:
+            cmd += ["--mcp-config", effective_mcp_config]
         if system_prompt:
             cmd += ["--append-system-prompt", system_prompt]
         if self.config.allowed_tools:
@@ -327,7 +335,12 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
         cmd += ["--", instruction]
         return cmd
 
-    async def _run_claude_code(self, instruction: str, system_prompt: Optional[str] = None) -> tuple[str, str]:
+    async def _run_claude_code(
+        self,
+        instruction: str,
+        system_prompt: Optional[str] = None,
+        mcp_config: Optional[str] = None,
+    ) -> tuple[str, str]:
         """Run claude -p --output-format=stream-json and return (stdout, model_name)."""
         base_url = self._resolve_base_url()
         # Keep full model name for local/custom endpoints; strip provider prefix for real Anthropic API.
@@ -351,7 +364,7 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
                 env["ANTHROPIC_BASE_URL"] = base_url
                 env["ANTHROPIC_AUTH_TOKEN"] = api_key or "local"
 
-            cmd = self._build_command(model, instruction, system_prompt=system_prompt)
+            cmd = self._build_command(model, instruction, system_prompt=system_prompt, mcp_config=mcp_config)
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -375,10 +388,57 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
         finally:
             shutil.rmtree(claude_config_dir, ignore_errors=True)
 
-    async def responses(
+    def _resources_server_base_url(self) -> str:
+        cfg = get_first_server_config_dict(
+            self.server_client.global_config_dict,
+            self.config.resources_server.name,
+        )
+        return self.server_client._build_server_base_url(cfg)
+
+    def _load_static_mcp_config(self) -> dict[str, Any]:
+        if not self.config.mcp_config:
+            return {"mcpServers": {}}
+
+        config_path = Path(self.config.mcp_config).expanduser()
+        config = json.loads(config_path.read_text())
+        if not isinstance(config, dict):
+            raise ValueError(f"Claude Code mcp_config must be a JSON object: {config_path}")
+        mcp_servers = config.setdefault("mcpServers", {})
+        if not isinstance(mcp_servers, dict):
+            raise ValueError(f"Claude Code mcp_config has non-object mcpServers: {config_path}")
+        return config
+
+    def _write_rollout_mcp_config(self, seed_response_json: dict[str, Any], output_dir: Path) -> Optional[str]:
+        metadata = seed_response_json.get(NEMO_GYM_MCP_METADATA_KEY)
+        if not isinstance(metadata, dict):
+            return None
+
+        server_name = metadata.get("server_name") or self.config.resources_server.name
+        url = metadata.get("url")
+        if not url:
+            url_path = str(metadata.get("url_path") or "/mcp")
+            url = f"{self._resources_server_base_url().rstrip('/')}/{url_path.lstrip('/')}"
+
+        entry: dict[str, Any] = {
+            "type": metadata.get("transport") or "http",
+            "url": url,
+        }
+        headers = metadata.get("headers")
+        if isinstance(headers, dict) and headers:
+            entry["headers"] = {str(key): str(value) for key, value in headers.items()}
+
+        config = self._load_static_mcp_config()
+        config.setdefault("mcpServers", {})[str(server_name)] = entry
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        config_path = output_dir / "gym_mcp_config.json"
+        config_path.write_text(json.dumps(config, indent=2, sort_keys=True))
+        return str(config_path)
+
+    async def _create_response(
         self,
-        request: Request,
-        body: NeMoGymResponseCreateParamsNonStreaming = Body(),
+        body: NeMoGymResponseCreateParamsNonStreaming,
+        mcp_config: Optional[str] = None,
     ) -> NeMoGymResponse:
         body = body.model_copy(deep=True)
         if isinstance(body.input, str):
@@ -388,7 +448,11 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
         system_parts = [p for p in [self.config.system_prompt, input_system] if p]
         system_prompt = "\n\n".join(system_parts) if system_parts else None
 
-        stdout, model_name = await self._run_claude_code(user_message, system_prompt=system_prompt)
+        stdout, model_name = await self._run_claude_code(
+            user_message,
+            system_prompt=system_prompt,
+            mcp_config=mcp_config,
+        )
         output_items, usage = parse_stream_json(stdout)
 
         if not any(
@@ -427,6 +491,13 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
             ),
         )
 
+    async def responses(
+        self,
+        request: Request,
+        body: NeMoGymResponseCreateParamsNonStreaming = Body(),
+    ) -> NeMoGymResponse:
+        return await self._create_response(body)
+
     async def run(self, request: Request, body: ClaudeCodeAgentRunRequest) -> ClaudeCodeAgentVerifyResponse:
         async with self.sem:
             cookies = request.cookies
@@ -439,16 +510,12 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
             )
             await raise_for_status(seed_resp)
             cookies = seed_resp.cookies
+            seed_resp_json = await get_response_json(seed_resp)
 
-            agent_resp = await self.server_client.post(
-                server_name=self.config.name,
-                url_path="/v1/responses",
-                json=body.responses_create_params,
-                cookies=cookies,
-            )
-            await raise_for_status(agent_resp)
-            cookies = agent_resp.cookies
-            agent_resp_json = await get_response_json(agent_resp)
+            with tempfile.TemporaryDirectory(prefix="nemo_gym_claude_mcp_") as mcp_config_dir:
+                mcp_config = self._write_rollout_mcp_config(seed_resp_json, Path(mcp_config_dir))
+                agent_resp = await self._create_response(body.responses_create_params, mcp_config=mcp_config)
+                agent_resp_json = agent_resp.model_dump(mode="json")
 
             verify_resp = await self.server_client.post(
                 server_name=self.config.resources_server.name,

@@ -13,9 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import abstractmethod
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from typing import Any, Optional
+from uuid import uuid4
 
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel, PrivateAttr
+from starlette.datastructures import Headers
 
 from nemo_gym.config_types import AggregateMetrics, AggregateMetricsRequest
 from nemo_gym.openai_utils import (
@@ -23,7 +28,12 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseCreateParamsNonStreaming,
 )
 from nemo_gym.reward_profile import AggregateMetricsMixin, compute_aggregate_metrics
-from nemo_gym.server_utils import BaseRunServerInstanceConfig, BaseServer, SimpleServer
+from nemo_gym.server_utils import SESSION_ID_KEY, BaseRunServerInstanceConfig, BaseServer, SimpleServer
+
+
+NEMO_GYM_MCP_SESSION_TOKEN_HEADER = "X-NeMo-Gym-Session-Token"
+NEMO_GYM_MCP_METADATA_KEY = "mcp"
+_MCP_SESSION_TOKEN: ContextVar[Optional[str]] = ContextVar("nemo_gym_mcp_session_token", default=None)
 
 
 class BaseResourcesServerConfig(BaseRunServerInstanceConfig):
@@ -52,6 +62,32 @@ class BaseSeedSessionRequest(BaseModel):
 
 class BaseSeedSessionResponse(BaseModel):
     pass
+
+
+class MCPServerMetadata(BaseModel):
+    """Metadata returned from /seed_session for per-rollout Gym MCP access."""
+
+    server_name: str
+    url_path: str = "/mcp"
+    transport: str = "http"
+    headers: dict[str, str]
+
+
+class _MCPHeaderSessionMiddleware:
+    def __init__(self, app: Any):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        token = Headers(scope=scope).get(NEMO_GYM_MCP_SESSION_TOKEN_HEADER)
+        context_token = _MCP_SESSION_TOKEN.set(token)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _MCP_SESSION_TOKEN.reset(context_token)
 
 
 class SimpleResourcesServer(BaseResourcesServer, AggregateMetricsMixin, SimpleServer):
@@ -86,3 +122,77 @@ class SimpleResourcesServer(BaseResourcesServer, AggregateMetricsMixin, SimpleSe
             compute_metrics_fn=self.compute_metrics,
             get_key_metrics_fn=self.get_key_metrics,
         )
+
+
+class MCPResourcesServer(SimpleResourcesServer):
+    """SimpleResourcesServer variant that also exposes Gym-owned MCP tools.
+
+    Subclasses implement ``register_mcp_tools`` and call
+    ``build_mcp_session_metadata`` from ``seed_session``. MCP tools can then
+    call ``require_mcp_session_id`` to resolve the hidden per-rollout token to
+    the same Gym session id used by /seed_session and /verify.
+    """
+
+    mcp_url_path: str = "/mcp"
+    _mcp_session_id_by_token: dict[str, str] = PrivateAttr(default_factory=dict)
+
+    def setup_webserver(self) -> FastAPI:
+        app = super().setup_webserver()
+
+        try:
+            from mcp.server.fastmcp import FastMCP
+        except ImportError as exc:  # pragma: no cover - exercised only without the optional runtime dependency
+            raise RuntimeError(
+                "MCPResourcesServer requires the official MCP Python SDK. Install the 'mcp' package."
+            ) from exc
+
+        mcp = FastMCP(
+            self.config.name or self.__class__.__name__,
+            stateless_http=True,
+            json_response=True,
+            streamable_http_path="/",
+        )
+        self.register_mcp_tools(mcp)
+
+        main_app_lifespan = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def lifespan_wrapper(app: FastAPI):
+            async with mcp.session_manager.run():
+                async with main_app_lifespan(app) as maybe_state:
+                    yield maybe_state
+
+        app.router.lifespan_context = lifespan_wrapper
+        app.mount(self.mcp_url_path, _MCPHeaderSessionMiddleware(mcp.streamable_http_app()))
+        return app
+
+    @abstractmethod
+    def register_mcp_tools(self, mcp: Any) -> None:
+        pass
+
+    def build_mcp_session_metadata(self, request: Request) -> MCPServerMetadata:
+        session_id = request.session.get(SESSION_ID_KEY)
+        if not session_id:
+            session_id = str(uuid4())
+            request.session[SESSION_ID_KEY] = session_id
+
+        token = uuid4().hex
+        self._mcp_session_id_by_token[token] = session_id
+        return MCPServerMetadata(
+            server_name=self.config.name or self.__class__.__name__,
+            url_path=self.mcp_url_path,
+            headers={NEMO_GYM_MCP_SESSION_TOKEN_HEADER: token},
+        )
+
+    def require_mcp_session_id(self) -> str:
+        token = _MCP_SESSION_TOKEN.get()
+        if not token:
+            raise HTTPException(
+                status_code=401,
+                detail=f"Missing {NEMO_GYM_MCP_SESSION_TOKEN_HEADER} header for Gym MCP tool call.",
+            )
+
+        session_id = self._mcp_session_id_by_token.get(token)
+        if not session_id:
+            raise HTTPException(status_code=401, detail="Invalid Gym MCP session token.")
+        return session_id
