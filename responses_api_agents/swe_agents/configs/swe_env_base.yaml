@@ -1,0 +1,39 @@
+# Shared SWE-bench environment configuration (single source of truth).
+#
+# This file holds the SWE env leaves that are genuinely constant across the
+# OpenHands-based SWE-agent configs (swebench_openhands.yaml,
+# swebench_multi_tools.yaml, swebench_openhands_training.yaml). Those configs
+# pull each leaf in per-key via the `${inherit_from:<dotted.path>}` OmegaConf
+# directive (see nemo_gym/global_config.py::_recursively_swap_keys), e.g.:
+#
+#   agent_framework_commit: ${inherit_from:swe_env_base.shared.openhands.agent_framework_commit}
+#
+# `${inherit_from:...}` resolves against the fully-merged global config, so this
+# file must be co-loaded at launch. Each consuming config declares it in its own
+# `config_paths:`, and load_extra_config_paths() pulls nested config_paths in
+# transitively, so users still launch with just their one config (no usability
+# regression) -- same pattern as benchmarks/gsm8k/config.yaml chaining to
+# resources_servers/math_with_judge/configs/math_with_judge.yaml.
+#
+# The top-level `swe_env_base` key is intentionally NOT server-shaped (it has no
+# responses_api_models / resources_servers / responses_api_agents key) so it is
+# ignored by server-instance + almost-server detection and never started.
+#
+# NOTE: swebench_swe_agent.yaml is deliberately NOT a consumer of this file.
+# It uses a different agent framework (the nv-SWE-agent fork, with a different
+# agent_framework_repo/commit) and does not define apptainer_memory_limit_mb,
+# command_exec_timeout, or swebench_agent_timeout, so it shares none of these
+# constants. swebench_tests_timeout also legitimately differs (900 eval vs 1200
+# training) and is therefore left inline in each consuming config, not shared.
+swe_env_base:
+  shared:
+    # Constants common to every OpenHands-based SWE env block.
+    apptainer_memory_limit_mb: 32768
+    command_exec_timeout: 300
+    swebench_agent_timeout: 1800
+    # The OpenHands agent-framework fork pinned by the OpenHands configs. These
+    # are framework-specific (swebench_swe_agent.yaml pins a different fork) and
+    # so are scoped under `openhands`.
+    openhands:
+      agent_framework_repo: https://github.com/sdevare-nv/nv-OpenHands.git
+      agent_framework_commit: 25bacbc60f7491e562022d6021e155af6b92fccb  # pragma: allowlist secret

@@ -11,6 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Agent harness server for SWE-bench-style software-engineering evaluation tasks.
+
+This module wires up a Responses API agent that runs OpenHands inside a per-task
+sandbox to produce a code patch, then scores the patch by POSTing it to a separate
+verifier server. It defines the agent configuration, per-instance configuration,
+dataset/harness processors for the supported benchmark formats, the Ray worker that
+drives a single task, and the FastAPI server that exposes the agent endpoints.
+"""
+
 import asyncio
 import glob
 import importlib.util
@@ -24,7 +33,6 @@ import sys
 import time
 import uuid
 from asyncio import Semaphore
-from asyncio.subprocess import Process
 from contextlib import contextmanager
 from pathlib import Path
 from shutil import rmtree
@@ -34,11 +42,8 @@ from traceback import format_exc
 from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 import ray
-import tomlkit
-from gprof2dot import main as gprof2dot_main
 from openai.types.responses.function_tool import FunctionTool
 from pydantic import BaseModel, ConfigDict, Field
-from pydot import graph_from_dot_file
 
 from nemo_gym import PARENT_DIR
 from nemo_gym.base_resources_server import (
@@ -56,7 +61,7 @@ from nemo_gym.openai_utils import (
     NeMoGymResponse,
     NeMoGymResponseCreateParamsNonStreaming,
 )
-from nemo_gym.profiling import Profiler
+from nemo_gym.server_utils import get_response_json, raise_for_status
 from responses_api_models.vllm_model.app import VLLMConverter, split_responses_input_output_items
 
 
@@ -66,6 +71,8 @@ from responses_api_models.vllm_model.app import VLLMConverter, split_responses_i
 
 
 class AgentPromptOverride(BaseModel):
+    """Prompt and tool-naming overrides applied to a single agent run."""
+
     user_prompt_template: Optional[str] = Field(
         default=None,
         description="Path to the user prompt template file",
@@ -89,6 +96,8 @@ class AgentPromptOverride(BaseModel):
 
 
 class SWEBenchWrapperConfig(BaseResponsesAPIAgentConfig):
+    """Server-level configuration for the SWE-bench agent harness."""
+
     model_server: ModelServerRef
 
     # Agent framework configuration
@@ -131,10 +140,10 @@ class SWEBenchWrapperConfig(BaseResponsesAPIAgentConfig):
         default=False,
         description=(
             "If True, skip the agent run and use the sample's golden patch "
-            "(instance_dict['patch']) as the model patch. The eval container "
-            "still runs, so this verifies that the dataset sample actually "
-            "resolves when its golden patch is applied. Currently supported "
-            "for dataset_name == 'swe-bench-ext'."
+            "(instance_dict['patch']) as the model patch. The patch is graded via the "
+            "decoupled verifier (the same /verify POST the agent path uses), so this "
+            "verifies that the dataset sample actually resolves when its golden patch is "
+            "applied. Currently supported for dataset_name == 'swe-bench-ext'."
         ),
     )
 
@@ -153,8 +162,30 @@ class SWEBenchWrapperConfig(BaseResponsesAPIAgentConfig):
     openhands_should_log: bool = False
     debug: bool = False
 
+    # Retained (default True) for config compatibility; there is a single eval path and no branch to gate.
+    eval_via_verifier: bool = Field(
+        default=True,
+        description=(
+            "Run OpenHands in a single working sandbox via the decoupled swe_env infra "
+            "(acquire_sandbox + self-drive + output.jsonl patch extraction) and score the patch by "
+            "POSTing to the swe_env verifier (verifier_server_name). This is the only supported eval "
+            "path."
+        ),
+    )
+    verifier_server_name: Optional[str] = Field(
+        default=None,
+        description="Name of the resources_servers/swe_env verifier to POST /verify to when eval_via_verifier=True.",
+    )
+    sandbox_provider: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Single-key swe_env sandbox provider mapping for the decoupled path "
+        "(e.g. {'docker': {...}} or {'apptainer': {...}}). Defaults to apptainer when eval_via_verifier=True.",
+    )
+
 
 class SWEBenchWrapperServerConfig(BaseModel):
+    """Per-run server state computed once at startup (session id, setup dirs, results dir)."""
+
     ng_global_config_dict_str: str
     model_server_name: str
     openhands_setup_dir: Path
@@ -167,6 +198,8 @@ class SWEBenchWrapperServerConfig(BaseModel):
 
 
 class ExecuteContainerCommandArgs(BaseModel):
+    """Arguments describing a command to run inside a container and the file it produces."""
+
     command: str
     expected_file_pattern: str
     mode: Union[Literal["agent"], Literal["eval"]]
@@ -174,6 +207,12 @@ class ExecuteContainerCommandArgs(BaseModel):
 
 
 class SWEBenchWrapperInstanceConfig(SWEBenchWrapperServerConfig, SWEBenchWrapperConfig):
+    """Fully resolved configuration for a single task instance.
+
+    Combines the server-level config and per-run server state with the per-instance
+    problem info, paths, resolved prompt overrides, and timing inputs used by the worker.
+    """
+
     metrics_fpath: Path
     problem_info: Dict[str, Any]
     body: NeMoGymResponseCreateParamsNonStreaming
@@ -187,7 +226,8 @@ class SWEBenchWrapperInstanceConfig(SWEBenchWrapperServerConfig, SWEBenchWrapper
     output_for_eval_mounted_path: Path
     output_for_eval_path: Path
     model_patch_path: Path
-    container: str
+    # Not populated; the image is resolved via _resolve_image_name. Kept Optional/None for config compatibility.
+    container: Optional[str] = None
     eval_dir_in_openhands: str
     openhands_config_file_path: str
     agent_script_path: Path
@@ -206,7 +246,7 @@ class SWEBenchWrapperInstanceConfig(SWEBenchWrapperServerConfig, SWEBenchWrapper
     resolved_diversify_tool_names: Optional[bool] = False
     resolved_camel_case_tool_names: Optional[bool] = False
 
-    # Set later
+    # Optional fields that are not populated. Kept Optional/None to avoid config churn for callers that set them.
     eval_command: Optional[ExecuteContainerCommandArgs] = None
     eval_apptainer_command_str: Optional[str] = None
     agent_command: Optional[ExecuteContainerCommandArgs] = None
@@ -222,6 +262,8 @@ class SWEBenchWrapperInstanceConfig(SWEBenchWrapperServerConfig, SWEBenchWrapper
 
 
 class SWEBenchMetrics(BaseModel):
+    """Per-task outcome and timing metrics persisted and reported for a run."""
+
     resolved: Optional[bool] = None
     patch_exists: Optional[bool] = None
     model_patch: Optional[str] = None
@@ -247,6 +289,8 @@ class SWEBenchMetrics(BaseModel):
 
 
 class SWEBenchVerifyResponse(SWEBenchMetrics, BaseVerifyResponse):
+    """Verify response combining the reward/response payload with task metrics and config."""
+
     instance_config: SWEBenchWrapperInstanceConfig
 
 
@@ -256,6 +300,8 @@ class SWEBenchVerifyResponse(SWEBenchMetrics, BaseVerifyResponse):
 
 
 class BaseDatasetHarnessProcessor(BaseModel):
+    """Base class for dataset- and harness-specific setup and post-run processing."""
+
     config: SWEBenchWrapperConfig | SWEBenchWrapperInstanceConfig
 
     ########################################
@@ -267,13 +313,30 @@ class BaseDatasetHarnessProcessor(BaseModel):
         return Path(__file__).parent
 
     def _run_setup_command(self, command: str) -> None:
+        """Run a setup shell command and assert it exits successfully.
+
+        Args:
+            command: The shell command to execute.
+        """
         process = Popen(command, shell=True)
         return_code = process.wait()
         assert return_code == 0, f"Command failed: {command}"
 
     @contextmanager
     def _setup_directory_lock(self, setup_dir: Path, label: str):
-        """Cross-node lock using mkdir (atomic on Lustre/NFS, unlike fcntl.flock)."""
+        """Acquire a cross-node directory lock for the duration of the context.
+
+        Uses an atomic ``mkdir`` as the lock primitive so it works on shared filesystems
+        where advisory file locks are unreliable. Polls until the lock is acquired, breaking
+        a stale lock that is older than the threshold, and removes the lock on exit.
+
+        Args:
+            setup_dir: The directory whose setup is being guarded; the lock lives beside it.
+            label: Human-readable name used in log messages.
+
+        Yields:
+            None: Control once the lock is held.
+        """
         lock_dir = setup_dir.parent
         lock_dir.mkdir(parents=True, exist_ok=True)
         lock_path = lock_dir / f".{setup_dir.name}.lockdir"
@@ -309,22 +372,34 @@ class BaseDatasetHarnessProcessor(BaseModel):
         finally:
             shutil.rmtree(lock_path, ignore_errors=True)
 
-    # Setup method is sync for now since there's been no need to concurrently set up
+    # Setup method is sync since there's been no need to concurrently set up.
     def setup(self) -> Path:
-        pass
+        """Set up the dataset or harness for this processor.
 
-    def get_run_command(self) -> ExecuteContainerCommandArgs:
+        Returns:
+            Path: The setup directory. The base implementation does nothing.
+        """
         pass
 
     def postprocess_after_run(self, report_file: Path) -> None:
-        pass
+        """Post-process the run output, typically producing or rewriting the report file.
 
-    def _get_command_sleep_until_predictions_file(self) -> str:
-        return f"until [ -f {self.config.output_for_eval_mounted_path} ]; do sleep 5; done"
+        Args:
+            report_file: Path to the report file to read and/or write. The base
+                implementation does nothing.
+        """
+        pass
 
 
 class SweBenchDatasetProcessor(BaseDatasetHarnessProcessor):
+    """Dataset processor for SWE-bench tasks."""
+
     def setup(self) -> Path:
+        """Clone and install the SWE-bench harness under a locked setup directory.
+
+        Returns:
+            Path: The setup directory containing the prepared SWE-bench environment.
+        """
         swebench_repo = "https://github.com/HeyyyyyyG/SWE-bench.git"
         swebench_commit = "HEAD"
 
@@ -353,48 +428,16 @@ SWEBENCH_COMMIT={swebench_commit} \\
 
             return setup_dir
 
-    def get_run_command(self) -> ExecuteContainerCommandArgs:
-        swebench_cmd = (
-            f'date +"%s.%N" > {self.config.final_eval_apptainer_spinup_timestamp_mounted_fpath} && '
-            f"{self._get_command_sleep_until_predictions_file()} && "
-            # Use pre-built SWE-bench
-            "cd /swebench_setup/SWE-bench && "
-            # Set UV environment variables to use the mounted portable directories
-            f'export UV_INSTALL_DIR="{self.config.swebench_setup_dir}/uv" && '
-            f'export UV_PYTHON_INSTALL_DIR="{self.config.swebench_setup_dir}/python" && '
-            f'export PATH="{self.config.swebench_setup_dir}/uv/bin:$PATH" && '
-            f"ls -lrt /root/dataset && "
-            # Run with clean environment to avoid venv contamination
-            # Use the pre-built venv directly with its absolute path
-            f"env -u VIRTUAL_ENV {self.config.swebench_setup_dir}/SWE-bench/venv/bin/python -m swebench.harness.run_local_evaluation "
-            f"    --predictions_path {self.config.output_for_eval_mounted_path} "
-            f"    --instance_ids {self.config.instance_id} "
-            f"    --timeout {self.config.swebench_tests_timeout} "
-            f"    --dataset_name /root/dataset/data.jsonl "
-            f"    --split {self.config.problem_info['split']} "
-            f"    --run_id {self.config.agent_run_id} && "
-            f"cp -r logs/run_evaluation/{self.config.agent_run_id} /trajectories_mount/ && "
-            f"rm -rf logs/run_evaluation/{self.config.agent_run_id} && rm -rf *{self.config.agent_run_id}*"
-        )
-
-        # Execute SWE-bench evaluation command
-        search_path = os.path.join(
-            self.config.persistent_dir,
-            self.config.agent_run_id,
-            "**",
-            f"{self.config.instance_id}/report.json",
-        )
-
-        return ExecuteContainerCommandArgs(
-            command=swebench_cmd,
-            expected_file_pattern=search_path,
-            mode="eval",
-            timeout=self.config.swebench_tests_timeout + 120,
-        )
-
 
 class SweBenchMultilingualDatasetProcessor(BaseDatasetHarnessProcessor):
+    """Dataset processor for SWE-bench Multilingual tasks."""
+
     def setup(self) -> Path:
+        """Clone and install the SWE-bench Multilingual harness under a locked setup directory.
+
+        Returns:
+            Path: The setup directory containing the prepared environment.
+        """
         swebench_repo = "https://github.com/Kipok/SWE-bench.git"
         swebench_commit = "HEAD"
 
@@ -423,48 +466,18 @@ SWEBENCH_COMMIT={swebench_commit} \\
 
             return setup_dir
 
-    def get_run_command(self) -> ExecuteContainerCommandArgs:
-        swebench_cmd = (
-            f'date +"%s.%N" > {self.config.final_eval_apptainer_spinup_timestamp_mounted_fpath} && '
-            f"{self._get_command_sleep_until_predictions_file()} && "
-            # Use pre-built SWE-bench
-            "cd /swebench_multilingual_setup/SWE-bench_Multilingual && "
-            # Set UV environment variables to use the mounted portable directories
-            f'export UV_INSTALL_DIR="{self.config.swebench_multilingual_setup_dir}/uv" && '
-            f'export UV_PYTHON_INSTALL_DIR="{self.config.swebench_multilingual_setup_dir}/python" && '
-            f'export PATH="{self.config.swebench_multilingual_setup_dir}/uv/bin:$PATH" && '
-            f"ls -lrt /root/dataset && "
-            # Run with clean environment to avoid venv contamination
-            # Use the pre-built venv directly with its absolute path
-            f"env -u VIRTUAL_ENV {self.config.swebench_multilingual_setup_dir}/SWE-bench_Multilingual/venv/bin/python -m swebench.harness.run_local_evaluation "
-            f"    --predictions_path {self.config.output_for_eval_mounted_path} "
-            f"    --instance_ids {self.config.instance_id} "
-            f"    --timeout {self.config.swebench_tests_timeout} "
-            f"    --dataset_name /root/dataset/data.jsonl "
-            f"    --split {self.config.problem_info['split']} "
-            f"    --run_id {self.config.agent_run_id} && "
-            f"cp -r logs/run_evaluation/{self.config.agent_run_id} /trajectories_mount/ && "
-            f"rm -rf logs/run_evaluation/{self.config.agent_run_id} && rm -rf *{self.config.agent_run_id}*"
-        )
-
-        # Execute SWE-bench evaluation command
-        search_path = os.path.join(
-            self.config.persistent_dir,
-            self.config.agent_run_id,
-            "**",
-            f"{self.config.instance_id}/report.json",
-        )
-
-        return ExecuteContainerCommandArgs(
-            command=swebench_cmd,
-            expected_file_pattern=search_path,
-            mode="eval",
-            timeout=self.config.swebench_tests_timeout + 120,
-        )
-
 
 class R2EGymDatasetProcessor(BaseDatasetHarnessProcessor):
+    """Dataset processor for R2E-Gym tasks."""
+
     def setup(self) -> Path:
+        """Clone and install the R2E-Gym harness under a locked setup directory.
+
+        Verifies an existing install by importing ``r2egym`` and rebuilds if missing.
+
+        Returns:
+            Path: The setup directory containing the prepared R2E-Gym environment.
+        """
         eval_harness_repo = "https://github.com/sdevare-nv/nv-R2E-Gym.git"
         eval_harness_commit = "local-eval"
 
@@ -501,137 +514,19 @@ EVAL_HARNESS_COMMIT={eval_harness_commit} \\
 
             return setup_dir
 
-    def get_run_command(self) -> ExecuteContainerCommandArgs:
-        r2e_gym_cmd = (
-            f'date +"%s.%N" > {self.config.final_eval_apptainer_spinup_timestamp_mounted_fpath} && '
-            f"{self._get_command_sleep_until_predictions_file()} && "
-            # Use mounted directory path for cd
-            "cd /r2egym_setup/R2E-Gym && "
-            # Set UV environment variables to use the mounted portable directories
-            f'export UV_INSTALL_DIR="{self.config.r2e_gym_setup_dir}/uv" && '
-            f'export UV_PYTHON_INSTALL_DIR="{self.config.r2e_gym_setup_dir}/python" && '
-            f'export PATH="{self.config.r2e_gym_setup_dir}/uv/bin:$PATH" && '
-            # Run with clean environment to avoid venv contamination
-            # Use the pre-built venv directly with its absolute path
-            f"env -u VIRTUAL_ENV {self.config.r2e_gym_setup_dir}/R2E-Gym/venv/bin/python src/r2egym/agenthub/run/run_local_evaluation.py "
-            f"    --predictions_path {self.config.output_for_eval_mounted_path} "
-            f"    --instance_id {self.config.instance_id} "
-            f"    --timeout {self.config.swebench_tests_timeout} "
-            f"    --dataset /root/dataset/data.jsonl "
-            f"    --output_dir /trajectories_mount/eval-outputs/{self.config.agent_run_id}"
-        )
-
-        search_path = os.path.join(
-            self.config.persistent_dir,
-            "eval-outputs",
-            self.config.agent_run_id,
-            "report.json",
-        )
-
-        return ExecuteContainerCommandArgs(
-            command=r2e_gym_cmd,
-            expected_file_pattern=search_path,
-            mode="eval",
-            timeout=self.config.swebench_tests_timeout + 120,
-        )
-
 
 class NVInternalDatasetProcessor(BaseDatasetHarnessProcessor):
-    def get_run_command(self) -> ExecuteContainerCommandArgs:
-        instance_dict = json.loads(self.config.problem_info["instance_dict"])
-        base_dockerfile = instance_dict.get("base_dockerfile", "")
-        instance_dockerfile = instance_dict.get("instance_dockerfile", "")
-
-        env_lines = []
-        for line in (base_dockerfile + "\n" + instance_dockerfile).split("\n"):
-            line = line.strip()
-            if line.startswith("ENV "):
-                # Convert ENV KEY=VALUE or ENV KEY VALUE to export KEY="VALUE"
-                export_line = line.replace("ENV ", "export ", 1)
-                # Handle both Docker ENV formats:
-                # 1. ENV KEY=VALUE (with equals)
-                # 2. ENV KEY VALUE (space-separated)
-                if "=" in export_line:
-                    # Format: export KEY=VALUE -> normalize spaces around =
-                    export_line = re.sub(r"\s*=\s*", "=", export_line)
-                else:
-                    # Format: export KEY VALUE -> convert to export KEY="VALUE"
-                    parts = export_line.split(None, 2)  # Split into at most 3 parts
-                    if len(parts) >= 3:  # export KEY VALUE
-                        key = parts[1]
-                        value = parts[2]
-                        export_line = f'export {key}="{value}"'
-
-                env_lines.append(export_line)
-
-        env_exports = "\n".join(env_lines)
-
-        # Get repo setup command
-        repo_cmd = instance_dict.get("before_repo_set_cmd", "").strip()
-        if repo_cmd:
-            repo_cmd = repo_cmd.split("\n")[-1]
-
-        # Get test files
-        test_files_str = instance_dict.get("selected_test_files_to_run", "[]")
-        if isinstance(test_files_str, str):
-            test_files = ",".join(eval(test_files_str))
-        else:
-            test_files = ",".join(test_files_str)
-
-        run_script = instance_dict["run_script.sh"]
-        parsing_script = instance_dict["parsing_script.py"]
-        run_script_path = self.config.persistent_dir / "run_script.sh"
-        parsing_script_path = self.config.persistent_dir / "parsing_script.py"
-        with open(run_script_path, "w") as f:
-            f.write(run_script)
-        with open(parsing_script_path, "w") as f:
-            f.write(parsing_script)
-
-        cmd = f"""#!/bin/bash
-set -e
-
-date +\"%s.%N\" > {self.config.final_eval_apptainer_spinup_timestamp_mounted_fpath}
-
-{self._get_command_sleep_until_predictions_file()}
-
-{env_exports}
-
-# Apply patch
-cd /app
-git reset --hard {instance_dict.get("base_commit", "")}
-git checkout {instance_dict.get("base_commit", "")}
-
-# Apply patch with rejection to handle conflicts
-git apply --ignore-space-change --ignore-whitespace --reject -v /root/patch.diff || true
-
-# Setup repository
-{repo_cmd}
-
-# Run tests
-bash /root/run_script.sh {test_files} > /root/stdout.log 2> /root/stderr.log || true
-
-# Parse results
-python /root/parsing_script.py /root/stdout.log /root/stderr.log /root/output.json
-
-# Move outputs to the mounted directory
-mkdir -p /trajectories_mount/eval_results
-cp /root/output.json /trajectories_mount/eval_results/output.json
-"""
-
-        search_path = os.path.join(
-            self.config.persistent_dir,
-            "eval_results",
-            "output.json",
-        )
-
-        return ExecuteContainerCommandArgs(
-            command=cmd,
-            expected_file_pattern=search_path,
-            mode="eval",
-            timeout=self.config.swebench_tests_timeout,
-        )
+    """Dataset processor for the nv-internal dataset format."""
 
     def postprocess_after_run(self, report_file: Path) -> None:
+        """Grade the test results and overwrite the report file with a resolution summary.
+
+        Reads the fail-to-pass and pass-to-pass test sets from the instance, checks whether
+        they all passed, and writes a report keyed by instance id.
+
+        Args:
+            report_file: Path to the report file containing raw test results; rewritten in place.
+        """
         instance_dict = json.loads(self.config.problem_info["instance_dict"])
 
         fail_to_pass_str = instance_dict.get("fail_to_pass_select", instance_dict.get("fail_to_pass", "[]"))
@@ -673,6 +568,17 @@ cp /root/output.json /trajectories_mount/eval_results/output.json
         f2p: set[str],
         p2p: set[str],
     ) -> bool:
+        """Check whether every required test passed.
+
+        Args:
+            test_results: Parsed test results, a mapping with a ``tests`` list of
+                ``{"name", "status"}`` entries.
+            f2p: Set of fail-to-pass test names that must pass.
+            p2p: Set of pass-to-pass test names that must pass.
+
+        Returns:
+            bool: True if all required tests passed, otherwise False.
+        """
         if not test_results:
             return False
 
@@ -687,6 +593,17 @@ cp /root/output.json /trajectories_mount/eval_results/output.json
 
 
 def _load_rebench_log_parsers(rebench_repo_dir: Path):
+    """Dynamically import the SWE-rebench log-parsers module from a checked-out repo.
+
+    Temporarily prepends the repo directories to ``sys.path`` so the module's own imports
+    resolve, loads it from its file location, and restores ``sys.path`` afterward.
+
+    Args:
+        rebench_repo_dir: Path to the checked-out SWE-rebench repository.
+
+    Returns:
+        module: The loaded log-parsers module.
+    """
     lp_path = rebench_repo_dir / "lib" / "agent" / "log_parsers.py"
     if not lp_path.exists():
         lp_path = rebench_repo_dir / "agent" / "log_parsers.py"
@@ -711,7 +628,14 @@ def _load_rebench_log_parsers(rebench_repo_dir: Path):
 
 
 class SWERebenchDatasetProcessor(BaseDatasetHarnessProcessor):
+    """Dataset processor for SWE-rebench tasks."""
+
     def setup(self) -> Path:
+        """Clone the SWE-rebench repository under a locked setup directory.
+
+        Returns:
+            Path: The setup directory containing the prepared SWE-rebench environment.
+        """
         setup_dir = self.parent_dir / "swe_rebench_setup"
 
         with self._setup_directory_lock(setup_dir, "SWE-rebench"):
@@ -734,6 +658,14 @@ REBENCH_DIR={rebench_dir} \
 
     @staticmethod
     def _normalize_test_name(name: str) -> str:
+        """Strip trailing timing annotations from a test name and trim whitespace.
+
+        Args:
+            name: The raw test name as parsed from the test output.
+
+        Returns:
+            str: The normalized test name.
+        """
         _REBENCH_TIMING_NORMALIZE_RES = [
             re.compile(r"\s*\[\s*\d+(?:\.\d+)?\s*(?:ms|s)\s*\]\s*$", re.IGNORECASE),
             re.compile(r"\s+in\s+\d+(?:\.\d+)?\s+(?:msec|sec)\b", re.IGNORECASE),
@@ -743,96 +675,17 @@ REBENCH_DIR={rebench_dir} \
             name = pattern.sub("", name)
         return name.strip()
 
-    def get_run_command(self) -> ExecuteContainerCommandArgs:
-        instance_dict = json.loads(self.config.problem_info["instance_dict"])
-        install_config = instance_dict.get("install_config", {})
-        test_cmds = install_config.get("test_cmd", [])
-        if isinstance(test_cmds, str):
-            test_cmds = [test_cmds]
-        install_cmds = install_config.get("install", [])
-        if isinstance(install_cmds, str):
-            install_cmds = [install_cmds]
-        # log_parser_name = install_config.get("log_parser", "")
-
-        repo = instance_dict.get("repo", "")
-        repo_name = repo.split("/")[1] if "/" in repo else repo
-
-        test_patch = instance_dict.get("test_patch", "")
-        test_patch_path = self.config.persistent_dir / "test_patch.diff"
-        test_patch_path.write_text(test_patch)
-
-        fail_to_pass = instance_dict.get("FAIL_TO_PASS", [])
-        pass_to_pass = instance_dict.get("PASS_TO_PASS", [])
-        if isinstance(fail_to_pass, str):
-            fail_to_pass = json.loads(fail_to_pass)
-        if isinstance(pass_to_pass, str):
-            pass_to_pass = json.loads(pass_to_pass)
-
-        # Write test metadata to files to avoid exceeding OS argument length limits
-        eval_meta_dir = self.config.persistent_dir / "eval_meta"
-        eval_meta_dir.mkdir(parents=True, exist_ok=True)
-        # Pre-normalize all expected test names so the in-container eval script
-        # can compare directly without duplicating the normalization regexes.
-        norm_fail_to_pass = sorted(self._normalize_test_name(n) for n in fail_to_pass)
-        norm_pass_to_pass = sorted(self._normalize_test_name(n) for n in pass_to_pass)
-        (eval_meta_dir / "expected_passed.json").write_text(
-            json.dumps(sorted(set(norm_fail_to_pass + norm_pass_to_pass)))
-        )
-        (eval_meta_dir / "fail_to_pass.json").write_text(json.dumps(norm_fail_to_pass))
-        (eval_meta_dir / "pass_to_pass.json").write_text(json.dumps(norm_pass_to_pass))
-
-        install_block = "\n".join(install_cmds) if install_cmds else ""
-        test_block = "\n".join(test_cmds)
-
-        cmd = f"""#!/bin/bash
-set -e
-
-date +\"%s.%N\" > {self.config.final_eval_apptainer_spinup_timestamp_mounted_fpath}
-
-{self._get_command_sleep_until_predictions_file()}
-
-cd /{repo_name}
-git reset --hard HEAD
-
-# Apply model patch
-git apply --reject --recount --ignore-space-change --whitespace=nowarn /root/patch.diff || true
-
-# Apply test patch
-git apply --reject --recount --ignore-space-change --whitespace=nowarn /root/test_patch.diff || true
-
-# Run install commands (non-fatal, some may fail harmlessly)
-set +e
-{install_block}
-set -e
-
-# Run tests and write output to bind-mounted path (parsed on host, no python3 needed)
-mkdir -p /trajectories_mount/eval_results
-set +e
-(
-{test_block}
-) > /trajectories_mount/eval_results/test_output.log 2>&1
-TEST_EXIT=$?
-set -e
-
-printf '{{"_test_completed": true, "exit_code": %d}}\\n' $TEST_EXIT \
-  > /trajectories_mount/eval_results/report.json
-"""
-
-        search_path = os.path.join(
-            self.config.persistent_dir,
-            "eval_results",
-            "report.json",
-        )
-
-        return ExecuteContainerCommandArgs(
-            command=cmd,
-            expected_file_pattern=search_path,
-            mode="eval",
-            timeout=self.config.swebench_tests_timeout,
-        )
-
     def postprocess_after_run(self, report_file: Path) -> None:
-        """Parse test output on the host (avoids needing python3 inside the container)."""
+        """Parse SWE-rebench test output on the host and write a resolution report.
+
+        Loads the instance-specific log parser, normalizes the parsed test names, compares
+        them against the expected fail-to-pass and pass-to-pass sets, and writes a report
+        keyed by instance id. Parsing on the host avoids requiring Python inside the container.
+
+        Args:
+            report_file: Path to the report file to write; the sibling ``test_output.log``
+                in the same directory supplies the raw test output.
+        """
         report_path = Path(report_file)
         test_output_path = report_path.parent / "test_output.log"
 
@@ -903,128 +756,18 @@ printf '{{"_test_completed": true, "exit_code": %d}}\\n' $TEST_EXIT \
 class SweBenchExtDatasetProcessor(BaseDatasetHarnessProcessor):
     """Dataset processor for SWE-Bench-Ext format tasks."""
 
-    def _get_instance_dict(self) -> dict:
-        raw = self.config.problem_info.get("instance_dict", "{}")
-        if isinstance(raw, str):
-            return json.loads(raw)
-        return raw
-
-    def get_run_command(self) -> ExecuteContainerCommandArgs:
-        from responses_api_agents.swe_agents.swe_bench_ext.frameworks import (
-            get_framework_config,
-            get_test_command_with_output,
-        )
-
-        inst = self._get_instance_dict()
-
-        base_command = inst.get("test_command", "")
-        base_commit = inst.get("base_commit", "")
-        test_patch = inst.get("test_patch", "")
-        test_framework = inst.get("test_framework", "")
-
-        # Write test patch to persistent_dir (mounted into container)
-        test_patch_path = self.config.persistent_dir / "test_patch.diff"
-        test_patch_path.write_text(test_patch)
-
-        # Write eval metadata for host-side postprocessing
-        fail_to_pass = inst.get("FAIL_TO_PASS", inst.get("fail_to_pass", []))
-        pass_to_pass = inst.get("PASS_TO_PASS", inst.get("pass_to_pass", []))
-        if isinstance(fail_to_pass, str):
-            fail_to_pass = json.loads(fail_to_pass)
-        if isinstance(pass_to_pass, str):
-            pass_to_pass = json.loads(pass_to_pass)
-
-        eval_meta_dir = self.config.persistent_dir / "eval_meta"
-        eval_meta_dir.mkdir(parents=True, exist_ok=True)
-        (eval_meta_dir / "fail_to_pass.json").write_text(json.dumps(fail_to_pass))
-        (eval_meta_dir / "pass_to_pass.json").write_text(json.dumps(pass_to_pass))
-        (eval_meta_dir / "test_framework.txt").write_text(test_framework)
-
-        reset_cmd = f"git reset --hard {base_commit}" if base_commit else ""
-
-        # Use lighthouse to add structured output flags (--json, --junitxml, etc.)
-        # This is the same transformation swe_bench_ext_agent/task.py applies.
-        test_cmd = get_test_command_with_output(base_command, test_framework)
-        config = get_framework_config(test_framework, base_command)
-        result_file = config.get("result_file")
-
-        # Build the result file dump block (mirrors task.py's generate_test_run_script)
-        result_file_block = ""
-        if result_file:
-            if "*" in result_file:
-                result_file_block = f"""
-echo "<<<SWE_BENCH_EXT_RESULT_FILE_START>>>"
-for f in {result_file}; do
-    if [ -f "$f" ]; then
-        echo "=== FILE: $f ==="
-        cat "$f"
-        echo ""
-    fi
-done 2>/dev/null || true
-echo "<<<SWE_BENCH_EXT_RESULT_FILE_END>>>"
-"""
-            else:
-                result_file_block = f"""
-echo "<<<SWE_BENCH_EXT_RESULT_FILE_START>>>"
-if [ -f "{result_file}" ]; then
-    cat "{result_file}"
-fi
-echo "<<<SWE_BENCH_EXT_RESULT_FILE_END>>>"
-"""
-
-        cmd = f"""#!/bin/bash
-set -o pipefail
-
-date +\"%s.%N\" > {self.config.final_eval_apptainer_spinup_timestamp_mounted_fpath}
-
-{self._get_command_sleep_until_predictions_file()}
-
-# Try common repo locations in the container
-cd /testbed 2>/dev/null || cd /workspace/repo 2>/dev/null || cd /app 2>/dev/null || true
-
-# Reset to base commit if specified
-{reset_cmd}
-
-# Apply model patch (agent output or golden patch)
-git apply --reject --recount --ignore-space-change --ignore-whitespace /root/patch.diff || true
-
-# Apply test patch (adds/modifies test files)
-git apply --reject --recount --ignore-space-change --ignore-whitespace /root/test_patch.diff || true
-
-# Run tests with structured output and capture to log
-mkdir -p /trajectories_mount/eval_results /workspace/test-results
-set +e
-(
-echo "<<<SWE_BENCH_EXT_TEST_OUTPUT_START>>>"
-{test_cmd}
-test_exit_code=$?
-{result_file_block}
-echo "<<<SWE_BENCH_EXT_TEST_OUTPUT_END>>>"
-exit $test_exit_code
-) > /trajectories_mount/eval_results/test_output.log 2>&1
-TEST_EXIT=$?
-set -e
-
-printf '{{"_test_completed": true, "exit_code": %d}}\\n' $TEST_EXIT \
-  > /trajectories_mount/eval_results/report.json
-"""
-
-        search_path = os.path.join(
-            self.config.persistent_dir,
-            "eval_results",
-            "report.json",
-        )
-
-        return ExecuteContainerCommandArgs(
-            command=cmd,
-            expected_file_pattern=search_path,
-            mode="eval",
-            timeout=self.config.swebench_tests_timeout,
-        )
-
     def postprocess_after_run(self, report_file: Path) -> None:
-        """Parse test output on the host using lighthouse's parsing library."""
-        from responses_api_agents.swe_agents.swe_bench_ext.utils import parse_and_check_tests
+        """Parse SWE-Bench-Ext test output on the host and write a resolution report.
+
+        Reads the test framework and the fail-to-pass and pass-to-pass sets from the
+        instance's eval metadata, parses the raw test output, and writes a report keyed by
+        instance id. Parsing on the host avoids requiring Python inside the container.
+
+        Args:
+            report_file: Path to the report file to write; the sibling ``test_output.log``
+                in the same directory supplies the raw test output.
+        """
+        from responses_api_agents.swe_env.parsing import parse_and_check_tests
 
         report_path = Path(report_file)
         test_output_path = report_path.parent / "test_output.log"
@@ -1062,7 +805,14 @@ printf '{{"_test_completed": true, "exit_code": %d}}\\n' $TEST_EXIT \
 
 
 class OpenHandsHarnessProcessor(BaseDatasetHarnessProcessor):
+    """Harness processor that installs the OpenHands agent framework."""
+
     def setup(self) -> Path:
+        """Clone and install the OpenHands agent framework under a locked setup directory.
+
+        Returns:
+            Path: The setup directory containing the prepared OpenHands install.
+        """
         setup_dir = self.parent_dir / "swe_openhands_setup"
 
         with self._setup_directory_lock(setup_dir, "OpenHands"):
@@ -1088,162 +838,6 @@ AGENT_FRAMEWORK_COMMIT={self.config.agent_framework_commit} \\
 
             return setup_dir
 
-    def get_run_command(self) -> ExecuteContainerCommandArgs:
-        data_point = self.config.problem_info
-        agent_run_id = self.config.agent_run_id
-
-        agent_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs/oh_config.toml")
-
-        # Add parameters to config.toml
-        # TODO(sugam): is there a better way to do this?
-        with open(agent_config, "r") as f:
-            config = tomlkit.parse(f.read())
-
-        config["llm"]["model"] |= {
-            "model": self.config.body.model,
-            "base_url": "",  # May need to populate this
-            "temperature": self.config.inference_params["temperature"],
-            "top_p": self.config.inference_params["top_p"],
-        }
-
-        config_str = tomlkit.dumps(config)
-
-        eval_dir_in_openhands = self.config.eval_dir_in_openhands
-        local_dataset_path = "/root/dataset/data.jsonl"
-        config_file_path = self.config.openhands_config_file_path
-
-        assert self.config.openhands_setup_dir is not None, "OpenHands setup directory is not set"
-
-        if self.config.debug:
-            profiling_cmd = f"export NG_PROFILING_DIR={self.config.profiling_mounted_dir} && "
-        else:
-            profiling_cmd = ""
-
-        if self.config.openhands_should_log:
-            log_cmd = "export LOG_LEVEL=DEBUG && export LOG_TO_FILE=true && export NG_OPENHANDS_SHOULD_LOG=true && "
-        else:
-            log_cmd = (
-                "export LOG_LEVEL=CRITICAL && "
-                "export DEBUG=False && "
-                "export DEBUG_LLM=False && "
-                "export LOG_TO_FILE=False && "
-                "export LOG_ALL_EVENTS=False && "
-                "export DEBUG_RUNTIME=False && "
-            )
-
-        if data_point["dataset_name"] == "nv-internal-1" or data_point["dataset_name"] == "swe-bench-ext":
-            crypto_fix_cmd = (
-                "_crypto_fix_dir=$(mktemp -d /tmp/crypto_fix_XXXXXX) && "
-                "/openhands_setup/OpenHands/.venv/bin/python -m pip install "
-                "    --target=$_crypto_fix_dir "
-                "    --index-url https://pypi.org/simple "
-                "    --trusted-host pypi.org --trusted-host files.pythonhosted.org "
-                "    --only-binary :all: "
-                "    --no-deps --no-cache-dir "
-                "    --quiet "
-                "    'cryptography<43' && "
-                "export PYTHONPATH=$_crypto_fix_dir:${PYTHONPATH:-} &&"
-            )
-        else:
-            crypto_fix_cmd = ""
-
-        if self.config.resolved_diversify_tool_names:
-            diversify_tool_names_cmd = "export DIVERSIFY_TOOL_NAMES=true &&"
-        else:
-            diversify_tool_names_cmd = ""
-
-        if self.config.resolved_camel_case_tool_names:
-            camel_case_tool_names_cmd = "export CAMEL_CASE_TOOL_NAMES=true &&"
-        else:
-            camel_case_tool_names_cmd = ""
-
-        workspace_check_cmd = ""
-
-        agent_main_cmd = (
-            f"{workspace_check_cmd}"
-            # Add miniforge bin to PATH (for tmux, node, poetry, etc.)
-            "mkdir -p /tmp/ && "
-            "export PATH=/openhands_setup/miniforge3/bin:$PATH && "
-            # Setup tmux socket (OpenHands requirement)
-            "uid=$(id -ru 2>/dev/null || id -u) && "
-            "export TMUX_TMPDIR=/tmp && "
-            "export TMUX=/tmp/tmux-$uid/default && "
-            "mkdir -p /tmp/tmux-$uid && "
-            "chown $uid:$uid /tmp/tmux-$uid || true && "
-            "chmod 700 /tmp/tmux-$uid && "
-            "tmux -S /tmp/tmux-$uid/default start-server || true && "
-            "cp /openhands_setup/miniforge3/bin/jq /usr/local/bin/jq 2>/dev/null || true && "
-            # Use pre-built OpenHands
-            "cd /openhands_setup/OpenHands && "
-            "export RUNTIME=local && "
-            f'date +"%s.%N" > {self.config.generation_apptainer_spinup_timestamp_mounted_fpath} && '
-            f"{log_cmd}"
-            f"{profiling_cmd}"
-            f"export NEMO_GYM_METRICS_FPATH={self.config.base_mounted_dir}/nemo_gym_metrics.json && "
-            f"export NEMO_GYM_CONFIG_DICT={self.config.ng_global_config_dict_str} && "
-            f"export NEMO_GYM_MODEL_SERVER_NAME={self.config.model_server_name} &&"
-            "export VIRTUAL_ENV=/openhands_setup/OpenHands/.venv && "
-            "export PATH=$PATH:/openhands_setup/OpenHands/.venv/bin && "
-            # CRITICAL: Configure poetry to only use the OpenHands venv (ignore external venvs)
-            "export POETRY_VIRTUALENVS_IN_PROJECT=true && "
-            "export POETRY_VIRTUALENVS_CREATE=false && "
-            "export POETRY_VIRTUALENVS_PATH=/openhands_setup/OpenHands && "
-            f"export TMUX_MEMORY_LIMIT={self.config.apptainer_memory_limit_mb} && "
-            f"export COMMAND_EXEC_TIMEOUT={self.config.command_exec_timeout} && "
-            f"{crypto_fix_cmd}"
-            f"{diversify_tool_names_cmd}"
-            f"{camel_case_tool_names_cmd}"
-            f"echo {shlex.quote(config_str)} >{config_file_path} && "
-            # f" export EVAL_OUTPUT_DIR={eval_dir_in_openhands} && "
-            f"./evaluation/benchmarks/swe_bench/scripts/run_infer.sh "
-            f"    llm.model "  # name of llm config section in config.toml
-            f"    {self.config.agent_framework_commit} "  # openhands commit
-            f"    {self.config.resolved_agent_cls} "  # agent
-            f"    0 "  # Note: this is eval limit which randomly chooses an instance from the dataset
-            f"    {self.config.agent_max_turns} "  # max agent iterations
-            f"    1 "  # number of workers
-            f"    {data_point['dataset_name']} "  # dataset name
-            f"    {data_point['split']} "  # dataset split
-            f"    {eval_dir_in_openhands} "
-            f"    {data_point['instance_id']} "
-            f"    {local_dataset_path} "
-            f"    {config_file_path}"
-        )
-
-        if self.config.resolved_user_prompt_template is not None:
-            agent_main_cmd += "    /openhands_setup/OpenHands/user_prompt.j2 "
-        if self.config.resolved_user_prompt_template is not None:
-            agent_main_cmd += "    /openhands_setup/OpenHands/system_prompt.j2 "
-            agent_main_cmd += "    /openhands_setup/OpenHands/system_prompt_long_horizon.j2 "
-
-        agent_script_name = f"agent_script_{agent_run_id}.sh"
-        agent_script_path = self.config.persistent_dir / agent_script_name
-        with open(agent_script_path, "w") as f:
-            f.write("#!/bin/bash\nset -e\n")
-            f.write(agent_main_cmd)
-            f.flush()
-            os.fsync(f.fileno())
-
-        agent_timeout_seconds = self.config.swebench_agent_timeout
-        openhands_cmd = (
-            f"timeout --signal=TERM --kill-after=30 {agent_timeout_seconds} "
-            f"bash /trajectories_mount/{agent_script_name}"
-        )
-
-        search_path = os.path.join(
-            self.config.openhands_setup_dir / "OpenHands" / eval_dir_in_openhands,
-            "**",
-            "output.jsonl",
-        )
-
-        # Execute OpenHands command
-        return ExecuteContainerCommandArgs(
-            command=openhands_cmd,
-            expected_file_pattern=search_path,
-            mode="agent",
-            timeout=self.config.swebench_agent_timeout + 60,
-        )
-
 
 ########################################
 # START Ray worker logic
@@ -1251,6 +845,15 @@ AGENT_FRAMEWORK_COMMIT={self.config.agent_framework_commit} \\
 
 
 def _classify_agent_error(err: Optional[str]) -> Optional[str]:
+    """Classify an agent error message into a coarse failure-mode category.
+
+    Args:
+        err: The agent error message, or None/empty if the agent finished cleanly.
+
+    Returns:
+        Optional[str]: One of ``"max_iteration"``, ``"context_window"``,
+        ``"stuck_in_loop"``, or ``"other"``; None when there is no error.
+    """
     if not err:
         return None
     s = str(err)
@@ -1263,6 +866,53 @@ def _classify_agent_error(err: Optional[str]) -> Optional[str]:
     return "other"
 
 
+def _resolve_image_name(container_formatter: "str | list[str]", instance_id: str) -> str:
+    """Resolve a sandbox image name from a container formatter template.
+
+    Substitutes the instance id into the template (replacing ``__`` with ``_1776_`` and
+    lowercasing) and strips a leading ``docker://`` scheme. For the default docker SWE-bench
+    formatter this yields a Docker Hub image name; apptainer/.sif resolution is owned by the provider.
+
+    Args:
+        container_formatter: A template string, or a list whose first element is used,
+            optionally containing the ``{instance_id}`` placeholder.
+        instance_id: The task instance id to substitute into the template.
+
+    Returns:
+        str: The resolved image name with any ``docker://`` prefix removed.
+    """
+    fmt = container_formatter[0] if isinstance(container_formatter, list) else container_formatter
+    if "{instance_id}" in fmt:
+        fmt = fmt.format(instance_id=instance_id.replace("__", "_1776_").lower())
+    return fmt[len("docker://") :] if fmt.startswith("docker://") else fmt
+
+
+def _should_mask_sample(
+    resolved: bool,
+    agent_error_kind: Optional[str],
+    eval_timed_out: bool,
+    agent_timed_out: bool,
+) -> bool:
+    """Decide whether to mask this sample from the GRPO gradient.
+
+    A sample is masked when: the patch passed eval but the agent did not actually submit
+    (max-turns or context window), so the reward is accidental; the final eval timed out;
+    or the agent itself timed out on wall-clock.
+
+    Args:
+        resolved: Whether the task was scored as resolved.
+        agent_error_kind: The classified agent failure mode, or None if the agent finished cleanly.
+        eval_timed_out: Whether evaluation timed out.
+        agent_timed_out: Whether the agent timed out.
+
+    Returns:
+        bool: True if the sample should be masked.
+    """
+    return bool(
+        (resolved and agent_error_kind in ("max_iteration", "context_window")) or eval_timed_out or agent_timed_out
+    )
+
+
 @ray.remote(
     scheduling_strategy="SPREAD",
     runtime_env={
@@ -1271,7 +921,18 @@ def _classify_agent_error(err: Optional[str]) -> Optional[str]:
     num_cpus=0.1,
 )
 def runner_ray_remote(params_dict: dict[str, Any]) -> Optional[Path]:
-    # For some reason Ray may not pick up the proper model fields if we don't rebuild the model here. Very strange.
+    """Ray remote entrypoint that runs a single task instance in a worker.
+
+    Validates the instance config from the serialized dict and drives the OpenHands agent
+    for that task.
+
+    Args:
+        params_dict: Serialized ``SWEBenchWrapperInstanceConfig`` for the task.
+
+    Returns:
+        Optional[Path]: The report file path if one is produced, otherwise None.
+    """
+    # Ray may not pick up the proper model fields unless the models are rebuilt here.
     SWEBenchWrapperInstanceConfig.model_rebuild(force=True)
     RunOpenHandsAgent.model_rebuild(force=True)
 
@@ -1283,6 +944,15 @@ def runner_ray_remote(params_dict: dict[str, Any]) -> Optional[Path]:
 
 
 def update_metrics(metrics_fpath: Path, update_dict: Dict[str, Any]) -> None:
+    """Merge non-null metric values into the JSON metrics file on disk.
+
+    Reads the existing metrics, drops null entries from both the existing and update
+    dicts, merges them (update values winning), and writes the result back.
+
+    Args:
+        metrics_fpath: Path to the JSON metrics file to read and rewrite.
+        update_dict: Metric values to merge in; null values are ignored.
+    """
     with metrics_fpath.open() as f:
         existing_dict = json.loads(f.read())
 
@@ -1305,18 +975,25 @@ def update_metrics(metrics_fpath: Path, update_dict: Dict[str, Any]) -> None:
 #     return data
 
 
-class ActiveContainerCommand(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    process: Process
-    log_file: Any
-    log_file_path: Path
-
-
 class RunOpenHandsAgent(BaseModel):
+    """Drives a single OpenHands agent run for one task instance and collects its output."""
+
     config: SWEBenchWrapperInstanceConfig
 
     def _openhands_dir_copy_from_host(self, output_file_path: Optional[str]) -> Optional[str]:
+        """Copy an OpenHands run's output and latest LLM completion off the eval directory.
+
+        Locates the run's ``output.jsonl`` (falling back to the most recent one under the eval
+        directory) and copies it to the configured prediction path, copies the latest LLM
+        completion into the trajectories tree, then removes the eval directory and config file.
+
+        Args:
+            output_file_path: Path to the run output file, relative to the eval directory or
+                absolute; if falsy, no output is copied.
+
+        Returns:
+            Optional[str]: The destination path of the copied output, or None if none was copied.
+        """
         data_point = self.config.problem_info
         eval_dir_in_openhands = self.config.eval_dir_in_openhands
         config_file_path = self.config.openhands_config_file_path
@@ -1360,204 +1037,143 @@ class RunOpenHandsAgent(BaseModel):
 
         return dest_output
 
-    async def _start_container_command(
-        self, command: ExecuteContainerCommandArgs, apptainer_cmd: str
-    ) -> ActiveContainerCommand:
-        # Stream output to log file as it appears
-        logs_dir = self.config.persistent_dir / "apptainer_logs"
-        logs_dir.mkdir(exist_ok=True)
-        log_file_path = logs_dir / f"{self.config.instance_id}_{command.mode}.log"
-        log_file = open(log_file_path, "w")
-
-        process = await asyncio.create_subprocess_shell(apptainer_cmd, stdout=log_file, stderr=log_file)
-
-        return ActiveContainerCommand(process=process, log_file=log_file, log_file_path=log_file_path)
-
-    async def _finish_container_command(
-        self, active_command: ActiveContainerCommand, command: ExecuteContainerCommandArgs
-    ) -> str:
-        data_point = self.config.problem_info
-
-        try:
-            # Wait for completion with timeout
-            await asyncio.wait_for(active_command.process.communicate(), timeout=command.timeout)
-        except asyncio.TimeoutError:
-            if active_command.process.returncode is None:
-                active_command.process.kill()
-                await active_command.process.wait()
-            raise ValueError("Command timed out")
-        finally:
-            active_command.log_file.close()
-
-        if active_command.process.returncode != 0:
-            raise RuntimeError(
-                f"Command failed with return code {active_command.process.returncode}. "
-                f"Logs:\n{active_command.log_file_path.read_text(errors='replace')}"
-            )
-
-        # Look for the expected file
-        pred_files = glob.glob(command.expected_file_pattern, recursive=True)
-
-        if len(pred_files) == 1:
-            return pred_files[0]
-        elif len(pred_files) > 1:
-            latest_file = max(pred_files, key=os.path.getmtime)
-            print(
-                f"Multiple outputs found for {data_point['instance_id']} "
-                f"({len(pred_files)}). Using latest: {latest_file}",
-                flush=True,
-            )
-            return latest_file
-        else:
-            raise ValueError(
-                f"Expected exactly one file matching {command.expected_file_pattern} for {data_point['instance_id']}, "
-                f"found {len(pred_files)}."
-            )
-
-    async def _kill_active_command(self, active_command: ActiveContainerCommand) -> None:
-        if active_command.process.returncode is None:
-            active_command.process.kill()
-            await active_command.process.wait()
-        active_command.log_file.close()
-
     async def process_single_datapoint(self) -> Optional[Path]:
+        """Run the agent (or substitute the golden patch) for this task instance.
+
+        The agent runs in a single working sandbox, self-drives, and persists its patch and
+        agent metrics; the eval and reward happen later in ``run()`` via the verifier POST. When
+        ``verify_golden_patch`` is set, the sample's gold patch is substituted instead of running
+        the agent.
+
+        Returns:
+            Optional[Path]: Always None; the patch is persisted to the metrics file rather than
+            returned as a report file.
+        """
         if self.config.verify_golden_patch:
             return await self._run_golden_patch_verification()
 
-        instance_id = self.config.instance_id
-        if self.config.debug:
-            profiler = Profiler(name=instance_id, base_profile_dir=self.config.profiling_mounted_dir)
-            profiler.start()
+        return await self._run_decoupled_agent()
+
+    async def _run_decoupled_agent(self) -> Optional[Path]:
+        """Provision one working sandbox, self-drive OpenHands, and persist the extracted patch.
+
+        Builds the task and launch command, stages the agent config and dataset files, provisions
+        the sandbox via the swe_env infra, runs OpenHands locally inside it, and records the
+        extracted patch and agent-side metrics (timing, error classification, timeout). The
+        eval and reward happen in ``run()`` via a POST to the verifier.
+
+        Returns:
+            Optional[Path]: Always None; the patch is persisted to the metrics file.
+        """
+        from responses_api_agents.swe_agents.swe_env_adapter import (
+            build_openhands_launch_command,
+            openhands_config_toml,
+            provision_and_collect,
+        )
+        from responses_api_agents.swe_env.harness import SweTask
+
+        def _as_list(v):
+            if isinstance(v, str):
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    return [v]
+            return v or []
+
+        data_point = self.config.problem_info
+        instance_dict = json.loads(data_point["instance_dict"])
+        setup_dir = str(self.config.openhands_setup_dir)
+        gym_root = str(Path(setup_dir).resolve().parents[2])
 
         metrics = SWEBenchMetrics(ray_queue_time=time.time() - self.config.ray_queue_timestamp)
-
         metrics.openhands_run_time = -time.time()
-        metrics.generation_apptainer_spinup_time = metrics.openhands_run_time
-        metrics.final_eval_apptainer_spinup_time = metrics.openhands_run_time
 
-        openhands_active_command = await self._start_container_command(
-            self.config.agent_command, self.config.agent_apptainer_command_str
+        # Provider: explicit config, else docker with the Gym repo bind-mounted at its host path
+        # (resolves OpenHands' venv abs-symlinks + the nemo_gym editable install) + host network.
+        provider = self.config.sandbox_provider or {
+            "docker": {"network": "host", "run_args": ["-v", f"{gym_root}:{gym_root}:ro"]}
+        }
+        task = SweTask(
+            instance_id=self.config.instance_id,
+            image=_resolve_image_name(self.config.container_formatter, self.config.instance_id),
+            base_commit=instance_dict.get("base_commit", "") or "",
+            repo_workdir="/testbed",
+            test_command="",
+            model_patch="",
+            test_patch=instance_dict.get("test_patch", "") or "",
+            fail_to_pass=_as_list(instance_dict.get("FAIL_TO_PASS")),
+            pass_to_pass=_as_list(instance_dict.get("PASS_TO_PASS")),
+            benchmark=data_point["dataset_name"],
+            split=data_point.get("split", "test"),
+            metadata={"ttl_s": self.config.swebench_agent_timeout + 600, "ready_timeout_s": 900},
         )
-        eval_active_command = await self._start_container_command(
-            self.config.eval_command, self.config.eval_apptainer_command_str
+        launch = build_openhands_launch_command(
+            setup_dir=setup_dir,
+            instance_id=self.config.instance_id,
+            dataset_name=data_point["dataset_name"],
+            split=data_point.get("split", "test"),
+            ng_config_dict_quoted=self.config.ng_global_config_dict_str,
+            model_server_name=self.config.model_server_name,
+            agent_cls=self.config.resolved_agent_cls,
+            max_iter=self.config.agent_max_turns,
+            command_exec_timeout=self.config.command_exec_timeout,
+            tmux_memory_limit_mb=self.config.apptainer_memory_limit_mb,
         )
+        stage_files = {
+            "/root/config.toml": openhands_config_toml(
+                self.config.body.model,
+                temperature=self.config.inference_params.get("temperature", 0.0),
+                top_p=self.config.inference_params.get("top_p", 1.0),
+            ),
+            "/root/dataset/data.jsonl": json.dumps(instance_dict),
+        }
 
         try:
-            out_file_in_eval = await self._finish_container_command(
-                openhands_active_command, self.config.agent_command
+            result = await provision_and_collect(
+                task,
+                provider=provider,
+                agent_launch_command=launch,
+                stage_files=stage_files,
+                patch_output_glob="/root/eval_results",
+                agent_timeout_s=self.config.swebench_agent_timeout,
             )
-            out_file = self._openhands_dir_copy_from_host(output_file_path=out_file_in_eval)
-        except Exception as e:
-            print(f"Agent command failed for {instance_id}: {e}", flush=True)
-            try:
-                self._openhands_dir_copy_from_host(output_file_path=None)
-            except Exception:
-                pass
-            await self._kill_active_command(eval_active_command)
+            patch = result.get("patch") or None
+            if patch and not patch.endswith("\n"):
+                patch += "\n"
+            metrics.openhands_run_time += time.time()
+            metrics.model_patch = patch
+            metrics.patch_exists = bool(patch)
+            metrics.agent_error_kind = _classify_agent_error(result.get("agent_error"))
+            # The environment does not raise on agent timeout; it returns error_type="timeout"
+            # instead, so the except below never fires for a timed-out agent. Recover the timeout
+            # signal from the provision result's error_type, with a wall-clock fallback, so the
+            # sample is masked correctly.
+            metrics.agent_timed_out = result.get("error_type") == "timeout" or (
+                metrics.openhands_run_time is not None
+                and metrics.openhands_run_time >= self.config.swebench_agent_timeout
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"Decoupled agent run failed for {self.config.instance_id}: {e}", flush=True)
             metrics.openhands_run_time += time.time()
             metrics.patch_exists = False
-            metrics.final_eval_apptainer_spinup_time = None
-            # Detect wall-clock agent timeout: openhands_run_time (elapsed since start)
-            # reached or exceeded the configured swebench_agent_timeout.
             metrics.agent_timed_out = (
                 metrics.openhands_run_time is not None
                 and metrics.openhands_run_time >= self.config.swebench_agent_timeout
             )
-            update_metrics(self.config.metrics_fpath, metrics.model_dump())
-            if self.config.debug:
-                profiler.stop()
-            return None
-
-        generation_apptainer_spinup_timestamp = float(
-            self.config.generation_apptainer_spinup_timestamp_fpath.read_text()
-        )
-        metrics.generation_apptainer_spinup_time += generation_apptainer_spinup_timestamp
-        metrics.openhands_run_time += time.time()
-
-        with open(out_file, "r") as f:
-            out_dict = json.loads(f.read().strip())
-
-        metrics.agent_error_kind = _classify_agent_error(out_dict.get("error"))
-
-        patch = out_dict["test_result"]["git_patch"] or None
-        patch = patch + "\n" if patch and not patch.endswith("\n") else patch
-        metrics.model_patch = patch
-
-        # Create file in the SWE-bench evaluation format
-        self.config.output_for_eval_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.config.output_for_eval_path.open("w") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "model_name_or_path": out_dict["metadata"]["llm_config"]["model"],
-                        "instance_id": out_dict["instance_id"],
-                        "model_patch": patch,
-                        "oh_time_metrics": out_dict["metrics"],
-                    }
-                )
-            )
-
-        # Dump out dot and png files from profiling on OpenHands level
-        if self.config.debug:
-            try:
-                profiling_name = "openhands"
-                callgrind_path = self.config.profiling_dir / f"{profiling_name}.callgrind"
-                callgrind_dotfile_path = self.config.profiling_dir / f"{profiling_name}.dot"
-                callgrind_graph_path = self.config.profiling_dir / f"{profiling_name}.png"
-
-                gprof2dot_main(
-                    argv=f"--format=callgrind --output={callgrind_dotfile_path} -e 5 -n 5 {callgrind_path}".split()
-                )
-
-                (graph,) = graph_from_dot_file(callgrind_dotfile_path)
-                graph.write_png(callgrind_graph_path)
-            except Exception as e:
-                print(f"Error dumping profiling files: {e}", flush=True)
-
-        if not patch:
-            metrics.patch_exists = False
-            metrics.final_eval_apptainer_spinup_time = None
-
-            await self._kill_active_command(eval_active_command)
-
-            update_metrics(self.config.metrics_fpath, metrics.model_dump())
-            return
-
-        with open(self.config.model_patch_path, "w") as f:
-            f.write(patch)
-
-        metrics.final_eval_time = -time.time()
-        try:
-            report_file = await self._finish_container_command(eval_active_command, self.config.eval_command)
-        except Exception as e:
-            print(f"Eval command failed for {instance_id}: {e}", flush=True)
-            metrics.final_eval_time += time.time()
-            metrics.patch_exists = True
-            # Detect wall-clock eval timeout: final_eval_time (elapsed since eval start)
-            # reached or exceeded the configured swebench_tests_timeout.
-            metrics.eval_timed_out = (
-                metrics.final_eval_time is not None and metrics.final_eval_time >= self.config.swebench_tests_timeout
-            )
-            update_metrics(self.config.metrics_fpath, metrics.model_dump())
-            if self.config.debug:
-                profiler.stop()
-            return None
-
-        final_eval_apptainer_spinup_timestamp = float(
-            self.config.final_eval_apptainer_spinup_timestamp_fpath.read_text()
-        )
-        metrics.final_eval_apptainer_spinup_time += final_eval_apptainer_spinup_timestamp
-        metrics.final_eval_time += time.time()
-
-        metrics.patch_exists = True
         update_metrics(self.config.metrics_fpath, metrics.model_dump())
-
-        if self.config.debug:
-            profiler.stop()
-
-        return report_file
+        return None
 
     async def _run_golden_patch_verification(self) -> Optional[Path]:
+        """Skip the agent run and persist the sample's golden patch for verification.
+
+        Writes the sample's gold patch (``instance_dict['patch']``) as the worker's
+        ``model_patch`` in the metrics file, exactly where ``_run_decoupled_agent`` would leave an
+        agent patch, so it is later graded by the verifier POST. Currently supported only for the
+        ``swe-bench-ext`` dataset.
+
+        Returns:
+            Optional[Path]: Always None; the gold patch is persisted to the metrics file.
+        """
         instance_id = self.config.instance_id
         dataset_name = self.config.problem_info.get("dataset_name")
         # TODO(sugam): add support for other datasets
@@ -1576,45 +1192,11 @@ class RunOpenHandsAgent(BaseModel):
         metrics = SWEBenchMetrics(ray_queue_time=time.time() - self.config.ray_queue_timestamp)
         metrics.model_patch = golden_patch
         metrics.patch_exists = True
-
-        # Write golden patch where the agent would have written the model patch.
-        self.config.output_for_eval_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.config.output_for_eval_path.open("w") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "model_name_or_path": "golden_patch_verification",
-                        "instance_id": instance_id,
-                        "model_patch": golden_patch,
-                    }
-                )
-            )
-        with open(self.config.model_patch_path, "w") as f:
-            f.write(golden_patch)
-
-        metrics.final_eval_apptainer_spinup_time = -time.time()
-        metrics.final_eval_time = -time.time()
-
-        eval_active_command = await self._start_container_command(
-            self.config.eval_command, self.config.eval_apptainer_command_str
-        )
-        try:
-            report_file = await self._finish_container_command(eval_active_command, self.config.eval_command)
-        except Exception as e:
-            print(f"Golden-patch eval failed for {instance_id}: {e}", flush=True)
-            metrics.final_eval_time += time.time()
-            update_metrics(self.config.metrics_fpath, metrics.model_dump())
-            return None
-
-        final_eval_apptainer_spinup_timestamp = float(
-            self.config.final_eval_apptainer_spinup_timestamp_fpath.read_text()
-        )
-        metrics.final_eval_apptainer_spinup_time += final_eval_apptainer_spinup_timestamp
-        metrics.final_eval_time += time.time()
-
+        # No agent ran, so there is no agent error to classify (mask re-join stays clean).
+        metrics.agent_error_kind = None
         update_metrics(self.config.metrics_fpath, metrics.model_dump())
 
-        return report_file
+        return None
 
 
 ########################################
@@ -1623,6 +1205,8 @@ class RunOpenHandsAgent(BaseModel):
 
 
 class SWEBenchWrapper(SimpleResponsesAPIAgent):
+    """Responses API agent server that runs OpenHands on SWE-bench-style tasks and scores patches."""
+
     config: SWEBenchWrapperConfig
 
     _sem: Optional[Semaphore] = None
@@ -1636,6 +1220,14 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
     ########################################
 
     def model_post_init(self, context: Any) -> None:
+        """Initialize per-run server state, run dataset/harness setup, and build helpers.
+
+        Generates a run session id and results directory, runs the OpenHands and dataset
+        processor setups, and creates the concurrency semaphore and vLLM converter.
+
+        Args:
+            context: The Pydantic post-init context passed through to the superclass.
+        """
         run_session_id = f"{int(time.time() * 1000)}_{str(uuid.uuid4())[:8]}"
         workspace_root = Path(__file__).parent
         self._swe_bench_wrapper_server_config = SWEBenchWrapperServerConfig(
@@ -1660,8 +1252,19 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
     ########################################
 
     def get_openhands_trajectory_from_completions(self, trajectories_dir: Path, instance_id: str) -> tuple:
-        """
-        This reads the trajectories directly dumped by OpenHands.
+        """Read the trajectory and tools from the LLM completion files dumped by OpenHands.
+
+        Loads the most recent completion file for the instance, appends the final assistant
+        message (with any token-id and log-prob fields) to its message list, and returns the
+        messages together with the tool definitions.
+
+        Args:
+            trajectories_dir: Directory containing the per-instance trajectory output.
+            instance_id: The task instance id whose completions are read.
+
+        Returns:
+            tuple: A ``(messages, tools)`` pair; both are empty lists when no completion
+            files are found.
         """
         messages, tools = [], []
 
@@ -1699,258 +1302,15 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
     # START Main methods
     ########################################
 
-    def _find_container(self, data_point: dict) -> str:
-        """Find the container file using multiple strategies (Exact match > Fuzzy match).
+    def _resolve_absolute_path(self, path: Optional[str]) -> Optional[str]:
+        """Resolve a possibly relative path against the package parent directory.
 
-        Strategies:
-        1. Replace "__" with "_1776_" (Original case, then Lowercase)
-        2. Replace "__" with "_s_" (Original case, then Lowercase)
-        3. Fuzzy search directory for .sif files matching above patterns.
+        Args:
+            path: A relative or absolute path string, or None.
 
         Returns:
-            str: Path to the container file.
-
-        Raises:
-            FileNotFoundError: If no matching container file is found.
+            Optional[str]: The absolute path string, or None if no path was given.
         """
-        instance_id = data_point["instance_id"]
-        container_formatters = data_point["container_formatter"]
-
-        if isinstance(container_formatters, str):
-            container_formatters = [container_formatters]
-
-        if "SWE-rebench" in data_point["dataset_name"]:
-            for container_formatter in container_formatters:
-                # Exact match: {instance_id}.sif (e.g. badges__shields-4557.sif)
-                container_path = container_formatter.format(instance_id=instance_id)
-                if os.path.exists(container_path):
-                    return container_path
-
-                # Fuzzy match: glob for files containing the instance_id
-                container_dir = os.path.dirname(container_formatter.format(instance_id="dummy"))
-                for pattern in [
-                    f"{instance_id}*.sif",
-                    f"*{instance_id}*.sif",
-                ]:
-                    matches = glob.glob(os.path.join(container_dir, pattern))
-                    if matches:
-                        return matches[0]
-            raise FileNotFoundError(
-                f"No SIF found for SWE-rebench instance {instance_id}. "
-                f"Searched directories: {[os.path.dirname(cf.format(instance_id='dummy')) for cf in container_formatters]}"
-            )
-
-        if "R2E-Gym" in data_point["dataset_name"]:
-            instance_id_modified = re.sub(
-                r"[^_]+__([^-]+)-", lambda m: m.group(1).lower() + "_final_", data_point["instance_id"]
-            )
-            for container_formatter in container_formatters:
-                container_name = container_formatter.format(instance_id=instance_id_modified)
-                if os.path.exists(container_name):
-                    # print(f"container found: {container_name}", flush=True)
-                    # print(f"container formatter: {container_formatter}", flush=True)
-                    return container_name
-
-        replacements = ["_1776_", "_s_"]
-
-        # Generate all candidate IDs in order of priority
-        candidate_ids = [instance_id]
-        for replacement in replacements:
-            replaced_id = instance_id.replace("__", replacement)
-            candidate_ids.append(replaced_id)
-            candidate_ids.append(replaced_id.lower())
-
-        # Phase 1: Exact Matches - try all container formatters
-        for container_formatter in container_formatters:
-            for candidate_id in candidate_ids:
-                path = container_formatter.format(instance_id=candidate_id)
-                if os.path.exists(path):
-                    return path
-
-        # Phase 2: Fuzzy Search - try all container formatters
-        search_terms = [instance_id, instance_id.lower()] + candidate_ids
-
-        for container_formatter in container_formatters:
-            # Define the default fallback path (Strategy 1, original case)
-            fallback_path = container_formatter.format(instance_id=instance_id.replace("__", replacements[0]))
-            container_dir = os.path.dirname(fallback_path)
-
-            if os.path.exists(container_dir):
-                for term in search_terms:
-                    pattern = os.path.join(container_dir, f"*{term}*.sif")
-                    matches = glob.glob(pattern)
-                    if matches:
-                        return matches[0]
-            else:
-                if self.config.debug:
-                    print(f"Container directory {container_dir} does not exist", flush=True)
-
-        # Phase 3: Fallback
-        tried_paths = []
-        for container_formatter in container_formatters:
-            for candidate_id in candidate_ids:
-                tried_paths.append(container_formatter.format(instance_id=candidate_id))
-
-        raise FileNotFoundError(
-            f"No container file found for instance_id {instance_id}. "
-            f"Tried the following candidate IDs: {candidate_ids}. "
-            f"Searched in paths: {tried_paths}."
-        )
-
-    def _build_apptainer_command(
-        self, params: SWEBenchWrapperInstanceConfig, command: ExecuteContainerCommandArgs
-    ) -> str:
-        dataset_path_to_mount = str(params.instance_dataset_path)
-        data_point = params.problem_info
-
-        # Fix localhost URLs not working sometimes
-        container_commands = []
-        container_commands.append("echo '127.0.0.1 localhost' >/etc/hosts")
-
-        # Build mount arguments
-        mount_args = [
-            f"--mount type=bind,src={params.persistent_dir},dst=/trajectories_mount",
-        ]
-
-        openhands_dir = f"{params.openhands_setup_dir}/OpenHands"
-        mount_args.extend(
-            [
-                # Read-only base mounts (parent first)
-                f"--mount type=bind,src={openhands_dir},dst=/openhands_setup/OpenHands,ro",
-                f"--mount type=bind,src={openhands_dir},dst={openhands_dir},ro",
-                f"--mount type=bind,src={openhands_dir}/.eval_sessions,dst=/openhands_setup/OpenHands/.eval_sessions",
-                f"--mount type=bind,src={openhands_dir}/.eval_sessions,dst={openhands_dir}/.eval_sessions",
-                f"--mount type=bind,src={openhands_dir}/logs,dst=/openhands_setup/OpenHands/logs",
-                f"--mount type=bind,src={openhands_dir}/logs,dst={openhands_dir}/logs",
-                f"--mount type=bind,src={openhands_dir}/evaluation/oh,dst=/openhands_setup/OpenHands/evaluation/oh",
-                f"--mount type=bind,src={openhands_dir}/evaluation/oh,dst={openhands_dir}/evaluation/oh",
-                # Data
-                f"--mount type=bind,src={dataset_path_to_mount},dst=/root/dataset/data.jsonl",
-            ]
-        )
-
-        if params.resolved_user_prompt_template:
-            mount_args.append(
-                f"--mount type=bind,src={params.resolved_user_prompt_template},dst=/openhands_setup/OpenHands/user_prompt.j2"
-            )
-        if params.resolved_system_prompt_template:
-            mount_args.append(
-                f"--mount type=bind,src={params.resolved_system_prompt_template},dst=/openhands_setup/OpenHands/system_prompt.j2"
-            )
-            mount_args.append(
-                f"--mount type=bind,src={params.resolved_system_prompt_template},dst=/openhands_setup/OpenHands/system_prompt_long_horizon.j2"
-            )
-
-        miniforge3_path = Path(params.openhands_setup_dir) / "miniforge3"
-        mount_args.append(f"--mount type=bind,src={miniforge3_path},dst=/openhands_setup/miniforge3,ro")
-        mount_args.append(f"--mount type=bind,src={miniforge3_path},dst={miniforge3_path},ro")
-
-        # Add SWE-bench setup directory mount if available (for evaluation)
-        # swe-bench-ext and nv-internal-1 don't use the swebench harness
-        if command.mode == "eval" and data_point["dataset_name"] not in ("nv-internal-1", "swe-bench-ext"):
-            # Mount the entire setup directory at both /swebench_setup and its original absolute path
-            # This is needed because uv venv has hardcoded absolute paths
-            mount_args.append(f"--mount type=bind,src={params.swebench_setup_dir},dst=/swebench_setup")
-            mount_args.append(f"--mount type=bind,src={params.swebench_setup_dir},dst={params.swebench_setup_dir}")
-
-        if command.mode == "eval" and "SWE-bench_Multilingual" in data_point["dataset_name"]:
-            mount_args.append(
-                f"--mount type=bind,src={params.swebench_multilingual_setup_dir},dst=/swebench_multilingual_setup"
-            )
-            mount_args.append(
-                f"--mount type=bind,src={params.swebench_multilingual_setup_dir},dst={params.swebench_multilingual_setup_dir}"
-            )
-
-        if command.mode == "eval" and data_point["dataset_name"] == "nv-internal-1":
-            run_script_path = params.persistent_dir / "run_script.sh"
-            parsing_script_path = params.persistent_dir / "parsing_script.py"
-
-            # Placeholder needed: eval container starts before agent writes the patch
-            params.model_patch_path.write_text("")
-
-            mount_args.append(f"--mount type=bind,src={run_script_path},dst=/root/run_script.sh")
-            mount_args.append(f"--mount type=bind,src={parsing_script_path},dst=/root/parsing_script.py")
-            mount_args.append(f"--mount type=bind,src={params.model_patch_path},dst=/root/patch.diff")
-
-        if command.mode == "eval" and "R2E-Gym" in data_point["dataset_name"]:
-            # Mount the entire setup directory at both /r2egym_setup and its original absolute path
-            # This is needed because uv venv has hardcoded absolute paths in its wrappers
-            # print(f"Mounting R2E-Gym setup directory from: {self.r2e_gym_setup_dir}", flush=True)
-            mount_args.append(f"--mount type=bind,src={params.r2e_gym_setup_dir},dst=/r2egym_setup")
-            mount_args.append(f"--mount type=bind,src={params.r2e_gym_setup_dir},dst={params.r2e_gym_setup_dir}")
-
-        if command.mode == "eval" and "SWE-rebench" in data_point["dataset_name"]:
-            rebench_setup_dir = params.swe_rebench_setup_dir
-            mount_args.append(f"--mount type=bind,src={rebench_setup_dir},dst=/swe_rebench_setup,ro")
-
-            test_patch_path = params.persistent_dir / "test_patch.diff"
-            # model_patch_path placeholder needed: eval container starts before agent writes the patch
-            if not params.model_patch_path.exists():
-                params.model_patch_path.write_text("")
-            mount_args.append(f"--mount type=bind,src={test_patch_path},dst=/root/test_patch.diff")
-            mount_args.append(f"--mount type=bind,src={params.model_patch_path},dst=/root/patch.diff")
-
-            # Mount eval metadata files explicitly (directory bind mounts may not expose subdirs on Lustre)
-            eval_meta_dir = params.persistent_dir / "eval_meta"
-            mount_args.append(
-                f"--mount type=bind,src={eval_meta_dir / 'expected_passed.json'},dst=/eval_meta/expected_passed.json,ro"
-            )
-            mount_args.append(
-                f"--mount type=bind,src={eval_meta_dir / 'fail_to_pass.json'},dst=/eval_meta/fail_to_pass.json,ro"
-            )
-            mount_args.append(
-                f"--mount type=bind,src={eval_meta_dir / 'pass_to_pass.json'},dst=/eval_meta/pass_to_pass.json,ro"
-            )
-
-        if command.mode == "eval" and data_point.get("dataset_name") == "swe-bench-ext":
-            test_patch_path = params.persistent_dir / "test_patch.diff"
-            if not params.model_patch_path.exists():
-                params.model_patch_path.write_text("")
-            mount_args.append(f"--mount type=bind,src={test_patch_path},dst=/root/test_patch.diff")
-            mount_args.append(f"--mount type=bind,src={params.model_patch_path},dst=/root/patch.diff")
-
-        if command.mode == "agent" and "R2E-Gym" in data_point["dataset_name"]:
-            # Remove R2E-Gym test-related files.
-            for root_dir in ["", "/root", "/testbed"]:
-                container_commands.append(
-                    # /r2e_tests contains evaluation tests that the agent should not see.
-                    f"rm -rf {root_dir}/r2e_tests && "
-                    # run_tests.sh launches the tests in /r2e_tests, so the agent should not see this either.
-                    # We check that it contains the substring "r2e_tests"
-                    # to avoid accidentally deleting an unrelated file with that name.
-                    f"if grep -qs r2e_tests {root_dir}/run_tests.sh; then rm -rf {root_dir}/run_tests.sh; fi"
-                )
-        container_commands.append(command.command)
-        combined_command = " && ".join(container_commands)
-
-        script_dir = params.persistent_dir / "container_scripts"
-        script_dir.mkdir(parents=True, exist_ok=True)
-        script_path = script_dir / f"{command.mode}_script.sh"
-        script_path.write_text(combined_command)
-        container_script_path = f"/container_scripts/{command.mode}_script.sh"
-        mount_args.append(f"--mount type=bind,src={script_path},dst={container_script_path},ro")
-
-        mount_str = " ".join(mount_args)
-
-        env_args = ""
-        if "SWE-rebench" in data_point["dataset_name"]:
-            env_args = "--env _JAVA_OPTIONS=-Djava.net.preferIPv6Addresses=false "
-
-        # Launch Apptainer container and execute the script file
-        apptainer_cmd = (
-            f"apptainer exec --writable-tmpfs --cleanenv --pid --no-mount home,tmp,bind-paths "
-            f"{env_args}"
-            f"{mount_str} "
-            f" {params.container} bash {container_script_path}"
-        )
-        memory_limit_mb = params.apptainer_memory_limit_mb
-        if memory_limit_mb is not None and memory_limit_mb > 0:
-            memory_limit_kb = int(memory_limit_mb) * 1024
-            apptainer_cmd = f"ulimit -v {memory_limit_kb} && {apptainer_cmd}"
-
-        return apptainer_cmd
-
-    def _resolve_absolute_path(self, path: Optional[str]) -> Optional[str]:
         if not path:
             return None
         p = Path(path)
@@ -1961,6 +1321,19 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
     def _setup_params(
         self, body: NeMoGymResponseCreateParamsNonStreaming
     ) -> Tuple[SWEBenchWrapperInstanceConfig, BaseDatasetHarnessProcessor]:
+        """Build the per-instance config and select the dataset processor for a request.
+
+        Creates the persistent working directory, writes the instance dataset file, maps
+        inference parameters from the Responses request, resolves any prompt overrides, and
+        chooses the dataset processor based on the dataset name.
+
+        Args:
+            body: The Responses API create-params request carrying the task metadata.
+
+        Returns:
+            Tuple[SWEBenchWrapperInstanceConfig, BaseDatasetHarnessProcessor]: The resolved
+            per-instance config and the matching dataset processor.
+        """
         problem_info = body.metadata | {"container_formatter": self.config.container_formatter}
         instance_id = problem_info.get("instance_id", "unknown")
 
@@ -1999,8 +1372,6 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             if value is not None:
                 inference_params[key] = value
 
-        container = self._find_container(problem_info)
-
         eval_dir_in_openhands = f"evaluation/oh/{agent_run_id}"
         openhands_config_file_path = f"/tmp/config_{agent_run_id}.toml"
 
@@ -2029,7 +1400,6 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             output_for_eval_path=output_for_eval_path,
             prediction_path=prediction_path,
             model_patch_path=persistent_dir / "patch.diff",
-            container=container,
             eval_dir_in_openhands=eval_dir_in_openhands,
             openhands_config_file_path=openhands_config_file_path,
             agent_script_path=agent_script_path,
@@ -2069,16 +1439,22 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
         else:
             dataset_processor = SweBenchDatasetProcessor(config=params)
 
-        params.eval_command = dataset_processor.get_run_command()
-        params.eval_apptainer_command_str = self._build_apptainer_command(params, params.eval_command)
-
-        params.agent_command = OpenHandsHarnessProcessor(config=params).get_run_command()
-        params.agent_apptainer_command_str = self._build_apptainer_command(params, params.agent_command)
-        params.agent_script = params.agent_script_path.read_text()
-
+        # The agent launch and patch egress are owned by swe_env_adapter; eval is the verifier POST.
         return params, dataset_processor
 
     async def responses(self, body: NeMoGymResponseCreateParamsNonStreaming = Body()) -> NeMoGymResponse:
+        """Handle a Responses request: run the agent for the task and return the response.
+
+        Sets up the per-instance config, persists it, and delegates to the inner handler. On
+        failure the traceback is written to the persistent directory before the exception is
+        re-raised.
+
+        Args:
+            body: The Responses API create-params request carrying the task metadata.
+
+        Returns:
+            NeMoGymResponse: The response containing the agent trajectory and task metrics.
+        """
         params, dataset_processor = self._setup_params(body)
 
         with (params.persistent_dir / "params.json").open("w") as f:
@@ -2095,13 +1471,125 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
 
             raise e
 
+    async def _verify_patch_via_server(self, params: SWEBenchWrapperInstanceConfig) -> Dict[str, Any]:
+        """POST the worker's patch to the swe_env verifier and return its eval subset.
+
+        Builds a verify request carrying the per-task metadata the verifier reads plus the patch
+        in ``response.metadata.model_patch``, forwarding the instance's own per-framework test
+        command and framework when present and falling back to a conda+pytest default otherwise.
+        The call is bounded by a timeout. On any transport failure it returns a masked subset
+        (``resolved=False``, ``error_kind='sandbox'``) rather than raising, so the agent always
+        emits a present (masked) row instead of dropping the rollout.
+
+        Args:
+            params: The resolved per-instance config holding the patch and task metadata.
+
+        Returns:
+            Dict[str, Any]: The verifier's eval subset, or a masked subset on failure.
+        """
+        persisted = SWEBenchMetrics.model_validate_json(params.metrics_fpath.read_text())
+        patch = persisted.model_patch or ""
+        instance_dict = json.loads(params.problem_info["instance_dict"])
+
+        def _as_list(v):
+            if isinstance(v, str):
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    return [v]
+            return v or []
+
+        f2p = _as_list(instance_dict.get("FAIL_TO_PASS"))
+        p2p = _as_list(instance_dict.get("PASS_TO_PASS"))
+        # Forward the instance's own per-framework eval command and framework when present; only
+        # fall back to the conda+pytest default when the row ships no test_command. This supports
+        # both SWE-bench-Verified (no per-row command) and multi-framework swe-bench-ext rows
+        # (cargo/go/npm/... that carry their own command and framework).
+        test_framework = instance_dict.get("test_framework", "") or ""
+        test_command = instance_dict.get("test_command", "") or ""
+        if not test_command:
+            nodeids = " ".join("'" + n + "'" for n in f2p + p2p)
+            test_command = (
+                "source /opt/miniconda3/etc/profile.d/conda.sh && conda activate testbed && "
+                f"python -m pytest -rA {nodeids}"
+            )
+        task_metadata = {
+            "instance_id": params.instance_id,
+            "image": _resolve_image_name(params.container_formatter, params.instance_id),
+            "base_commit": instance_dict.get("base_commit", "") or "",
+            "repo_workdir": "/testbed",
+            "test_command": test_command,
+            "test_framework": test_framework,
+            "test_patch": instance_dict.get("test_patch", "") or "",
+            "fail_to_pass": f2p,
+            "pass_to_pass": p2p,
+            "benchmark": params.problem_info["dataset_name"],
+            "split": params.problem_info.get("split", "test"),
+        }
+        verify_request = {
+            "responses_create_params": params.body.model_dump() | {"metadata": task_metadata},
+            "response": {
+                "id": f"swebench-{params.instance_id}",
+                "created_at": int(time.time()),
+                "model": params.body.model,
+                "object": "response",
+                "output": [],
+                "metadata": {"model_patch": patch},
+            },
+        }
+
+        async def _do_verify() -> Dict[str, Any]:
+            """POST the verify request and return the parsed JSON response.
+
+            Returns:
+                Dict[str, Any]: The verifier's JSON response body.
+            """
+            verify_response = await self.server_client.post(
+                server_name=params.verifier_server_name,
+                url_path="/verify",
+                json=verify_request,
+            )
+            await raise_for_status(verify_response)
+            return await get_response_json(verify_response)
+
+        # Bound the whole call (including the client's disconnect-retry loop) so a hung or retried
+        # verify cannot pin a rollout slot indefinitely.
+        verify_timeout_s = float(getattr(params, "swebench_tests_timeout", None) or 900) + 900
+        try:
+            return await asyncio.wait_for(_do_verify(), timeout=verify_timeout_s)
+        except Exception as e:  # noqa: BLE001  (incl. asyncio.TimeoutError -> masked, never pins a slot)
+            print(f"Verifier POST failed for {params.instance_id}: {e}", flush=True)
+            return {"resolved": False, "error_kind": "sandbox", "patch_exists": bool(patch)}
+
     async def _inner_responses(
         self, params: SWEBenchWrapperInstanceConfig, dataset_processor: BaseDatasetHarnessProcessor
     ) -> NeMoGymResponse:
+        """Run the agent worker, score the patch, decide masking, and build the response.
+
+        Dispatches the task to the Ray worker, grades the resulting patch either via the verifier
+        POST or by post-processing the worker's report, decides whether to mask the sample from the
+        GRPO gradient, reconstructs the trajectory and tool definitions, updates the metrics file,
+        and assembles the response.
+
+        Args:
+            params: The resolved per-instance config for the task.
+            dataset_processor: The dataset processor used to post-process worker output.
+
+        Returns:
+            NeMoGymResponse: The response containing output items, tools, and metrics metadata.
+        """
         maybe_report_file = await runner_ray_remote.remote(params.model_dump())
         metrics_to_update = dict()
 
-        if maybe_report_file:
+        if params.eval_via_verifier:
+            # The worker persisted the patch (no in-worker eval); grade it by POSTing to the
+            # verifier. The resolved/eval signals feed the same metrics and mask logic below.
+            eval_subset = await self._verify_patch_via_server(params)
+            metrics_to_update["resolved"] = bool(eval_subset.get("resolved"))
+            metrics_to_update["eval_timed_out"] = eval_subset.get("error_kind") == "eval_timeout"
+            if eval_subset.get("patch_exists") is not None:
+                metrics_to_update["patch_exists"] = bool(eval_subset.get("patch_exists"))
+        elif maybe_report_file:
             dataset_processor.postprocess_after_run(maybe_report_file)
 
             report = json.loads(Path(maybe_report_file).read_text())
@@ -2114,20 +1602,14 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
             metrics_to_update["resolved"] = False
 
         # Decide whether to mask this sample from the GRPO gradient.
-        # 1) Patch passed eval but agent did not actually submit (hit max-turns
-        #    or blew the context window) — the reward is accidental.
-        # 2) Final eval step timed out — reward is unreliable.
-        # 3) Agent itself timed out (wall-clock) — mask regardless of resolved.
         persisted_metrics = SWEBenchMetrics.model_validate_json(params.metrics_fpath.read_text())
         resolved_now = metrics_to_update.get("resolved", False)
         agent_error_kind = persisted_metrics.agent_error_kind
-        eval_timed_out = bool(persisted_metrics.eval_timed_out)
+        # eval_timed_out may come from a persisted metric or from the verifier POST (in
+        # metrics_to_update and not yet persisted); prefer the latter when present.
+        eval_timed_out = bool(metrics_to_update.get("eval_timed_out", persisted_metrics.eval_timed_out))
         agent_timed_out = bool(persisted_metrics.agent_timed_out)
-        if (
-            (resolved_now and agent_error_kind in ("max_iteration", "context_window"))
-            or eval_timed_out
-            or agent_timed_out
-        ):
+        if _should_mask_sample(resolved_now, agent_error_kind, eval_timed_out, agent_timed_out):
             params.mask_sample = True
 
         trajectories_dir = params.persistent_dir / "trajectories"
@@ -2162,6 +1644,18 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
         )
 
     async def run(self, body: BaseRunRequest) -> SWEBenchVerifyResponse:
+        """Run one task end to end under the concurrency limit and return its reward and metrics.
+
+        Acquires the concurrency semaphore, runs the agent via ``responses``, extracts the
+        trajectory metadata and metrics, and assembles a verify response whose reward is 1.0 when
+        the task resolved and 0.0 otherwise.
+
+        Args:
+            body: The run request carrying the Responses create-params for the task.
+
+        Returns:
+            SWEBenchVerifyResponse: The reward, response, metrics, and resolved instance config.
+        """
         async with self._sem:
             body.responses_create_params.parallel_tool_calls = True
             body.responses_create_params.tool_choice = "auto"

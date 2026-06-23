@@ -2,7 +2,9 @@
 
 A unified Responses-API wrapper that runs LLM-driven agents against real-world software-engineering benchmarks (SWE-bench and friends), executes the proposed patch inside the dataset's evaluation harness, and returns trajectories + a binary "resolved" reward suitable for both evaluation and RL training.
 
-The entrypoint is [`app.py`](app.py), which exposes a `SWEBenchWrapper` (a `SimpleResponsesAPIAgent`) over HTTP. Each `responses` request takes one dataset instance, runs an agent inside an Apptainer container, runs the matching evaluation harness in a second container, and returns the trajectory plus reward.
+The entrypoint is [`app.py`](app.py), which exposes a `SWEBenchWrapper` (a `SimpleResponsesAPIAgent`) over HTTP. Each `responses` request takes one dataset instance, provisions a single working sandbox for the agent through the shared `swe_env` library, lets the agent self-drive to produce a patch, scores that patch through the `swe_env` verifier in its own fresh sandbox, and returns the trajectory plus reward.
+
+For a runnable, validated end-to-end example (provision → self-drive → extract patch → verify → reward), see [End-to-end SWE-bench Verified](#end-to-end-swe-bench-verified).
 
 ---
 
@@ -278,6 +280,49 @@ INFO:     Uvicorn running on http://127.0.0.1:25347 (Press CTRL+C to quit)
 ```bash
 python responses_api_agents/swe_agents/client.py
 ```
+
+---
+
+## End-to-end SWE-bench Verified
+
+A minimal, self-contained run of one SWE-bench Verified instance through OpenHands and the decoupled `swe_env` verifier on a single machine with Docker. The driver [`scripts/openhands_decoupled_rollout.py`](scripts/openhands_decoupled_rollout.py) performs the full pipeline: provision the official SWE-bench image as a sandbox, let OpenHands self-drive, extract the patch from `output.jsonl`, and grade it in a fresh verifier sandbox.
+
+### 1. Serve a model
+
+Any OpenAI-compatible endpoint works. A local vLLM (the tool-call flags are required because OpenHands sends `tool_choice=auto`):
+
+```bash
+docker run -d --name swe-vllm --gpus '"device=0"' \
+  -v ~/.cache/huggingface:/root/.cache/huggingface -p 8000:8000 --ipc=host \
+  vllm/vllm-openai:latest \
+  --model Qwen/Qwen2.5-Coder-32B-Instruct-AWQ \
+  --enable-auto-tool-choice --tool-call-parser hermes \
+  --max-model-len 32768 --gpu-memory-utilization 0.92
+```
+
+### 2. Run one instance end-to-end
+
+```bash
+python responses_api_agents/swe_agents/scripts/openhands_decoupled_rollout.py \
+  --instance astropy__astropy-13453 \
+  --model Qwen/Qwen2.5-Coder-32B-Instruct-AWQ \
+  --model-host 127.0.0.1 --model-port 8000 --max-iter 30
+```
+
+The driver prints each stage and the final reward:
+
+```
+[provision] <sandbox id> (9s)
+[launch] OpenHands run_infer.sh (RUNTIME=local) ...
+[patch] <N> bytes
+=== astropy__astropy-13453: resolved=<bool> patch_applied=<bool> error_kind=<...> REWARD=<0.0|1.0> ===
+```
+
+`reward` is `1.0` when the agent's patch makes every `FAIL_TO_PASS` and `PASS_TO_PASS` test pass, else `0.0`; the reward depends on the model's coding ability, while the surrounding pipeline (provision → self-drive → extract → grade) is what this example exercises. To confirm the grading half independently, pass a known-good patch — the gold patch for `astropy__astropy-13453` grades to `reward=1.0` through the same verifier path.
+
+### Running at scale
+
+For a whole-dataset sweep through the Responses-API server stack rather than the single-instance driver, use the multi-server flow in [Quick Start](#quick-start) plus [Batch evaluation / data collection](#batch-evaluation--data-collection). To validate grading across the full set with gold patches (no model needed), see the verifier's [`resources_servers/swe_env/README.md`](../../resources_servers/swe_env/README.md).
 
 ---
 
