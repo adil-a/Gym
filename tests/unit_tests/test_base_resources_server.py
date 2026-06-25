@@ -258,6 +258,36 @@ class TestGymToolAutoRegistration:
             )
             assert summed.json()["result"]["structuredContent"]["result"] == 5
 
+    def test_missing_token_surfaces_as_clean_tool_error(self) -> None:
+        """A session-bound tool called without a token must come back as a clean MCP tool error
+        (HTTP 200, isError) — not an HTTP 401, and without leaking the raw status into the message."""
+        pytest.importorskip("mcp")
+        from fastapi.testclient import TestClient
+
+        server = _gym_tool_server()
+        app = server.setup_webserver()
+        rpc_headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+
+        with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+            resp = client.post(
+                "/mcp",
+                headers=rpc_headers,  # note: no X-NeMo-Gym-Session-Token
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "echo", "arguments": {"text": "hi"}},
+                },
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 200  # MCP/JSON-RPC: transport succeeds; the failure is in the body
+        result = resp.json()["result"]
+        assert result["isError"] is True
+        text = result["content"][0]["text"]
+        assert "X-NeMo-Gym-Session-Token" in text  # clean, specific message
+        assert "401" not in text  # no leaked HTTP status code
+
     def test_rejects_reserved_tool_name(self) -> None:
         pytest.importorskip("mcp")
         server = _gym_tool_server()

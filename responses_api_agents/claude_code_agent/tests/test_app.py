@@ -51,10 +51,10 @@ def _config(**kwargs) -> ClaudeCodeAgentConfig:
 
 
 def _make_agent(**kwargs) -> ClaudeCodeAgent:
-    with patch("responses_api_agents.claude_code_agent.app.ClaudeCodeAgent.model_post_init"):
-        agent = ClaudeCodeAgent(config=_config(**kwargs), server_client=MagicMock(spec=ServerClient))
-    agent.sem = asyncio.Semaphore(agent.config.concurrency)
-    return agent
+    # Patch only the external side effect (claude-code install/version check) so the real
+    # model_post_init still runs — it initializes the model's private attrs and the semaphore.
+    with patch("responses_api_agents.claude_code_agent.app.ensure_claude_code"):
+        return ClaudeCodeAgent(config=_config(**kwargs), server_client=MagicMock(spec=ServerClient))
 
 
 def _event(type_: str, **kwargs) -> str:
@@ -385,6 +385,55 @@ class TestRolloutMCPConfig:
         assert server["url"] == "http://127.0.0.1:8123/mcp"
         assert server["headers"]["X-NeMo-Gym-Session-Token"] == "tok"
         assert not Path(captured["mcp_config"]).exists()
+
+    def test_run_threads_session_cookie_seed_to_verify(self, tmp_path: Path) -> None:
+        agent = _make_agent(resources_server=ResourcesServerRef(type="resources_servers", name="example_mcp_weather"))
+        agent.server_client.global_config_dict = {
+            "example_mcp_weather": {"resources_servers": {"example_mcp_weather": {"host": "127.0.0.1", "port": 8123}}}
+        }
+        agent.server_client._build_server_base_url.side_effect = lambda cfg: f"http://{cfg['host']}:{cfg['port']}"
+
+        captured: dict = {}
+
+        async def fake_post(server_name, url_path, json=None, cookies=None):
+            if url_path == "/seed_session":
+                # the resources server sets a session cookie on the seed response
+                return FakeAioHTTPResponse(
+                    {
+                        "mcp": {
+                            "server_name": "example_mcp_weather",
+                            "url_path": "/mcp",
+                            "headers": {"X-NeMo-Gym-Session-Token": "tok"},
+                        }
+                    },
+                    cookies={"session": "sess-cookie"},
+                )
+            if url_path == "/verify":
+                captured["verify_cookies"] = cookies
+                return FakeAioHTTPResponse(json | {"reward": 1.0})
+            raise AssertionError(f"unexpected post: {server_name} {url_path}")
+
+        async def fake_run_claude_code(instruction, system_prompt=None, mcp_config=None):
+            captured["config_token"] = json.loads(Path(mcp_config).read_text())["mcpServers"]["example_mcp_weather"][
+                "headers"
+            ]["X-NeMo-Gym-Session-Token"]
+            return _event("assistant", message={"content": [{"type": "text", "text": "ok"}]}), "claude-sonnet-4-6"
+
+        agent.server_client.post.side_effect = fake_post
+        object.__setattr__(agent, "_run_claude_code", fake_run_claude_code)
+        request = MagicMock(spec=Request)
+        request.cookies = {}
+        body = ClaudeCodeAgentRunRequest(
+            responses_create_params=NeMoGymResponseCreateParamsNonStreaming(input="use the weather tool"),
+            verifier_metadata={"expected_city": "Paris"},
+        )
+
+        asyncio.run(agent.run(request, body))
+
+        # the cookie set on /seed_session is threaded into the /verify call (same rollout session),
+        # and the per-rollout token from seed metadata reaches the generated MCP config.
+        assert captured["verify_cookies"] == {"session": "sess-cookie"}
+        assert captured["config_token"] == "tok"
 
 
 class TestExtractInstruction:

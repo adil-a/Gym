@@ -84,14 +84,16 @@ def _verify_request(expected_city: str, final_text: str) -> ExampleMCPWeatherVer
             tool_choice="none",
             tools=[],
         ),
-        expected_city=expected_city,
+        verifier_metadata={"expected_city": expected_city},
     )
 
 
 @pytest.mark.asyncio
 async def test_verify_rewards_tool_call_from_same_session() -> None:
     server = _server()
-    seed = await server.seed_session(_request("session-1"), ExampleMCPWeatherSeedSessionRequest(expected_city="Paris"))
+    seed = await server.seed_session(
+        _request("session-1"), ExampleMCPWeatherSeedSessionRequest(verifier_metadata={"expected_city": "Paris"})
+    )
     token = seed.mcp.headers["X-NeMo-Gym-Session-Token"]
 
     fake_mcp = FakeMCP()
@@ -121,7 +123,9 @@ async def test_verify_rewards_tool_call_from_same_session() -> None:
 async def test_verify_accepts_differently_cased_city() -> None:
     # A correct tool call that used different casing than the seed city must still be rewarded.
     server = _server()
-    await server.seed_session(_request("session-1"), ExampleMCPWeatherSeedSessionRequest(expected_city="Paris"))
+    await server.seed_session(
+        _request("session-1"), ExampleMCPWeatherSeedSessionRequest(verifier_metadata={"expected_city": "Paris"})
+    )
     server.session_id_to_state["session-1"]["weather_calls"].append(
         {"city": "PARIS", "weather": "The weather in PARIS is sunny and 72 F."}
     )
@@ -139,7 +143,9 @@ async def test_verify_accepts_differently_cased_city() -> None:
 @pytest.mark.asyncio
 async def test_verify_rejects_tool_call_from_different_session() -> None:
     server = _server()
-    await server.seed_session(_request("session-1"), ExampleMCPWeatherSeedSessionRequest(expected_city="Paris"))
+    await server.seed_session(
+        _request("session-1"), ExampleMCPWeatherSeedSessionRequest(verifier_metadata={"expected_city": "Paris"})
+    )
     server.session_id_to_state["session-2"] = {
         "expected_city": "Paris",
         "weather_calls": [{"city": "Paris", "weather": "The weather in Paris is sunny and 72 F."}],
@@ -180,7 +186,7 @@ def test_streamable_http_mcp_endpoint_records_same_session() -> None:
     }
 
     with TestClient(app, base_url="http://127.0.0.1:8000") as client:
-        seed_response = client.post("/seed_session", json={"expected_city": "Paris"})
+        seed_response = client.post("/seed_session", json={"verifier_metadata": {"expected_city": "Paris"}})
         assert seed_response.status_code == 200
         token = seed_response.json()["mcp"]["headers"]["X-NeMo-Gym-Session-Token"]
 

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import Request
 from pydantic import ConfigDict, Field
@@ -58,7 +58,9 @@ class ExampleMCPWeatherResourcesServerConfig(BaseResourcesServerConfig):
 class ExampleMCPWeatherSeedSessionRequest(BaseSeedSessionRequest):
     model_config = ConfigDict(extra="allow")
 
-    expected_city: str = "Paris"
+    # Task-specific ground truth travels in verifier_metadata (per Gym convention), e.g.
+    # {"expected_city": "Paris"}.
+    verifier_metadata: Optional[dict[str, Any]] = None
 
 
 class ExampleMCPWeatherSeedSessionResponse(BaseSeedSessionResponse):
@@ -68,13 +70,12 @@ class ExampleMCPWeatherSeedSessionResponse(BaseSeedSessionResponse):
 class ExampleMCPWeatherVerifyRequest(BaseVerifyRequest):
     model_config = ConfigDict(extra="allow")
 
-    expected_city: str = "Paris"
+    verifier_metadata: Optional[dict[str, Any]] = None
 
 
 class ExampleMCPWeatherVerifyResponse(BaseVerifyResponse):
     model_config = ConfigDict(extra="allow")
 
-    expected_city: str = "Paris"
     expected_weather: str
     tool_call_seen: bool
     final_response_mentions_weather: bool
@@ -90,8 +91,9 @@ class ExampleMCPWeatherResourcesServer(MCPResourcesServer):
         body: ExampleMCPWeatherSeedSessionRequest,
     ) -> ExampleMCPWeatherSeedSessionResponse:
         session_id = request.session[SESSION_ID_KEY]
+        expected_city = (body.verifier_metadata or {}).get("expected_city", "Paris")
         self.session_id_to_state[session_id] = {
-            "expected_city": body.expected_city,
+            "expected_city": expected_city,
             "weather_calls": [],
         }
         return ExampleMCPWeatherSeedSessionResponse(mcp=self.build_mcp_session_metadata(request))
@@ -113,8 +115,9 @@ class ExampleMCPWeatherResourcesServer(MCPResourcesServer):
     ) -> ExampleMCPWeatherVerifyResponse:
         session_id = request.session[SESSION_ID_KEY]
         state = self.session_id_to_state.get(session_id, {"weather_calls": []})
-        expected_weather = _weather_sentence(body.expected_city)
-        expected_city = body.expected_city.casefold()
+        expected_city_value = (body.verifier_metadata or {}).get("expected_city", "Paris")
+        expected_weather = _weather_sentence(expected_city_value)
+        expected_city = expected_city_value.casefold()
 
         # Match the city case-insensitively. The weather sentence is derived deterministically from the
         # city, so a city match is sufficient; comparing the sentence exactly would spuriously reject a

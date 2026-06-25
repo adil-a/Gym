@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -27,7 +28,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import Request
-from pydantic import ConfigDict
+from pydantic import ConfigDict, PrivateAttr
 
 from nemo_gym.base_resources_server import NEMO_GYM_MCP_METADATA_KEY, BaseRunRequest, BaseVerifyResponse
 from nemo_gym.base_responses_api_agent import (
@@ -243,6 +244,7 @@ class ClaudeCodeAgentVerifyResponse(BaseVerifyResponse):
 class ClaudeCodeAgent(SimpleResponsesAPIAgent):
     config: ClaudeCodeAgentConfig
     sem: Semaphore = None
+    _static_mcp_config: Optional[dict[str, Any]] = PrivateAttr(default=None)
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def model_post_init(self, __context: Any) -> None:
@@ -408,16 +410,21 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
             raise ValueError(f"Claude Code mcp_config has non-object mcpServers: {config_path}")
         return config
 
+    def _get_static_mcp_config(self) -> dict[str, Any]:
+        # The static mcp_config is immutable, so read it from disk at most once and reuse the cached
+        # copy for every rollout instead of re-reading the file each time.
+        if self._static_mcp_config is None:
+            self._static_mcp_config = self._load_static_mcp_config()
+        return self._static_mcp_config
+
     def _write_rollout_mcp_config(self, seed_response_json: dict[str, Any], output_dir: Path) -> Optional[str]:
         metadata = seed_response_json.get(NEMO_GYM_MCP_METADATA_KEY)
         if not isinstance(metadata, dict):
             return None
 
         server_name = metadata.get("server_name") or self.config.resources_server.name
-        url = metadata.get("url")
-        if not url:
-            url_path = str(metadata.get("url_path") or "/mcp")
-            url = f"{self._resources_server_base_url().rstrip('/')}/{url_path.lstrip('/')}"
+        url_path = str(metadata.get("url_path") or "/mcp")
+        url = f"{self._resources_server_base_url().rstrip('/')}/{url_path.lstrip('/')}"
 
         entry: dict[str, Any] = {
             "type": metadata.get("transport") or "http",
@@ -426,8 +433,16 @@ class ClaudeCodeAgent(SimpleResponsesAPIAgent):
         headers = metadata.get("headers")
         if isinstance(headers, dict) and headers:
             entry["headers"] = {str(key): str(value) for key, value in headers.items()}
+        else:
+            LOG.warning(
+                "MCP seed metadata for %r has no headers; the tool endpoint will be called without a "
+                "session token and will reject the calls.",
+                server_name,
+            )
 
-        config = self._load_static_mcp_config()
+        # Start from a copy of the (cached) static config and add the per-rollout Gym entry. If a static
+        # mcp_config server already uses this name, the per-rollout Gym entry takes precedence over it.
+        config = copy.deepcopy(self._get_static_mcp_config())
         config.setdefault("mcpServers", {})[str(server_name)] = entry
 
         output_dir.mkdir(parents=True, exist_ok=True)

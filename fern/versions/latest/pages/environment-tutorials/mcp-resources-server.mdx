@@ -225,7 +225,7 @@ Things to know about this flow:
 
 - **No cookie/session entanglement.** Gym's session cookie flows only between the agent server and the Resources Server (`/seed_session` ↔ `/verify`). The agent-to-external-MCP connection is a separate channel with its own auth (whatever `headers` you put in the static config). They don't interfere.
 - **Verify off the trajectory.** Gym can't observe the external server's calls, so `verify()` must score the `function_call` / `function_call_output` items in the agent's Responses-API output — not server-side session state.
-- **Static + per-rollout compose.** When both are present, the agent merges your static `mcp_config` with the per-rollout Gym-owned entry, so a single rollout can use external tools *and* a Gym-owned MCP server at once.
+- **Static + per-rollout compose.** When both are present, the agent merges your static `mcp_config` with the per-rollout Gym-owned entry, so a single rollout can use external tools *and* a Gym-owned MCP server at once. If a static server happens to share the **same name** as the Gym resources server, the per-rollout Gym entry takes precedence and overwrites it.
 
 ---
 
