@@ -864,6 +864,39 @@ def dump_config():  # pragma: no cover
     print(OmegaConf.to_yaml(global_config_dict, resolve=True))
 
 
+@exit_cleanly_on_config_error
+def validate():
+    """Validate a config without starting Ray or any server subprocess.
+
+    Runs the full config parse — config_paths resolution (missing/malformed), server cross-reference
+    validation, mandatory `???` values, and schema — then exits 0 (valid) or, via
+    `exit_cleanly_on_config_error`, 1 with a clean traceback-free message. No Ray, no servers, so it
+    returns in well under a second instead of after Ray bootstrap.
+
+    No model config is required: a dummy `policy_model` is injected (the `NO_MODEL` parser config, as
+    in `gym list` / `env compose`) so model interpolations (e.g. `${policy_base_url}`) resolve —
+    validation is about config well-formedness, not the model. Pass a model config / `--model-type`
+    as well if you want it validated too.
+
+    Examples:
+
+    ```bash
+    gym env validate --environment <env>
+    gym env validate --benchmark <benchmark>
+    # or by explicit config path(s):
+    gym env validate --config resources_servers/<env>/configs/<env>.yaml
+    ```
+    """
+    global_config_dict = get_global_config_dict(
+        global_config_dict_parser_config=GlobalConfigDictParserConfig(
+            initial_global_config_dict=GlobalConfigDictParserConfig.NO_MODEL_GLOBAL_CONFIG_DICT,
+        ),
+    )
+    BaseNeMoGymCLIConfig.model_validate(global_config_dict)
+
+    rich.print("[green]✓[/green] Config is valid.")
+
+
 def list_environments() -> None:
     """List the environments available under environments/, by short name.
 
