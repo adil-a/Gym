@@ -271,9 +271,7 @@ class TestRolloutMCPConfig:
                 }
             }
         }
-        agent.server_client._build_server_base_url.side_effect = (
-            lambda cfg: f"http://{cfg['host']}:{cfg['port']}"
-        )
+        agent.server_client._build_server_base_url.side_effect = lambda cfg: f"http://{cfg['host']}:{cfg['port']}"
 
         config_path = agent._write_rollout_mcp_config(
             {
@@ -295,9 +293,7 @@ class TestRolloutMCPConfig:
 
     def test_merges_static_mcp_config_when_metadata_present(self, tmp_path: Path) -> None:
         static_config = tmp_path / "static_mcp.json"
-        static_config.write_text(
-            json.dumps({"mcpServers": {"static": {"type": "stdio", "command": "server"}}})
-        )
+        static_config.write_text(json.dumps({"mcpServers": {"static": {"type": "stdio", "command": "server"}}}))
         agent = _make_agent(
             mcp_config=str(static_config),
             resources_server=ResourcesServerRef(type="resources_servers", name="example_mcp_weather"),
@@ -312,9 +308,7 @@ class TestRolloutMCPConfig:
                 }
             }
         }
-        agent.server_client._build_server_base_url.side_effect = (
-            lambda cfg: f"http://{cfg['host']}:{cfg['port']}"
-        )
+        agent.server_client._build_server_base_url.side_effect = lambda cfg: f"http://{cfg['host']}:{cfg['port']}"
 
         config_path = agent._write_rollout_mcp_config(
             {
@@ -343,9 +337,7 @@ class TestRolloutMCPConfig:
                 }
             }
         }
-        agent.server_client._build_server_base_url.side_effect = (
-            lambda cfg: f"http://{cfg['host']}:{cfg['port']}"
-        )
+        agent.server_client._build_server_base_url.side_effect = lambda cfg: f"http://{cfg['host']}:{cfg['port']}"
 
         async def fake_post(server_name, url_path, json=None, cookies=None):
             if url_path == "/seed_session":
