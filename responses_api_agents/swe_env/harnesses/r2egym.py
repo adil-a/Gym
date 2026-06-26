@@ -35,6 +35,7 @@ from responses_api_agents.swe_env.harness import (
     SweTask,
     SweTaskHarness,
     _ensure_trailing_newline,
+    compute_resolved,
 )
 from responses_api_agents.swe_env.harnesses import flat_eval
 
@@ -127,6 +128,14 @@ class R2EGymHarness(SweTaskHarness):
     def grade(self, task: SweTask, artifacts: EvalArtifacts) -> SweEvalReport:
         """Grade an r2e-gym task from its evaluation artifacts (host-side, flat).
 
+        Unlike the SWE-bench flat grader, this path does NOT gate ``resolved`` on the
+        SWE-bench ``>>>>> Start/End Test Output`` marker pair: r2e-gym's ``run_tests.sh``
+        does not emit those swebench sentinels, so requiring them would mask every r2e-gym
+        sample as unresolved. Per-test status lines are parsed from the whole log and the
+        node-ids are matched directly against the required ``fail_to_pass`` / ``pass_to_pass``
+        sets (R2E-Gym uses pytest node-ids verbatim). Only genuine infra failures
+        (sandbox/timeout) are masked.
+
         Args:
             task: The SWE task being graded.
             artifacts: The evaluation artifacts produced by ``run_eval``.
@@ -134,4 +143,32 @@ class R2EGymHarness(SweTaskHarness):
         Returns:
             SweEvalReport: The resolved/unresolved verdict with patch state and any error kind.
         """
-        return flat_eval.flat_grade(task, artifacts)
+        if artifacts.raw.get("error_type") in {"sandbox", "timeout"}:
+            return SweEvalReport(
+                instance_id=task.instance_id,
+                patch_exists=bool(task.model_patch),
+                patch_applied=artifacts.patch_applied,
+                error_kind=artifacts.raw["error_type"],
+            )
+        # Parse per-test status lines from the whole log (no swebench-marker gate). An
+        # unbuildable / empty log yields an empty status map -> no required test passes ->
+        # unmasked unresolved, and compute_resolved still returns False for an empty
+        # required set (the edge validated by main).
+        status_map = flat_eval._parse_pytest_status_lines(artifacts.test_output)
+        passed = flat_eval.passed_tests(status_map)
+        # Thread the full status_map so compute_resolved mirrors swebench's
+        # get_eval_tests_report semantics: neutral-status required tests (SKIPPED/XPASS)
+        # are excluded rather than treated as failures.
+        resolved = compute_resolved(
+            fail_to_pass=task.fail_to_pass,
+            pass_to_pass=task.pass_to_pass,
+            passed=passed,
+            status_map=status_map,
+        )
+        return SweEvalReport(
+            instance_id=task.instance_id,
+            resolved=resolved,
+            patch_applied=bool(status_map),
+            patch_exists=bool(task.model_patch),
+            tests_status={"passed": passed, "all": status_map},
+        )

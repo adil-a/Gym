@@ -46,6 +46,12 @@ if TYPE_CHECKING:
     from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
 
+# Default checkout locations probed (in order) when locating the repo, mirroring main's
+# ``cd /testbed 2>/dev/null || cd /workspace/repo 2>/dev/null || cd /app 2>/dev/null`` ladder
+# in SweBenchExtDatasetProcessor's eval script.
+_REPO_WORKDIR_LADDER = ("/testbed", "/workspace/repo", "/app", "/root/repo")
+
+
 # Output markers the parser (parse_and_check_tests) extracts content between.
 _TEST_OUTPUT_START = "<<<SWE_BENCH_EXT_TEST_OUTPUT_START>>>"
 _TEST_OUTPUT_END = "<<<SWE_BENCH_EXT_TEST_OUTPUT_END>>>"
@@ -101,6 +107,49 @@ class SweBenchExtHarness(SweTaskHarness):
         """
         return True
 
+    async def _resolve_repo_workdir(self, env: "AsyncSweEnvironment", task: SweTask) -> str:
+        """Locate the repository checkout, mirroring main's ``cd`` fallback ladder.
+
+        Main's ``SweBenchExtDatasetProcessor`` eval script runs
+        ``cd /testbed 2>/dev/null || cd /workspace/repo 2>/dev/null || cd /app 2>/dev/null``
+        so a repo that is not at ``/testbed`` is still found. This reproduces that
+        host-side: a row-provided ``repo_workdir`` that differs from the default and holds a
+        ``.git`` checkout wins; otherwise the ladder (``/testbed``, ``/workspace/repo``,
+        ``/app``, ``/root/repo``) is probed for a ``.git`` directory. If nothing matches the
+        task's ``repo_workdir`` is returned unchanged (preserving prior behavior).
+
+        Args:
+            env: The async environment used to probe the sandbox.
+            task: The SWE task whose ``repo_workdir`` is the preferred/default location.
+
+        Returns:
+            str: The resolved repository working directory inside the sandbox.
+        """
+        # Prefer an explicit, non-default row workdir holding a checkout.
+        candidates: list[str] = []
+        if task.repo_workdir and task.repo_workdir != "/testbed":
+            candidates.append(task.repo_workdir)
+        candidates.extend(d for d in _REPO_WORKDIR_LADDER if d not in candidates)
+        for candidate in candidates:
+            probe = await env.execute(f'test -d "{candidate}/.git"', cwd="/")
+            if probe["returncode"] == 0:
+                return candidate
+        return task.repo_workdir
+
+    async def reset_repo(self, env: "AsyncSweEnvironment", task: SweTask) -> None:
+        """Reset the located checkout to ``base_commit`` for hermetic grading.
+
+        Resolves the repo workdir via the same ladder main uses (so a non-``/testbed``
+        checkout is found), then defers to the base ``git reset --hard`` behavior.
+
+        Args:
+            env: The started environment to reset.
+            task: The task whose ``base_commit`` is restored.
+        """
+        if task.base_commit:
+            workdir = await self._resolve_repo_workdir(env, task)
+            await env.execute(f"git reset --hard {task.base_commit}", cwd=workdir)
+
     async def run_eval(self, env: "AsyncSweEnvironment", task: SweTask) -> EvalArtifacts:
         """Apply patches, run the test command, and capture the evaluation output.
 
@@ -116,7 +165,8 @@ class SweBenchExtHarness(SweTaskHarness):
             EvalArtifacts: The captured test output, return code, whether the
                 model patch applied, and the execution error type if any.
         """
-        workdir = task.repo_workdir
+        # Resolve the checkout via main's cd ladder so a non-/testbed repo is found.
+        workdir = await self._resolve_repo_workdir(env, task)
         patch_applied = True
         # Best-effort apply: a bad apply never fails the run (grading is on the
         # tests only); we still record whether the model patch applied for info.
@@ -143,10 +193,11 @@ class SweBenchExtHarness(SweTaskHarness):
         # config adds no flags and no result file. grade() reuses this SAME value via
         # _resolve_framework so the two stay in lockstep.
         framework = self._resolve_framework(task)
-        # Keep a command default ONLY when test_command is truly absent. Real
-        # swe-bench-ext rows carry their own command; the default covers rows that do
-        # not ship one without altering any row that does.
-        base_command = task.test_command or "python -m pytest -rA -q"
+        # Use the row's test command verbatim, with NO default runner. Main's
+        # SweBenchExtDatasetProcessor uses ``inst.get("test_command", "")`` (empty when
+        # absent): a command-less row runs no runner and grades unresolved. Injecting a
+        # default ``python -m pytest`` here would diverge from main by fabricating results.
+        base_command = task.test_command
         test_cmd = get_test_command_with_output(base_command, framework)
         result_file = (get_framework_config(framework, base_command) or {}).get("result_file")
         result = await env.execute(self._wrap_eval_command(test_cmd, result_file), cwd=workdir, is_eval=True)

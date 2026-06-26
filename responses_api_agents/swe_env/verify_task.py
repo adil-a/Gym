@@ -17,8 +17,10 @@
 Grades an agent's patch inline as a library call (used by anyswe and the
 ``swe_env`` self-driving harness) — there is no separate verifier server. Runs a
 fresh-only sequence via ``acquire_sandbox`` (always-teardown), bounded by a
-per-call eval timeout. Infra failures are masked as a typed ``error_kind``
-(reward 0.0) rather than raising.
+per-call eval timeout. A genuine wall-clock eval timeout is masked as a typed
+``error_kind`` (reward 0.0); other non-timeout eval-stage failures are reported
+unmasked as ``resolved=False`` (reward 0.0, kept in the gradient) to mirror
+main's app.py, rather than raising.
 
 Every eval spec is stamped with a ``ttl_s`` so TTL-honoring backends (such as
 opensandbox) self-expire orphaned sandboxes.
@@ -75,8 +77,10 @@ async def verify_task(
     Selects the harness for the task's benchmark, optionally substitutes the
     golden patch, then resets the repo, materializes the patch, runs the eval,
     and grades the artifacts. An empty patch short-circuits without spinning up
-    a sandbox. Timeouts and infra failures are returned as a report carrying a
-    typed ``error_kind`` rather than raised.
+    a sandbox. A genuine wall-clock eval timeout is returned as a report carrying
+    ``error_kind="eval_timeout"``; other non-timeout eval-stage failures are
+    returned unmasked (``resolved=False``, ``error_kind=None``) to mirror main,
+    rather than raised.
 
     Args:
         provider: Single-key provider mapping or ``SandboxProvider`` selecting
@@ -88,8 +92,9 @@ async def verify_task(
             seconds; falls back to the task metadata or a default.
 
     Returns:
-        SweEvalReport: The grading outcome, with ``error_kind`` set on timeout
-            or infra failure.
+        SweEvalReport: The grading outcome, with ``error_kind="eval_timeout"`` set
+            only on a genuine wall-clock eval timeout; non-timeout eval-stage
+            failures are reported unmasked (``resolved=False``, ``error_kind=None``).
     """
     harness = get_harness(task.benchmark)
     if task.metadata.get("flat_eval"):
@@ -129,17 +134,26 @@ async def verify_task(
 
             return await asyncio.wait_for(_sequence(), timeout=timeout)
     except (asyncio.TimeoutError, TimeoutError):
+        # Genuine wall-clock eval timeout: mask via error_kind. This mirrors main's
+        # app.py, which sets eval_timed_out (-> mask_sample) only when the final eval
+        # elapsed time reaches the configured tests timeout.
         return SweEvalReport(
             instance_id=task.instance_id,
             patch_exists=bool(task.model_patch),
             error_kind="eval_timeout",
             tests_status={"timeout_s": timeout},
         )
-    except Exception as exc:  # infra failure -> mask via flag, never crash the server
+    except Exception as exc:  # non-timeout eval-stage failure -> unmasked reward 0
+        # A non-timeout eval-stage crash is NOT masked: main's app.py catches any eval
+        # exception, returns no report file (resolved=False) and leaves eval_timed_out
+        # False, so the sample stays in the gradient at reward 0. Returning
+        # error_kind=None here keeps mask_sample aligned with main rather than masking
+        # the infra crash (which main does not do).
         return SweEvalReport(
             instance_id=task.instance_id,
             patch_exists=bool(task.model_patch),
-            error_kind="sandbox",
+            resolved=False,
+            error_kind=None,
             tests_status={"exception": repr(exc)},
         )
 

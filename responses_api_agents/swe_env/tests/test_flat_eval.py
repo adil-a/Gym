@@ -336,6 +336,51 @@ def test_flat_grade_resolved_does_not_gate_on_artifact_patch_applied():
     assert reward_from_report(report) == 1.0
 
 
+def test_flat_grade_neutral_skipped_required_test_is_not_a_failure():
+    """A required test reported SKIPPED is neutral (excluded), not a failure.
+
+    This mirrors swebench's ``get_eval_tests_report`` + ``get_resolution_status``: a
+    required test counts as a failure only when absent or FAILED/ERROR. A neutral
+    status (SKIPPED/XPASS) is excluded from both the success and failure tallies, so a
+    run whose only "non-pass" required test is SKIPPED still resolves. A bare
+    ``passed``-set membership check (the prior behavior) would have treated the
+    SKIPPED test as a failure and wrongly graded it unresolved.
+    """
+    log = "\n".join(
+        [
+            flat_eval.APPLY_PATCH_PASS,
+            flat_eval.START_TEST_OUTPUT,
+            "PASSED tests/test_ext_autodoc.py::test_format_signature",
+            "SKIPPED tests/test_ext_autodoc.py::test_autodoc_inherited",
+            flat_eval.END_TEST_OUTPUT,
+        ]
+    )
+    report = flat_eval.flat_grade(_task(), _flat_artifacts(log))
+    # F2P passed; the SKIPPED P2P is neutral (excluded) -> zero failures -> resolved.
+    assert report.resolved is True
+    assert reward_from_report(report) == 1.0
+
+
+def test_flat_grade_absent_required_test_is_a_failure():
+    """A required test absent from the status map is a failure (not neutral).
+
+    Per swebench's ``test_failed`` (``case not in sm``), an absent required test counts
+    as a failure, so the run must grade unresolved.
+    """
+    log = "\n".join(
+        [
+            flat_eval.APPLY_PATCH_PASS,
+            flat_eval.START_TEST_OUTPUT,
+            "PASSED tests/test_ext_autodoc.py::test_format_signature",
+            flat_eval.END_TEST_OUTPUT,
+        ]
+    )
+    # P2P (test_autodoc_inherited) is absent from the log -> failure -> unresolved.
+    report = flat_eval.flat_grade(_task(), _flat_artifacts(log))
+    assert report.resolved is False
+    assert reward_from_report(report) == 0.0
+
+
 def test_flat_grade_masks_infra_error():
     """Flat grading masks an infra timeout to reward 0.0 with a timeout error kind."""
     artifacts = EvalArtifacts(test_output="", return_code=1, raw={"error_type": "timeout", "flat": True})
@@ -344,11 +389,16 @@ def test_flat_grade_masks_infra_error():
     assert reward_from_report(report) == 0.0
 
 
-def test_flat_grade_masks_missing_eval_script():
-    """Flat grading masks a missing eval script to reward 0.0 with an eval_error kind."""
+def test_flat_grade_unbuildable_eval_script_is_unmasked_unresolved():
+    """An unbuildable / missing eval script grades UNMASKED unresolved (reward 0), not eval_error.
+
+    Per main, only genuine sandbox/timeout infra failures are masked; an empty/unbuildable eval
+    spec produces no test markers and so grades as a legitimate unresolved (``error_kind`` None).
+    """
     artifacts = EvalArtifacts(test_output="", return_code=1, raw={"error_type": "eval_error", "flat": True})
     report = flat_eval.flat_grade(_task(), artifacts)
-    assert report.error_kind == "eval_error"
+    assert report.error_kind is None
+    assert report.resolved is False
     assert reward_from_report(report) == 0.0
 
 
@@ -526,13 +576,20 @@ def test_swebench_flat_run_eval_masks_sandbox_error():
     assert report.error_kind == "sandbox"
 
 
-def test_swebench_flat_run_eval_missing_script_masks_eval_error():
-    """A missing eval script is masked as an eval_error."""
+def test_swebench_flat_run_eval_missing_script_is_unmasked_unresolved():
+    """A missing/unbuildable eval script grades UNMASKED unresolved (reward 0), not eval_error.
+
+    ``flat_run_eval`` still tags the artifact ``error_type == "eval_error"`` (so callers can log
+    it), but grading no longer masks on it: per main only genuine sandbox/timeout infra failures
+    are masked, and an empty spec simply produces no test markers and grades unresolved.
+    """
     harness = SweBenchHarness("swe-bench")
     task = _task(metadata={})  # no eval_script
     report, artifacts, _ = _drive_flat(harness, task, log_text="")
     assert artifacts.raw["error_type"] == "eval_error"
-    assert report.error_kind == "eval_error"
+    assert report.error_kind is None
+    assert report.resolved is False
+    assert reward_from_report(report) == 0.0
 
 
 def test_r2egym_flat_run_eval_resolved_via_task_metadata():

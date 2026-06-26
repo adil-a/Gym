@@ -155,9 +155,11 @@ def test_run_eval_then_grade_flat_resolved():
     assert reward_from_report(report) == 1.0
 
 
-def test_run_eval_missing_eval_script_masks_eval_error():
+def test_run_eval_missing_eval_script_is_unmasked_unresolved():
     from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
+    # A missing/unbuildable eval script grades UNMASKED unresolved (reward 0), not eval_error:
+    # only genuine sandbox/timeout infra failures are masked.
     async def run():
         harness = R2EGymHarness()
         task = _task()
@@ -166,7 +168,9 @@ def test_run_eval_missing_eval_script_masks_eval_error():
         return harness.grade(task, artifacts)
 
     report = asyncio.run(run())
-    assert report.error_kind == "eval_error"
+    assert report.error_kind is None
+    assert report.resolved is False
+    assert reward_from_report(report) == 0.0
 
 
 def test_reset_repo_is_noop():

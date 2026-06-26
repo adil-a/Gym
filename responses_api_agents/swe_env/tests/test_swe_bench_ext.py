@@ -250,6 +250,22 @@ def test_run_eval_and_grade_share_framework_value():
     assert "mkdir -p /workspace/test-results" in wrapped
 
 
+def test_run_eval_command_less_row_injects_no_default_runner():
+    """A command-less row runs NO test runner, matching main's SweBenchExtDatasetProcessor.
+
+    Main uses ``inst.get("test_command", "")`` verbatim (empty when absent), so a row that
+    ships no command runs nothing and grades unresolved. The harness must not fabricate a
+    ``python -m pytest`` default that would diverge from main by manufacturing results.
+    """
+    task = _task(test_command="", test_framework="")
+    _, _, provider = _run_eval(task, test_output="", run_cmd="__never__")
+    eval_cmds = [c for c in provider.commands if "git apply" not in c and "cat " not in c]
+    wrapped = eval_cmds[-1]
+    assert "pytest" not in wrapped  # no default runner injected
+    # The command slot between the START/END marker echoes is empty (no runner line).
+    assert 'echo "<<<SWE_BENCH_EXT_TEST_OUTPUT_START>>>"\n\necho "<<<SWE_BENCH_EXT_TEST_OUTPUT_END>>>"' in wrapped
+
+
 # --- patch_applied does not gate resolved -----------------------------------
 
 
@@ -287,13 +303,18 @@ class _FakeExtProvider:
 
     name = "fake-ext"
 
-    def __init__(self, *, test_output="", apply_rc=0, run_cmd="pytest", **_):
+    def __init__(self, *, test_output="", apply_rc=0, run_cmd="pytest", git_dir=None, **_):
         self._test_output = test_output
         self._apply_rc = apply_rc
         # Marker that identifies the wrapped eval command (defaults to the pytest
         # command); tests with a custom command pass run_cmd.
         self._run_cmd = run_cmd
+        # Which directory holds the repo checkout: a ``test -d "<dir>/.git"`` probe
+        # succeeds only for this dir. None => every probed dir reports a checkout
+        # (so the first ladder entry, /testbed, wins).
+        self._git_dir = git_dir
         self.commands: list[str] = []
+        self.exec_cwds: list[str | None] = []
         self.uploaded: dict[str, str] = {}
 
     async def create(self, spec):
@@ -301,6 +322,13 @@ class _FakeExtProvider:
 
     async def exec(self, handle, command, *, cwd=None, env=None, timeout_s=None, user=None):
         self.commands.append(command)
+        self.exec_cwds.append(cwd)
+        if command.startswith("test -d "):
+            # The repo-workdir probe: succeed only for the configured git dir (or any
+            # dir when unconfigured).
+            if self._git_dir is None or f'"{self._git_dir}/.git"' in command:
+                return SandboxExecResult(stdout="", stderr="", return_code=0)
+            return SandboxExecResult(stdout="", stderr="", return_code=1)
         if "git apply" in command:
             return SandboxExecResult(stdout="", stderr="", return_code=self._apply_rc)
         if self._run_cmd in command:
@@ -331,7 +359,7 @@ class _FakeExtProvider:
 register_provider("fake-ext", _FakeExtProvider, override=True)
 
 
-def _run_eval(task: SweTask, *, test_output: str, apply_rc: int = 0, run_cmd: str = "pytest"):
+def _run_eval(task: SweTask, *, test_output: str, apply_rc: int = 0, run_cmd: str = "pytest", git_dir=None):
     """Run the harness through a scripted provider and return the run outputs.
 
     Args:
@@ -339,6 +367,7 @@ def _run_eval(task: SweTask, *, test_output: str, apply_rc: int = 0, run_cmd: st
         test_output: The transcript the provider returns for the eval command.
         apply_rc: Return code for ``git apply`` commands.
         run_cmd: Substring identifying the wrapped eval command.
+        git_dir: Directory whose ``.git`` probe succeeds (None => any dir).
 
     Returns:
         tuple: The harness, the produced ``EvalArtifacts``, and the provider
@@ -349,7 +378,7 @@ def _run_eval(task: SweTask, *, test_output: str, apply_rc: int = 0, run_cmd: st
     async def run():
         harness = SweBenchExtHarness()
         env = await AsyncSweEnvironment.start(
-            {"fake-ext": {"test_output": test_output, "apply_rc": apply_rc, "run_cmd": run_cmd}},
+            {"fake-ext": {"test_output": test_output, "apply_rc": apply_rc, "run_cmd": run_cmd, "git_dir": git_dir}},
             harness.build_spec(task),
         )
         await harness.materialize(env, task)
@@ -399,3 +428,62 @@ def test_run_eval_wraps_command_with_structured_output_and_markers():
     assert "<<<SWE_BENCH_EXT_RESULT_FILE_START>>>" in wrapped  # junit result-file dumped for the parser
     # The result-file parent dir is created first.
     assert "mkdir -p /workspace/test-results" in wrapped
+
+
+# --- repo-workdir fallback ladder (matches main's cd /testbed||/workspace/repo||/app) ----
+
+
+def _eval_cwd(provider) -> str | None:
+    """Return the cwd of the wrapped eval command (the command holding the markers)."""
+    for command, cwd in zip(provider.commands, provider.exec_cwds):
+        if "<<<SWE_BENCH_EXT_TEST_OUTPUT_START>>>" in command:
+            return cwd
+    return None
+
+
+def test_run_eval_resolves_workdir_from_ladder_when_repo_not_at_testbed():
+    """A repo at /workspace/repo (not /testbed) is found via main's fallback ladder.
+
+    Main's eval script runs ``cd /testbed || cd /workspace/repo || cd /app``; the harness
+    must reproduce that so the patches and tests run in the real checkout rather than the
+    hardcoded /testbed default.
+    """
+    task = _task()  # default repo_workdir == /testbed
+    _, _, provider = _run_eval(task, test_output=_fixture("pytest_junit.xml"), git_dir="/workspace/repo")
+    # The patch-apply and the wrapped eval command run in the located checkout.
+    apply_cwds = [cwd for cmd, cwd in zip(provider.commands, provider.exec_cwds) if "git apply" in cmd]
+    assert apply_cwds and all(cwd == "/workspace/repo" for cwd in apply_cwds)
+    assert _eval_cwd(provider) == "/workspace/repo"
+
+
+def test_run_eval_prefers_explicit_non_default_row_workdir():
+    """An explicit, non-default ``repo_workdir`` holding a checkout wins over the ladder."""
+    task = _task(repo_workdir="/srv/project")
+    _, _, provider = _run_eval(task, test_output=_fixture("pytest_junit.xml"), git_dir="/srv/project")
+    assert _eval_cwd(provider) == "/srv/project"
+
+
+def test_run_eval_defaults_to_testbed_when_present():
+    """When /testbed holds the checkout it wins (first ladder entry), preserving prior behavior."""
+    task = _task()
+    _, _, provider = _run_eval(task, test_output=_fixture("pytest_junit.xml"), git_dir="/testbed")
+    assert _eval_cwd(provider) == "/testbed"
+
+
+def test_reset_repo_resolves_workdir_from_ladder():
+    """reset_repo runs ``git reset --hard`` in the located checkout, not a hardcoded /testbed."""
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
+
+    async def run():
+        harness = SweBenchExtHarness()
+        task = _task()
+        env = await AsyncSweEnvironment.start(
+            {"fake-ext": {"git_dir": "/app"}},
+            harness.build_spec(task),
+        )
+        await harness.reset_repo(env, task)
+        return env.sandbox._provider
+
+    provider = asyncio.run(run())
+    reset_cwds = [cwd for cmd, cwd in zip(provider.commands, provider.exec_cwds) if cmd.startswith("git reset --hard")]
+    assert reset_cwds == ["/app"]

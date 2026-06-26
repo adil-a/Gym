@@ -218,10 +218,13 @@ async def flat_run_eval(env: "AsyncSweEnvironment", task: SweTask) -> EvalArtifa
 def flat_grade(task: SweTask, artifacts: EvalArtifacts) -> SweEvalReport:
     """Grade a flat eval-script log host-side.
 
-    Infra failures (sandbox/timeout) are masked via ``error_kind``. A log with a
-    bad code or missing markers grades as unresolved with ``patch_applied`` set
-    from the parse, since a failed setup is a legitimate unresolved rather than
-    an infra mask.
+    Only genuine infra failures (sandbox/timeout) are masked via ``error_kind``.
+    An unbuildable / missing / empty eval spec (``error_type == "eval_error"``) is
+    NOT masked: it falls through to the parser, which finds no markers and grades
+    unmasked ``resolved=False`` (reward 0), matching main's behavior. A log with a
+    bad code or missing markers likewise grades as unresolved with
+    ``patch_applied`` set from the parse, since a failed setup is a legitimate
+    unresolved rather than an infra mask.
 
     Args:
         task: The task being graded, supplying the instance id, expected
@@ -240,21 +243,18 @@ def flat_grade(task: SweTask, artifacts: EvalArtifacts) -> SweEvalReport:
             patch_applied=artifacts.patch_applied,
             error_kind=artifacts.raw["error_type"],
         )
-    # A missing eval script is an eval error (masked), not a 0 score.
-    if artifacts.raw.get("error_type") == "eval_error":
-        return SweEvalReport(
-            instance_id=task.instance_id,
-            patch_exists=bool(task.model_patch),
-            patch_applied=artifacts.patch_applied,
-            error_kind="eval_error",
-        )
 
     status_map, log_patch_applied = parse_eval_log(artifacts.test_output)
     passed = passed_tests(status_map)
+    # Thread the full status_map so compute_resolved mirrors swebench's
+    # get_eval_tests_report semantics: a required test counts as a failure only when
+    # absent or FAILED/ERROR, while neutral statuses (SKIPPED/XPASS) are excluded
+    # rather than treated as failures (which a bare passed-set membership check would).
     resolved = log_patch_applied and compute_resolved(
         fail_to_pass=task.fail_to_pass,
         pass_to_pass=task.pass_to_pass,
         passed=passed,
+        status_map=status_map,
     )
     return SweEvalReport(
         instance_id=task.instance_id,

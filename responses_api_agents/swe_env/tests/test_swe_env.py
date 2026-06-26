@@ -130,6 +130,43 @@ def test_compute_resolved():
     assert compute_resolved(fail_to_pass=[], pass_to_pass=[], passed=["a"]) is False
 
 
+def test_compute_resolved_fail_only():
+    """The ``fail_only`` eval type mirrors swebench's ``check_fail_only``.
+
+    A required test is success UNLESS it is present in the status map AND ==FAILED, so an
+    absent test (silent success) still resolves; a present-and-FAILED test does not.
+    """
+    # Required test absent from the status map -> success (silent) -> resolved.
+    assert (
+        compute_resolved(fail_to_pass=["a"], pass_to_pass=["b"], passed=[], eval_type="fail_only", status_map={})
+        is True
+    )
+    # A present-and-FAILED required test -> failure -> unresolved.
+    assert (
+        compute_resolved(
+            fail_to_pass=["a"],
+            pass_to_pass=["b"],
+            passed=["b"],
+            eval_type="fail_only",
+            status_map={"a": "FAILED", "b": "PASSED"},
+        )
+        is False
+    )
+    # Present but not FAILED (e.g. SKIPPED/ERROR) -> success under fail_only -> resolved.
+    assert (
+        compute_resolved(
+            fail_to_pass=["a"],
+            pass_to_pass=["b"],
+            passed=[],
+            eval_type="fail_only",
+            status_map={"a": "SKIPPED", "b": "ERROR"},
+        )
+        is True
+    )
+    # Empty required set is still unresolved under fail_only (the validated edge).
+    assert compute_resolved(fail_to_pass=[], pass_to_pass=[], passed=[], eval_type="fail_only") is False
+
+
 def test_reward_from_report():
     """``reward_from_report`` is 1.0 for a resolved report and 0.0 otherwise or when masked."""
     assert reward_from_report(SweEvalReport(instance_id="i", resolved=True)) == 1.0
@@ -183,10 +220,16 @@ def test_verify_task_empty_patch_fast_path():
     assert report.resolved is False
 
 
-def test_verify_task_infra_error_masked():
-    """A sandbox creation failure is masked to reward 0.0 with a sandbox error kind."""
+def test_verify_task_non_timeout_eval_failure_unmasked():
+    """A non-timeout eval-stage failure is unmasked: resolved=False, reward 0.0.
+
+    Mirrors main's app.py, which catches any eval exception, returns no report file
+    (resolved=False) and leaves eval_timed_out False (so mask_sample stays False).
+    Only a genuine wall-clock eval timeout is masked.
+    """
     report = asyncio.run(verify_task({"fake-swe": {"create_error": True}}, _task()))
-    assert report.error_kind == "sandbox"
+    assert report.error_kind is None
+    assert report.resolved is False
     assert reward_from_report(report) == 0.0
 
 

@@ -300,25 +300,61 @@ def compute_resolved(
     fail_to_pass: Iterable[str],
     pass_to_pass: Iterable[str],
     passed: Iterable[str],
+    eval_type: str = "pass_and_fail",
+    status_map: dict[str, str] | None = None,
 ) -> bool:
     """Apply the SWE-bench resolution rule.
 
-    A task is resolved when every FAIL_TO_PASS and PASS_TO_PASS test passes.
+    Two eval types are supported, mirroring swebench's per-repo selection
+    (``swebench.harness.grading.get_eval_report`` /
+    ``get_eval_tests_report`` + ``get_resolution_status``):
+
+    * ``"pass_and_fail"`` (default): mirrors swebench's ``check_pass_and_fail``
+      classification combined with the ratio-based ``get_resolution_status``. When a
+      ``status_map`` is supplied, each required test is a **success** when present and
+      PASSED/XFAIL (``test_passed``), a **failure** when absent or FAILED/ERROR
+      (``test_failed``), and **neutral** (excluded from both counts) for any other
+      status (e.g. SKIPPED/XPASS). A task is resolved only when there are zero
+      failures across FAIL_TO_PASS and PASS_TO_PASS (each ratio ``== 1``; an
+      all-neutral category with total ``0`` counts as ``1``). Without a
+      ``status_map`` it falls back to plain ``passed``-set membership.
+    * ``"fail_only"``: used for the JS multilingual repos in swebench's
+      ``FAIL_ONLY_REPOS`` (chartjs/Chart.js, processing/p5.js, markedjs/marked). A
+      required test counts as success **unless** it is present in ``status_map``
+      **and** its status is ``FAILED``. This mirrors swebench's ``check_fail_only``.
 
     Args:
         fail_to_pass (Iterable[str]): Tests that must transition from failing to
             passing.
         pass_to_pass (Iterable[str]): Tests that must remain passing.
         passed (Iterable[str]): The tests that actually passed.
+        eval_type (str): ``"pass_and_fail"`` or ``"fail_only"`` (selected by the
+            caller from ``test_spec.repo``).
+        status_map (dict[str, str] | None): Full per-test status map. Required for
+            the ``"fail_only"`` rule (to detect a present-and-FAILED required test)
+            and used by ``"pass_and_fail"`` to exclude neutral-status required tests
+            exactly as swebench does.
 
     Returns:
-        bool: ``True`` if all required tests passed, ``False`` if there are no
-            required tests or any required test did not pass.
+        bool: ``True`` if all required tests passed under the selected rule,
+            ``False`` if there are no required tests or any required test did not
+            pass.
     """
-    passed_set = set(passed)
     required = list(fail_to_pass) + list(pass_to_pass)
     if not required:
         return False
+    if eval_type == "fail_only":
+        sm = status_map or {}
+        # Mirror swebench's check_fail_only: a required test is a failure only when
+        # present in the status map AND explicitly FAILED; anything else is success.
+        return all(not (test in sm and sm[test] == "FAILED") for test in required)
+    if status_map is not None:
+        # Mirror swebench's check_pass_and_fail + get_resolution_status: a required
+        # test is a failure only when it is absent or its status is FAILED/ERROR;
+        # PASSED/XFAIL are successes and any other status (SKIPPED/XPASS) is neutral
+        # (excluded). Resolution requires zero failures in BOTH categories.
+        return all(not (test not in status_map or status_map[test] in ("FAILED", "ERROR")) for test in required)
+    passed_set = set(passed)
     return all(test in passed_set for test in required)
 
 

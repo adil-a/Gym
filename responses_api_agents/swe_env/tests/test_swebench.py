@@ -185,10 +185,12 @@ def test_run_eval_then_grade_flat_resolved():
     assert reward_from_report(report) == 1.0
 
 
-def test_run_eval_missing_eval_script_masks_eval_error():
+def test_run_eval_missing_eval_script_is_unmasked_unresolved():
     from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
-    # No instance_dict + no preset eval_script -> _flat_eval_script returns "" -> flat masks.
+    # No instance_dict + no preset eval_script -> _flat_eval_script returns "" -> the run tags an
+    # eval_error, but grading no longer masks it: per main an unbuildable/empty spec grades as a
+    # legitimate unmasked unresolved (reward 0), not an eval_error mask.
     async def run():
         harness = SweBenchHarness("swe-bench")
         task = _task()
@@ -197,7 +199,8 @@ def test_run_eval_missing_eval_script_masks_eval_error():
         return harness.grade(task, artifacts)
 
     report = asyncio.run(run())
-    assert report.error_kind == "eval_error"
+    assert report.error_kind is None
+    assert report.resolved is False
     assert reward_from_report(report) == 0.0
 
 

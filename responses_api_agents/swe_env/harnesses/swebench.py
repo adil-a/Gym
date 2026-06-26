@@ -139,9 +139,15 @@ class SweBenchHarness(SweTaskHarness):
             spec = make_test_spec(instance, namespace="swebench")
         except Exception:
             return ""
+        # Mirror main's GIT_APPLY ladder (swebench/harness/run_evaluation.py GIT_APPLY_CMDS):
+        # try each apply command in order, breaking on the first rc==0, and never write
+        # conflict markers into the tree (no --3way). The trailing `echo` only fires when
+        # every command failed.
         apply_model = (
             "cd /testbed && "
-            "(git apply -v /root/patch.diff || git apply -v --3way /root/patch.diff || "
+            "(git apply --verbose /root/patch.diff || "
+            "git apply --verbose --reject /root/patch.diff || "
+            "patch --batch --fuzz=5 -p1 -i /root/patch.diff || "
             "echo 'NEMO_GYM_PATCH_APPLY_FAILED')\n"
         )
         return apply_model + spec.eval_script
@@ -199,9 +205,11 @@ class SweBenchHarness(SweTaskHarness):
             A ``SweEvalReport`` with the official verdict, or ``None`` when swebench is
             unavailable / the spec cannot be built (caller falls back to the generic parser).
         """
-        # Mirror flat_grade's infra masks so a sandbox/timeout/eval_error never scores 0.
+        # Mirror flat_grade's infra masks so a genuine sandbox/timeout never scores 0. An
+        # unbuildable/empty eval spec is NOT masked here (it grades unmasked unresolved via
+        # the generic parser fallback below), matching main's behavior.
         error_type = artifacts.raw.get("error_type")
-        if error_type in {"sandbox", "timeout", "eval_error"}:
+        if error_type in {"sandbox", "timeout"}:
             return SweEvalReport(
                 instance_id=task.instance_id,
                 patch_exists=bool(task.model_patch),
@@ -212,6 +220,7 @@ class SweBenchHarness(SweTaskHarness):
         if not instance:
             return None
         try:
+            from swebench.harness.constants import FAIL_ONLY_REPOS
             from swebench.harness.grading import get_logs_eval
             from swebench.harness.test_spec.test_spec import make_test_spec
         except Exception:
@@ -229,10 +238,15 @@ class SweBenchHarness(SweTaskHarness):
             if log_fp is not None and os.path.exists(log_fp):
                 os.unlink(log_fp)
         passed = [node for node, status in status_map.items() if status in _SWEBENCH_PASS_STATUSES]
+        # Select the eval type per-repo exactly as swebench.harness.grading.get_eval_report:
+        # FAIL_ONLY_REPOS (the JS multilingual repos) use the fail-only resolution rule.
+        eval_type = "fail_only" if spec.repo in FAIL_ONLY_REPOS else "pass_and_fail"
         resolved = bool(markers_found) and compute_resolved(
             fail_to_pass=task.fail_to_pass,
             pass_to_pass=task.pass_to_pass,
             passed=passed,
+            eval_type=eval_type,
+            status_map=status_map,
         )
         return SweEvalReport(
             instance_id=task.instance_id,
