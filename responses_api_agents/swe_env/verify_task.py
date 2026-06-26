@@ -35,10 +35,8 @@ from typing import Any
 # providers are built into nemo_gym.sandbox and resolve lazily (no import needed).
 import responses_api_agents.swe_env.harnesses  # noqa: F401
 from nemo_gym.sandbox import SandboxProvider
-from responses_api_agents.swe_env.grading import reward_from_report
-from responses_api_agents.swe_env.harness import SweEvalReport, SweTask
-from responses_api_agents.swe_env.lifecycle import acquire_sandbox
-from responses_api_agents.swe_env.registry import get_harness
+from responses_api_agents.swe_env.harness import SweEvalReport, SweTask, get_harness, reward_from_report
+from responses_api_agents.swe_env.sandbox import acquire_sandbox
 
 
 #: Slack added to the eval timeout when stamping a sandbox TTL (covers spin-up +

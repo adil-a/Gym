@@ -22,6 +22,10 @@ resulting unified-diff patch. Grading is decoupled — callers grade the patch
 in-process via :func:`run_self_driving` (or ``verify_task`` directly) in a fresh
 sandbox. The agent launch command, staged files, and patch-output location are
 caller-supplied, so nothing here is specific to any one agent harness.
+
+This module also defines the in-sandbox model-server egress primitive
+(``ModelEndpoint`` / ``resolve``), used to inject a sandbox-reachable endpoint
+into the agent's environment.
 """
 
 from __future__ import annotations
@@ -30,14 +34,12 @@ import dataclasses
 import json
 import shlex
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from nemo_gym.sandbox import SandboxProvider
-from responses_api_agents.swe_env import model_endpoint
-from responses_api_agents.swe_env.grading import reward_from_report
-from responses_api_agents.swe_env.harness import SweTask
-from responses_api_agents.swe_env.lifecycle import acquire_sandbox
-from responses_api_agents.swe_env.registry import get_harness
+from responses_api_agents.swe_env.harness import SweTask, get_harness, reward_from_report
+from responses_api_agents.swe_env.sandbox import acquire_sandbox
 
 
 def _provider_name(provider: Mapping[str, Any] | SandboxProvider) -> str:
@@ -122,9 +124,7 @@ def _build_agent_spec(task, provider, model_server, opensandbox_service_url, ext
     spec = harness.build_spec(task)
     # Model-server egress: inject only a sandbox-reachable endpoint (never the global dict).
     if model_server is not None:
-        endpoint = model_endpoint.resolve(
-            _provider_name(provider), model_server, opensandbox_service_url=opensandbox_service_url
-        )
+        endpoint = resolve(_provider_name(provider), model_server, opensandbox_service_url=opensandbox_service_url)
         spec = dataclasses.replace(spec, env={**spec.env, **endpoint.to_sandbox_env()})
     # Any extra in-sandbox env (e.g. a NeMo-Gym ServerClient config dict, ANTHROPIC_* vars).
     if extra_env:
@@ -152,7 +152,7 @@ async def provision_and_collect(
 
     Two egress styles are supported and composable:
 
-    * ``model_server`` -> a sandbox-reachable OpenAI ``base_url`` (via ``model_endpoint.resolve``),
+    * ``model_server`` -> a sandbox-reachable OpenAI ``base_url`` (via ``resolve``),
       for agents that call the model via a standard OpenAI/litellm client.
     * ``extra_env`` -> injected verbatim, for agents wired to NeMo Gym's ``ServerClient`` or to
       a CLI that reads its endpoint from environment variables.
@@ -307,3 +307,86 @@ async def run_self_driving(
         "mask_sample": masked,
         "error_kind": report.error_kind,
     }
+
+
+# --- in-sandbox model-server egress (merged from model_endpoint.py) --------------
+
+
+class ModelEgressUnavailable(RuntimeError):
+    """Raised when no sandbox-reachable model endpoint can be resolved for a provider."""
+
+
+@dataclass(frozen=True)
+class ModelEndpoint:
+    """A sandbox-reachable model-server endpoint.
+
+    Attributes:
+        base_url: The base URL the in-sandbox agent uses to reach the model server.
+        api_key: Optional API key for authenticating to the model server.
+        model: Optional model name to use.
+    """
+
+    base_url: str
+    api_key: str = ""
+    model: str = ""
+
+    def to_sandbox_env(self) -> dict[str, str]:
+        """Build the minimal set of environment variables to inject into the sandbox.
+
+        Returns:
+            dict[str, str]: Environment variables carrying the base URL and,
+            when set, the API key and model name. The global config dict is
+            never included.
+        """
+        env = {"OPENAI_BASE_URL": self.base_url, "NEMO_GYM_MODEL_BASE_URL": self.base_url}
+        if self.api_key:
+            env["OPENAI_API_KEY"] = self.api_key
+        if self.model:
+            env["NEMO_GYM_MODEL"] = self.model
+        return env
+
+
+def resolve(
+    provider_name: str,
+    model_server: Mapping[str, Any],
+    *,
+    host_loopback_url: str = "http://127.0.0.1:8000/v1",
+    opensandbox_service_url: str | None = None,
+) -> ModelEndpoint:
+    """Resolve a sandbox-reachable model endpoint for a sandbox provider.
+
+    Args:
+        provider_name: The sandbox provider name (e.g. ``"apptainer"``,
+            ``"opensandbox"``, ``"docker"``).
+        model_server: Mapping describing the model server, read for the
+            ``api_key``, ``model``, and ``base_url`` keys.
+        host_loopback_url: Fallback URL used when the provider shares the host
+            network namespace and no base URL is configured.
+        opensandbox_service_url: Cluster-reachable Service/ingress URL used for
+            the opensandbox provider when no other base URL is configured.
+
+    Returns:
+        ModelEndpoint: The resolved endpoint carrying the base URL, API key,
+        and model name.
+
+    Raises:
+        ModelEgressUnavailable: If the opensandbox provider cannot resolve a
+            cluster-reachable model-server URL (e.g. only loopback is available).
+    """
+    api_key = str(model_server.get("api_key", "") or "")
+    model = str(model_server.get("model", "") or "")
+    configured_base = str(model_server.get("base_url", "") or "")
+
+    if provider_name == "opensandbox":
+        base_url = opensandbox_service_url or configured_base
+        if not base_url or "127.0.0.1" in base_url or "localhost" in base_url:
+            raise ModelEgressUnavailable(
+                "opensandbox needs a cluster-reachable model-server URL (k8s Service/ingress); "
+                "loopback is unreachable from the pod. Configure 'opensandbox_service_url', or "
+                "run the agent with the docker provider instead."
+            )
+    else:
+        # docker / local: shares host network by default (host loopback reachable).
+        base_url = configured_base or host_loopback_url
+
+    return ModelEndpoint(base_url=base_url, api_key=api_key, model=model)

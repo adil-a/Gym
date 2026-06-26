@@ -31,8 +31,7 @@ from nemo_gym.sandbox import (
     SandboxStatus,
     register_provider,
 )
-from responses_api_agents.swe_env.grading import reward_from_report
-from responses_api_agents.swe_env.harness import SweTask
+from responses_api_agents.swe_env.harness import SweTask, reward_from_report
 from responses_api_agents.swe_env.harnesses.r2egym import R2EGymHarness
 
 
@@ -128,7 +127,7 @@ def test_hide_eval_tests_commands_shape():
 
 
 def test_materialize_writes_patch_diff():
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     async def run():
         harness = R2EGymHarness()
@@ -142,14 +141,12 @@ def test_materialize_writes_patch_diff():
 
 
 def test_run_eval_then_grade_flat_resolved():
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     async def run():
         harness = R2EGymHarness()
         task = _task(metadata={"eval_script": "echo run"})
-        env = await AsyncSweEnvironment.start(
-            {"fake-r2egym": {"log_text": _PASSING_LOG}}, harness.build_spec(task)
-        )
+        env = await AsyncSweEnvironment.start({"fake-r2egym": {"log_text": _PASSING_LOG}}, harness.build_spec(task))
         artifacts = await harness.run_eval(env, task)
         return harness.grade(task, artifacts)
 
@@ -159,7 +156,7 @@ def test_run_eval_then_grade_flat_resolved():
 
 
 def test_run_eval_missing_eval_script_masks_eval_error():
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     async def run():
         harness = R2EGymHarness()
@@ -173,7 +170,7 @@ def test_run_eval_missing_eval_script_masks_eval_error():
 
 
 def test_reset_repo_is_noop():
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     async def run():
         harness = R2EGymHarness()

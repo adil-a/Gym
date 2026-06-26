@@ -43,7 +43,7 @@ from responses_api_agents.swe_env.parsing import (
 
 
 if TYPE_CHECKING:
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
 
 # Output markers the parser (parse_and_check_tests) extracts content between.

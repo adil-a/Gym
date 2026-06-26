@@ -36,18 +36,18 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from nemo_gym.sandbox import SandboxResources, SandboxSpec
-from responses_api_agents.swe_env.grading import compute_resolved
 from responses_api_agents.swe_env.harness import (
     EvalArtifacts,
     SweEvalReport,
     SweTask,
     SweTaskHarness,
     _ensure_trailing_newline,
+    compute_resolved,
 )
 
 
 if TYPE_CHECKING:
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
 
 #: nv-internal default working directory.

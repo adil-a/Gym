@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from responses_api_agents.swe_env.model_endpoint import ModelEgressUnavailable, ModelEndpoint, resolve
+from responses_api_agents.swe_env.self_drive import ModelEgressUnavailable, ModelEndpoint, resolve
 
 
 def test_apptainer_uses_host_loopback_by_default():

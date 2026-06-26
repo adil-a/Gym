@@ -301,7 +301,7 @@ def test_run_eval_then_grade_resolved(tmp_path):
             "install_config": {"log_parser": "simple", "test_cmd": "python -m pytest -rA -q"},
         },
     )
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     provider = {"fake-rebench": {"test_output": "t::a PASSED\nt::b PASSED\n", "test_rc": 0}}
 
@@ -326,7 +326,7 @@ def test_run_eval_patch_not_applied_still_grades_on_tests(tmp_path):
     repo_dir = _write_fake_parsers(tmp_path)
     harness = SweRebenchHarness()
     task = _task(metadata={"rebench_repo_dir": str(repo_dir), "install_config": {"log_parser": "simple"}})
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     # apply_rc=1 -> model patch fails to apply -> patch_applied False, but grading
     # is on the tests only (no patch_applied gate), so a run where every F2P/P2P
@@ -356,7 +356,7 @@ def test_run_eval_applies_model_patch_before_test_patch(tmp_path):
     repo_dir = _write_fake_parsers(tmp_path)
     harness = SweRebenchHarness()
     task = _task(metadata={"rebench_repo_dir": str(repo_dir), "install_config": {"log_parser": "simple"}})
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     _RecordingProvider.commands = []
     _RecordingProvider.exec_calls = []
@@ -415,7 +415,7 @@ def test_run_eval_threads_tests_timeout_into_test_exec(tmp_path):
             "tests_timeout": 600,
         },
     )
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     _RecordingProvider.commands = []
     _RecordingProvider.exec_calls = []
@@ -445,7 +445,7 @@ def test_run_eval_tests_timeout_absent_defaults_to_1800(tmp_path):
             "install_config": {"log_parser": "simple", "test_cmd": "python -m pytest -rA -q"},
         },
     )
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     _RecordingProvider.commands = []
     _RecordingProvider.exec_calls = []

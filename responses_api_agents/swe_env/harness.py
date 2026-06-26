@@ -21,11 +21,17 @@ The harness contract is intentionally split across a trust boundary:
 * ``reset_repo`` / ``run_eval`` / ``grade`` are **grading** methods used
   **only** by the grader (``verify_task``). A test asserts agent adapters never
   reference them.
+
+This module also holds the name->harness registry
+(``register_harness``/``get_harness``/``list_harnesses``) and the pure grading
+helpers (``compute_resolved``/``reward_from_report``), merged here so the harness
+contract, its dispatch, and its scoring live in one place.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -33,7 +39,7 @@ from nemo_gym.sandbox import SandboxSpec
 
 
 if TYPE_CHECKING:
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
 
 @dataclass
@@ -200,3 +206,134 @@ def _ensure_trailing_newline(text: str) -> str:
             text with a newline appended.
     """
     return text if text.endswith("\n") else text + "\n"
+
+
+# --- name->harness registry (merged from registry.py) ----------------------------
+
+_HARNESSES: dict[str, SweTaskHarness] = {}
+
+
+def register_harness(harness: SweTaskHarness, *, override: bool = False) -> None:
+    """Register a harness under its ``name``.
+
+    Args:
+        harness (SweTaskHarness): The harness to register. Its ``name`` must be
+            non-empty.
+        override (bool): If ``True``, replace an existing harness with the same
+            name instead of raising.
+
+    Raises:
+        ValueError: If the harness name is empty, or a harness with the same name
+            is already registered and ``override`` is ``False``.
+    """
+    if not harness.name:
+        raise ValueError("Harness must define a non-empty 'name'")
+    if not override and harness.name in _HARNESSES:
+        raise ValueError(f"Harness {harness.name!r} is already registered")
+    _HARNESSES[harness.name] = harness
+
+
+# HuggingFace dataset names don't match registry keys; map by substring (most-specific first)
+# so callers can pass a raw ``dataset_name`` (e.g. "princeton-nlp/SWE-bench_Verified").
+_HF_NAME_ALIASES: list[tuple[str, str]] = [
+    ("SWE-bench_Multilingual", "swe-bench-multilingual"),
+    ("R2E-Gym", "r2e-gym"),
+    ("SWE-rebench", "swe-rebench"),
+    ("SWE-bench", "swe-bench"),
+]
+
+
+def _ensure_registered() -> None:
+    """Lazily register the built-in harnesses if the registry is empty.
+
+    Importing ``responses_api_agents.swe_env.harnesses`` registers all families, but a fresh
+    process (e.g. a Ray worker running the decoupled agent) may call ``get_harness`` before that
+    import has run. Registering on demand keeps lookups robust regardless of import order.
+    """
+    if _HARNESSES:
+        return
+    from responses_api_agents.swe_env.harnesses import register_builtin_harnesses
+
+    register_builtin_harnesses()
+
+
+def get_harness(name: str) -> SweTaskHarness:
+    """Look up a harness by registry key, or by HuggingFace dataset-name substring.
+
+    Built-in harnesses are registered on first use (robust to import order). An exact key match
+    wins; otherwise a HuggingFace ``dataset_name`` substring is resolved to its key (e.g.
+    ``"princeton-nlp/SWE-bench_Verified"`` -> ``"swe-bench"``).
+
+    Args:
+        name (str): The registry key, or a HuggingFace dataset name.
+
+    Returns:
+        SweTaskHarness: The registered harness.
+
+    Raises:
+        KeyError: If no harness matches ``name``.
+    """
+    _ensure_registered()
+    if name in _HARNESSES:
+        return _HARNESSES[name]
+    for needle, key in _HF_NAME_ALIASES:
+        if needle in name and key in _HARNESSES:
+            return _HARNESSES[key]
+    available = ", ".join(sorted(_HARNESSES)) or "(none)"
+    raise KeyError(f"Unknown SWE harness {name!r}. Registered: {available}")
+
+
+def list_harnesses() -> list[str]:
+    """List the names of all registered harnesses.
+
+    Returns:
+        list[str]: The registered harness names, sorted alphabetically.
+    """
+    return sorted(_HARNESSES)
+
+
+# --- pure grading helpers (merged from grading.py) -------------------------------
+
+
+def compute_resolved(
+    *,
+    fail_to_pass: Iterable[str],
+    pass_to_pass: Iterable[str],
+    passed: Iterable[str],
+) -> bool:
+    """Apply the SWE-bench resolution rule.
+
+    A task is resolved when every FAIL_TO_PASS and PASS_TO_PASS test passes.
+
+    Args:
+        fail_to_pass (Iterable[str]): Tests that must transition from failing to
+            passing.
+        pass_to_pass (Iterable[str]): Tests that must remain passing.
+        passed (Iterable[str]): The tests that actually passed.
+
+    Returns:
+        bool: ``True`` if all required tests passed, ``False`` if there are no
+            required tests or any required test did not pass.
+    """
+    passed_set = set(passed)
+    required = list(fail_to_pass) + list(pass_to_pass)
+    if not required:
+        return False
+    return all(test in passed_set for test in required)
+
+
+def reward_from_report(report: SweEvalReport) -> float:
+    """Map a graded report to a reward.
+
+    An infra or eval failure (``error_kind`` set) yields ``0.0`` and is masked
+    via the flag downstream; the result is always a ``float`` and never ``None``.
+
+    Args:
+        report (SweEvalReport): The graded result to convert.
+
+    Returns:
+        float: ``1.0`` if the task resolved with no error, otherwise ``0.0``.
+    """
+    if report.error_kind is not None:
+        return 0.0
+    return 1.0 if report.resolved else 0.0

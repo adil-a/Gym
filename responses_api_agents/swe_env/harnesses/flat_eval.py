@@ -46,12 +46,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from responses_api_agents.swe_env.grading import compute_resolved
-from responses_api_agents.swe_env.harness import EvalArtifacts, SweEvalReport, SweTask
+from responses_api_agents.swe_env.harness import EvalArtifacts, SweEvalReport, SweTask, compute_resolved
 
 
 if TYPE_CHECKING:
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
 
 # SWE-bench eval-log sentinels, kept here so we never import swebench at grade

@@ -34,8 +34,7 @@ import urllib.request
 
 import pytest
 
-from responses_api_agents.swe_env.grading import reward_from_report
-from responses_api_agents.swe_env.harness import SweTask
+from responses_api_agents.swe_env.harness import SweTask, reward_from_report
 from responses_api_agents.swe_env.verify_task import verify_task
 
 

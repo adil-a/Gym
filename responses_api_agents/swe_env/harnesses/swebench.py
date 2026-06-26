@@ -32,19 +32,19 @@ import tempfile
 from typing import TYPE_CHECKING
 
 from nemo_gym.sandbox import SandboxResources, SandboxSpec
-from responses_api_agents.swe_env.grading import compute_resolved
 from responses_api_agents.swe_env.harness import (
     EvalArtifacts,
     SweEvalReport,
     SweTask,
     SweTaskHarness,
     _ensure_trailing_newline,
+    compute_resolved,
 )
 from responses_api_agents.swe_env.harnesses import flat_eval
 
 
 if TYPE_CHECKING:
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
 
 # Per-test status tokens swebench's repo parsers emit that count as a pass.
@@ -160,9 +160,7 @@ class SweBenchHarness(SweTaskHarness):
             existed, and the flat-eval markers.
         """
         if not task.metadata.get("eval_script"):
-            task = dataclasses.replace(
-                task, metadata={**task.metadata, "eval_script": self._flat_eval_script(task)}
-            )
+            task = dataclasses.replace(task, metadata={**task.metadata, "eval_script": self._flat_eval_script(task)})
         return await flat_eval.flat_run_eval(env, task)
 
     def grade(self, task: SweTask, artifacts: EvalArtifacts) -> SweEvalReport:

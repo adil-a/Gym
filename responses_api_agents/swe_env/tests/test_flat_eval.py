@@ -48,8 +48,7 @@ from nemo_gym.sandbox import (
     SandboxStatus,
     register_provider,
 )
-from responses_api_agents.swe_env.grading import reward_from_report
-from responses_api_agents.swe_env.harness import EvalArtifacts, SweTask
+from responses_api_agents.swe_env.harness import EvalArtifacts, SweTask, reward_from_report
 from responses_api_agents.swe_env.harnesses import flat_eval
 from responses_api_agents.swe_env.harnesses.r2egym import R2EGymHarness
 from responses_api_agents.swe_env.harnesses.swebench import SweBenchHarness
@@ -271,7 +270,7 @@ def test_flat_grade_resolved_matches_ungated_compute_resolved(fixture_name):
     Args:
         fixture_name: The recorded fixture log to parse and grade.
     """
-    from responses_api_agents.swe_env.grading import compute_resolved
+    from responses_api_agents.swe_env.harness import compute_resolved
 
     task = _task()
     log = _fixture(fixture_name)
@@ -465,7 +464,7 @@ def _drive_flat(harness, task, *, log_text, run_rc=0, error_type=None, stream_em
     Returns:
         A tuple of the graded report, the EvalArtifacts, and the provider instance.
     """
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     async def _go():
         provider = {

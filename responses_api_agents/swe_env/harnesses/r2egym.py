@@ -40,7 +40,7 @@ from responses_api_agents.swe_env.harnesses import flat_eval
 
 
 if TYPE_CHECKING:
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
 
 class R2EGymHarness(SweTaskHarness):

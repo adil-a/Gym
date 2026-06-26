@@ -12,18 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Async SWE environment adapter over ``nemo_gym.sandbox``.
+"""Async SWE sandbox: an environment wrapper plus its acquire/teardown lifecycle.
 
-Provides a thin async wrapper around a sandbox that any agent or the verifier
-can use to run commands and move files in and out of the sandbox.
+``AsyncSweEnvironment`` is a thin async wrapper around a started sandbox that any
+agent or the verifier uses to run commands and move files in and out.
+``acquire_sandbox`` starts a fresh sandbox and always tears it down on exit
+(normal return, exception, or cancellation).
 """
 
 from __future__ import annotations
 
 import os
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, AsyncIterator, Mapping
 
 from nemo_gym.sandbox import AsyncSandbox, SandboxProvider, SandboxSpec
 
@@ -189,3 +192,38 @@ class AsyncSweEnvironment:
             exc_tb (Any): The traceback, if an exception was raised.
         """
         await self.cleanup()
+
+
+# --- sandbox acquire/teardown lifecycle (merged from lifecycle.py) ---------------
+
+
+@asynccontextmanager
+async def acquire_sandbox(
+    provider: Mapping[str, Any] | SandboxProvider,
+    spec: SandboxSpec,
+    *,
+    instance_id: str = "",
+) -> AsyncIterator[AsyncSweEnvironment]:
+    """Start a fresh sandbox, yield it, and always stop it on exit.
+
+    Args:
+        provider: Either a ``SandboxProvider`` instance or a mapping describing
+            the provider configuration used to create the sandbox.
+        spec: The ``SandboxSpec`` describing how to provision the sandbox.
+        instance_id: Identifier accepted for logging/telemetry; it does not
+            affect behavior.
+
+    Yields:
+        AsyncSweEnvironment: The started environment wrapping the sandbox,
+        which is cleaned up when the context manager exits.
+    """
+    env: AsyncSweEnvironment | None = None
+    try:
+        env = await AsyncSweEnvironment.start(provider, spec)
+        yield env
+    finally:
+        if env is not None:
+            try:
+                await env.cleanup()
+            except Exception:
+                pass

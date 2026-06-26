@@ -229,7 +229,7 @@ def test_unsupported_provider_raises():
             """
             return provider_name != "fake-swe"
 
-    from responses_api_agents.swe_env.registry import register_harness
+    from responses_api_agents.swe_env.harness import register_harness
 
     register_harness(_NestedOnly(), override=True)
     task = _task(benchmark="nested-only-test")

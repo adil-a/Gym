@@ -47,7 +47,7 @@ from responses_api_agents.swe_env.harness import EvalArtifacts, SweEvalReport, S
 
 
 if TYPE_CHECKING:
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
 
 # JAVA flag required for every SWE-rebench task.

@@ -20,12 +20,12 @@ run an in-container evaluation and require an apptainer provider, failing fast o
 exec-only providers: ``swe-bench``, ``swe-bench-multilingual``, ``r2e-gym``.
 """
 
+from responses_api_agents.swe_env.harness import list_harnesses, register_harness
 from responses_api_agents.swe_env.harnesses.nv_internal import NVInternalHarness
 from responses_api_agents.swe_env.harnesses.r2egym import R2EGymHarness
 from responses_api_agents.swe_env.harnesses.swe_bench_ext import SweBenchExtHarness
 from responses_api_agents.swe_env.harnesses.swe_rebench import SweRebenchHarness
 from responses_api_agents.swe_env.harnesses.swebench import SweBenchHarness
-from responses_api_agents.swe_env.registry import list_harnesses, register_harness
 
 
 def register_builtin_harnesses() -> None:

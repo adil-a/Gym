@@ -32,8 +32,7 @@ from nemo_gym.sandbox import (
     SandboxStatus,
     register_provider,
 )
-from responses_api_agents.swe_env.grading import reward_from_report
-from responses_api_agents.swe_env.harness import EvalArtifacts, SweTask
+from responses_api_agents.swe_env.harness import EvalArtifacts, SweTask, reward_from_report
 from responses_api_agents.swe_env.harnesses.swebench import SweBenchHarness
 
 
@@ -142,7 +141,7 @@ def test_with_flat_eval_is_self():
 
 
 def test_materialize_writes_patch_diff():
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     async def run():
         harness = SweBenchHarness("swe-bench")
@@ -156,7 +155,7 @@ def test_materialize_writes_patch_diff():
 
 
 def test_materialize_empty_patch_writes_nothing():
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     async def run():
         harness = SweBenchHarness("swe-bench")
@@ -170,16 +169,14 @@ def test_materialize_empty_patch_writes_nothing():
 
 
 def test_run_eval_then_grade_flat_resolved():
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     # eval_script preset so flat_run_eval executes it; no instance_dict -> grade falls back to
     # the generic flat parser over the canned passing log.
     async def run():
         harness = SweBenchHarness("swe-bench")
         task = _task(metadata={"eval_script": "echo run"})
-        env = await AsyncSweEnvironment.start(
-            {"fake-swebench": {"log_text": _PASSING_LOG}}, harness.build_spec(task)
-        )
+        env = await AsyncSweEnvironment.start({"fake-swebench": {"log_text": _PASSING_LOG}}, harness.build_spec(task))
         artifacts = await harness.run_eval(env, task)
         return harness.grade(task, artifacts)
 
@@ -189,7 +186,7 @@ def test_run_eval_then_grade_flat_resolved():
 
 
 def test_run_eval_missing_eval_script_masks_eval_error():
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     # No instance_dict + no preset eval_script -> _flat_eval_script returns "" -> flat masks.
     async def run():

@@ -22,19 +22,18 @@ recipes plus grading score the patch in a fresh sandbox) — no separate verifie
 server is required.
 """
 
-from responses_api_agents.swe_env.environment import AsyncSweEnvironment
-from responses_api_agents.swe_env.grading import compute_resolved, reward_from_report
 from responses_api_agents.swe_env.harness import (
     EvalArtifacts,
     SweEvalReport,
     SweTask,
     SweTaskHarness,
-)
-from responses_api_agents.swe_env.registry import (
+    compute_resolved,
     get_harness,
     list_harnesses,
     register_harness,
+    reward_from_report,
 )
+from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
 
 __all__ = [

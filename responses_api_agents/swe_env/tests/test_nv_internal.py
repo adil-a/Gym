@@ -30,9 +30,7 @@ from nemo_gym.sandbox import (
     SandboxStatus,
     register_provider,
 )
-from responses_api_agents.swe_env.environment import AsyncSweEnvironment
-from responses_api_agents.swe_env.grading import reward_from_report
-from responses_api_agents.swe_env.harness import EvalArtifacts, SweEvalReport, SweTask
+from responses_api_agents.swe_env.harness import EvalArtifacts, SweEvalReport, SweTask, reward_from_report
 from responses_api_agents.swe_env.harnesses.nv_internal import (
     NV_DEFAULT_WORKDIR,
     NVInternalHarness,
@@ -43,6 +41,7 @@ from responses_api_agents.swe_env.harnesses.nv_internal import (
     _resolve_required_tests,
     parse_passed_tests,
 )
+from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
 
 class _FakeProvider:

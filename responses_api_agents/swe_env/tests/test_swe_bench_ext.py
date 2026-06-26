@@ -39,8 +39,7 @@ from nemo_gym.sandbox import (
     SandboxStatus,
     register_provider,
 )
-from responses_api_agents.swe_env.grading import reward_from_report
-from responses_api_agents.swe_env.harness import EvalArtifacts, SweTask
+from responses_api_agents.swe_env.harness import EvalArtifacts, SweTask, reward_from_report
 from responses_api_agents.swe_env.harnesses.swe_bench_ext import SweBenchExtHarness
 
 
@@ -345,7 +344,7 @@ def _run_eval(task: SweTask, *, test_output: str, apply_rc: int = 0, run_cmd: st
         tuple: The harness, the produced ``EvalArtifacts``, and the provider
         instance (for command inspection).
     """
-    from responses_api_agents.swe_env.environment import AsyncSweEnvironment
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
 
     async def run():
         harness = SweBenchExtHarness()
