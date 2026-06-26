@@ -1,1 +1,4 @@
 -e nemo-gym[dev] @ ../../
+# Flat (host-side) grading on docker/opensandbox builds the official SWE-bench eval
+# script via swebench.make_test_spec; the nested/apptainer grading path doesn't need it.
+swebench
