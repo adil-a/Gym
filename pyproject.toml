@@ -467,6 +467,8 @@ norecursedirs = [
     "scripts",
     "tools",
     "tutorials",
+    "deps",
+    "results",
     "*.egg",
     ".*",
     "_darcs",
