@@ -309,7 +309,7 @@ async def run_self_driving(
     }
 
 
-# --- in-sandbox model-server egress (merged from model_endpoint.py) --------------
+# --- in-sandbox model-server egress --------------
 
 
 class ModelEgressUnavailable(RuntimeError):

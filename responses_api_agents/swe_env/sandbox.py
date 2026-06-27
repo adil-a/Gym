@@ -194,7 +194,7 @@ class AsyncSweEnvironment:
         await self.cleanup()
 
 
-# --- sandbox acquire/teardown lifecycle (merged from lifecycle.py) ---------------
+# --- sandbox acquire/teardown lifecycle ---------------
 
 
 @asynccontextmanager

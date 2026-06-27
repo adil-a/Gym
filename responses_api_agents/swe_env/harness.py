@@ -218,7 +218,7 @@ def _ensure_trailing_newline(text: str) -> str:
     return text if text.endswith("\n") else text + "\n"
 
 
-# --- name->harness registry (merged from registry.py) ----------------------------
+# --- name->harness registry ----------------------------
 
 _HARNESSES: dict[str, SweTaskHarness] = {}
 
@@ -302,7 +302,7 @@ def list_harnesses() -> list[str]:
     return sorted(_HARNESSES)
 
 
-# --- pure grading helpers (merged from grading.py) -------------------------------
+# --- pure grading helpers -------------------------------
 
 
 def compute_resolved(

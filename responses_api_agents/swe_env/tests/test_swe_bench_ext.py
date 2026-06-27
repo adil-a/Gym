@@ -279,7 +279,7 @@ def test_grade_resolved_even_when_patch_apply_failed():
     assert reward_from_report(report) == 1.0
 
 
-# --- infra masking (unchanged behavior) -------------------------------------
+# --- infra masking ----------------------------------------------------------
 
 
 def test_grade_masks_on_infra_error():

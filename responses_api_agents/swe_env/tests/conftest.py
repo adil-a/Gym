@@ -23,5 +23,4 @@ collection entirely. It holds only data, never tests.
 from __future__ import annotations
 
 
-# Never collect anything under the fixtures tree (recorded logs / data only).
 collect_ignore_glob = ["fixtures/*"]
