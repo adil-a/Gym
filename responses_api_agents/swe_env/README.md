@@ -48,31 +48,26 @@ Reaching parity required closing two flat↔nested **reconstruction** gaps the c
 
 ### Reproduce
 
-Grade gold patches on docker (no model, no agent — pure grader validation). Bound concurrency
-with a semaphore and `docker rmi` each image after grading to cap disk:
+Run the gold-patch census with `responses_api_agents/anyswe_agent/gold_census.py` (no model, no
+agent — it feeds each instance's gold patch through the flat grader and tallies resolves):
 
-```python
-import asyncio, dataclasses, json
-from datasets import load_dataset
-from responses_api_agents.anyswe_agent.app import _build_swetask
-from responses_api_agents.swe_env.verify_task import verify_task
+```bash
+# docker: images pull on demand; --rmi removes each after grading to cap disk
+HF_HOME=/tmp/hf_cache python responses_api_agents/anyswe_agent/gold_census.py \
+    --provider docker --concurrency 12 --rmi
+# (quick smoke on a subset)
+python responses_api_agents/anyswe_agent/gold_census.py --provider docker --limit 25 --rmi
 
-async def gold_resolves(inst) -> bool:
-    pinfo = {
-        "instance_id": inst["instance_id"],
-        "dataset_name": "princeton-nlp/SWE-bench_Verified",
-        "container_formatter": "docker://swebench/sweb.eval.x86_64.{instance_id}",
-        "instance_dict": json.dumps(dict(inst)),
-    }
-    task = _build_swetask(pinfo, flat_eval=True)
-    report = await verify_task({"docker": {}}, dataclasses.replace(task, model_patch=inst["patch"]))
-    return bool(report.resolved)  # error_kind is None on a clean (non-infra) grade
-
-rows = list(load_dataset("princeton-nlp/SWE-bench_Verified", split="test"))
+# apptainer: point the formatter at pre-built local .sif images
+python responses_api_agents/anyswe_agent/gold_census.py --provider apptainer \
+    --container-formatter 'data/sifs/{instance_id}.sif' --concurrency 12
 ```
 
-Swap `{"docker": {}}` for `{"apptainer": {}}` (with a `.sif` `container_formatter`) to grade on
-apptainer instead.
+It checkpoints to `gold_census_results.json` (resumable) and prints `gold resolved N/500` plus the
+not-resolved list. A clean run has **0** `error_kind` (infra) failures; a resolved instance means
+the gold patch passed that instance's FAIL_TO_PASS + PASS_TO_PASS tests under the host-side grader.
+docker and apptainer resolve the same set (both use the flat grader), so the provider is just the
+sandbox the eval script runs in.
 
 ## Tests
 
