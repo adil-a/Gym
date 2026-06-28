@@ -151,7 +151,15 @@ class SweBenchHarness(SweTaskHarness):
             "patch --batch --fuzz=5 -p1 -i /root/patch.diff || "
             "echo 'NEMO_GYM_PATCH_APPLY_FAILED')\n"
         )
-        return apply_model + spec.eval_script
+        # Force pytest to print a per-test result line for EVERY test (-rA), not just failures.
+        # swebench's per-repo eval command for some families (e.g. sphinx via tox, several sklearn)
+        # invokes pytest without -rA, so passing tests show only as dots — and the host-side parser
+        # (``parse_log_pytest_v2``, which keys off ``PASSED <nodeid>`` lines) then sees zero passes
+        # and marks the instance unresolved even for the gold patch. -rA makes those passes visible
+        # to the flat grader. Non-pytest families (e.g. django's runner) ignore PYTEST_ADDOPTS, so
+        # this is a safe no-op for them; any addopts the eval script itself sets are preserved.
+        pytest_addopts = 'export PYTEST_ADDOPTS="-rA ${PYTEST_ADDOPTS:-}"\n'
+        return pytest_addopts + apply_model + spec.eval_script
 
     # --- server-private grading ----------------------------------------------
 
