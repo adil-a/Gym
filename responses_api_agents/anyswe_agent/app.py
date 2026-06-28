@@ -512,6 +512,10 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             start_args = list(create_cfg.get("extra_start_args") or [])
             if "--writable-tmpfs" not in start_args:
                 start_args.append("--writable-tmpfs")
+            # Isolate from the host $HOME (same reason as the grading sandbox in ``_grading_provider``):
+            # apptainer's default host-home bind leaks host dotfiles/caches into the agent run.
+            if "--no-mount" not in start_args:
+                start_args += ["--no-mount", "home"]
             create_cfg["extra_start_args"] = start_args
             appt["create"] = create_cfg
             return ApptainerProvider(**appt)
@@ -549,6 +553,13 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         start_args = list(create_cfg.get("extra_start_args") or [])
         if "--writable-tmpfs" not in start_args:
             start_args.append("--writable-tmpfs")
+        # Don't bind-mount the host $HOME into the grading sandbox. apptainer mounts it by default,
+        # leaking host dotfiles/caches into the eval (e.g. ~/.config/matplotlib + the host font cache),
+        # which changes test outcomes vs docker -- matplotlib image-comparison tests fail on the host
+        # fonts even for the gold patch. (Scoped to --no-mount home: --cleanenv / --no-mount tmp,bind-paths
+        # are too aggressive and break the eval's conda/PATH env, producing an empty test log.)
+        if "--no-mount" not in start_args:
+            start_args += ["--no-mount", "home"]
         create_cfg["extra_start_args"] = start_args
         appt["create"] = create_cfg
         return {"apptainer": appt}

@@ -66,11 +66,13 @@ def main() -> None:
 
     # Mirror anyswe's grading provider (app.py `_grading_provider`): apptainer's base image is
     # read-only, so the eval script's git checkout / patch apply / pytest writes to /testbed need a
-    # writable overlay (the provider swaps --writable-tmpfs for a disk-backed overlay). Without it
-    # every instance grades unresolved. docker containers are writable by default, so no change there.
+    # writable overlay (--writable-tmpfs -> disk-backed overlay); and the host $HOME must NOT be bound
+    # in (--no-mount home), or host dotfiles/caches leak into the eval and change test outcomes vs
+    # docker (matplotlib image-comparison tests fail on the host font cache). docker containers are
+    # writable + host-isolated by default, so no change there.
     provider_cfg: dict = {args.provider: {}}
     if args.provider == "apptainer":
-        provider_cfg = {"apptainer": {"create": {"extra_start_args": ["--writable-tmpfs"]}}}
+        provider_cfg = {"apptainer": {"create": {"extra_start_args": ["--writable-tmpfs", "--no-mount", "home"]}}}
 
     rows = list(load_dataset(args.dataset, split=args.split))
     by_id = {r["instance_id"]: r for r in (rows[: args.limit] if args.limit else rows)}
