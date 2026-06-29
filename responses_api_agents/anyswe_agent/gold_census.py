@@ -17,7 +17,8 @@
 Feeds each SWE-bench (Verified, by default) instance's GOLD patch through the flat grader on the
 chosen sandbox provider. No model and no agent run — a correct grader should resolve ~all instances
 (modulo a handful of documented upstream env-flaky gold-failures). This is what produces the
-``responses_api_agents/swe_env/README.md`` baseline (docker 493/500, apptainer/.sif 492/500).
+``responses_api_agents/swe_env/README.md`` baseline: docker-flat and apptainer-flat both resolve
+493/500 (an identical set; run both in one window with --tests-timeout 3600 — see the README).
 
 Resumable + checkpointed to ``--out``; with ``--rmi`` each instance's docker image is removed after
 grading so the full run stays within disk on a single host.

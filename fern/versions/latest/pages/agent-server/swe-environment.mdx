@@ -47,9 +47,10 @@ anyswe_hermes:
 
 <Note>
 Grading is host-side (flat): the eval log is parsed with swebench's official per-repo parser, so
-it runs on any exec-capable provider — docker, apptainer, or opensandbox. The two backends produce
-equivalent resolve rates; see the in-tree `responses_api_agents/swe_env/README.md` for the
-gold-patch baseline.
+it runs on any exec-capable provider — docker, apptainer, or opensandbox. The provider only changes
+*where* the eval script runs, never the verdict: docker and apptainer resolve the **identical**
+SWE-bench Verified gold set (493/500 each, verified). See the in-tree
+`responses_api_agents/swe_env/README.md` for the gold-patch baseline and how to reproduce it.
 </Note>
 
 ## Running it
